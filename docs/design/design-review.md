@@ -116,3 +116,36 @@ Ditunda: embedding, Hebbian/associative edge, tidur otomatis, `sources/` ingest,
 1. Tambahkan ke desain: MVP (§4), kontrak integrasi, keputusan granularity, co-occurrence NPMI → skor diperkirakan naik ke ~7.5.
 2. Jalankan **Fase 0 simulasi**, termasuk skenario abrupt drift (FERNme) dan hub (Ori), dengan ablation activation on/off.
 3. Pasang Ori-Mnemos di satu proyek nyata selama ±1 minggu sebagai baseline pengalaman pengguna.
+
+---
+
+## 6. Penilaian ulang setelah rev 2 (MVP spec + Fase 0)
+
+Perubahan: [mvp-spec.md](mvp-spec.md) dan simulasi [Fase 0](../../experiments/phase0/README.md).
+
+| # | Dimensi | Bobot | Rev 1 | **Rev 2** | Apa yang mengubahnya | Sisa celah |
+|---|---|---|---|---|---|---|
+| 1 | Tujuan & prinsip | 10% | 9 | **9** | — | — |
+| 2 | Model penyimpanan | 15% | 8 | **9** | Aturan konflik node, `merge=union` untuk events, single-device di v0.1 | — |
+| 3 | Model activation | 10% | 7 | **8.5** | Fase 0: eksposur=0 & pengecualian decay terbukti wajib; scope proyek + budget terpisah ditemukan dan diadopsi; `d=0.7` dituning; Hebbian ditunda | Bukti masih sintetis (ditutup E4) |
+| 4 | Ontology & granularity | 10% | 5 | **9** | 7 tipe / 5 relasi; klaim atomik vs halaman hub, didukung Dense X Retrieval | — |
+| 5 | Konsolidasi | 10% | 6 | **8** | Kontrak 8 langkah, idempotensi, watermark, aturan gate | Kualitas prompt ekstraksi belum diuji (ditutup E1) |
+| 6 | Integrasi harness | 15% | 4 | **8.5** | Hook & transcript per harness diverifikasi; workaround konsolidasi lazy; Agent Skill sebagai adapter universal | Detail hook/rollout Codex dari sumber pihak ketiga dan masih eksperimental |
+| 7 | Keamanan | 10% | 5 | **8.5** | Threat model, provenance cap, secret scan, `undo` | Mitigasi belum diuji terhadap serangan nyata |
+| 8 | Evaluasi | 10% | 6 | **9** | E0 selesai; E1–E4 dengan data, metrik, ambang go | — |
+| 9 | Scope MVP | 10% | 4 | **9.5** | Garis masuk/ditunda tegas, 5 milestone | — |
+
+**Skor tertimbang rev 2: 8.8 / 10** (rev 1: 6.0)
+
+### Verdict
+
+> **Layak mulai build M1–M2** (storage, activation, CLI/MCP). Bagian ini tidak bergantung pada hal yang belum terbukti.
+
+### Jalan ke ≥ 9
+
+Celah yang tersisa **tidak bisa ditutup dengan menulis dokumen** — butuh data nyata, dan transcript ada di mesin user, bukan di environment ini:
+
+1. **E1 lebih awal (spike sebelum M3):** jalankan prompt ekstraksi pada 20 transcript nyata Claude Code + Codex milik user, label manual. Lulus → Konsolidasi 8 → 9.
+2. **Verifikasi format Codex dari source/file nyata** (`~/.codex/sessions/…/rollout-*.jsonl` dan payload hook di versi Codex yang dipakai). → Integrasi 8.5 → 9.
+
+Dengan dua spike itu skor menjadi **≈ 9.0**. Activation (8.5) dan keamanan (8.5) baru bisa naik lewat dogfooding E4 — itu wajar ditutup *setelah* build, bukan sebelum.

@@ -3,6 +3,8 @@
 > Status: **draf untuk review** — belum ada implementasi.
 > Lanjutan dari [riset memory approaches](../research/memory-approaches.md) dan [Karpathy LLM Wiki](../research/karpathy-llm-wiki.md).
 >
+> **Rev 2:** spesifikasi MVP ada di [mvp-spec.md](mvp-spec.md). Hasil Fase 0 mengubah default: `d = 0.7`, **scope proyek aktif** dan **budget constraint terpisah** wajib, Hebbian ditunda ke v0.2 ([detail](../../experiments/phase0/README.md)).
+>
 > **Revisi 1 (setelah review LLM Wiki):** activation hanya mengatur ranking, constraint tidak decay, bitemporal, layer `sources/`, push memory kontekstual, lint inkremental. Ditandai dengan *(rev 1)*.
 
 ## 0. Tujuan & prinsip
