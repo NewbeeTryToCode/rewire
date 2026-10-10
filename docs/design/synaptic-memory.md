@@ -1,7 +1,9 @@
 # Design: Synaptic Memory untuk rewire
 
 > Status: **draf untuk review** — belum ada implementasi.
-> Lanjutan dari [riset memory approaches](../research/memory-approaches.md).
+> Lanjutan dari [riset memory approaches](../research/memory-approaches.md) dan [Karpathy LLM Wiki](../research/karpathy-llm-wiki.md).
+>
+> **Revisi 1 (setelah review LLM Wiki):** activation hanya mengatur ranking, constraint tidak decay, bitemporal, layer `sources/`, push memory kontekstual, lint inkremental. Ditandai dengan *(rev 1)*.
 
 ## 0. Tujuan & prinsip
 
@@ -16,6 +18,7 @@ Prinsip yang mengikat semua keputusan di bawah:
 - **P2 — Salience ≠ kebenaran.** Seberapa sering dipakai (activation) terpisah dari apakah fakta masih berlaku (validity). Fakta yang sering dipakai bisa saja sudah basi.
 - **P3 — Lupa = turun tier, bukan hapus.** Memory yang lemah keluar dari context, tapi masih bisa "teringat kembali".
 - **P4 — File adalah sumber kebenaran; database hanyalah index** yang bisa dibangun ulang kapan saja.
+- **P5 — Activation mengatur *urutan*, bukan *keberadaan* atau *kebenaran*.** *(rev 1)* Constraint yang tahan lama tidak jadi kurang benar hanya karena jarang dibaca. Activation adalah komponen yang bisa dimatikan (`β = 0`) dan harus menang di eval untuk dipertahankan.
 
 ---
 
@@ -26,6 +29,7 @@ Prinsip yang mengikat semua keputusan di bawah:
 | **Episodic** (hippocampus) | `sessions/` — log per sesi | "10 Okt: kita riset memory harness" | Append-only, mentah, murah ditulis |
 | **Semantic** (neocortex) | `nodes/` — graph fakta/konsep | "User lebih suka desain matang sebelum coding" | Hasil konsolidasi, terkurasi |
 | **Procedural** | `skills/` — SKILL.md | "Cara rilis proyek X" | Dipanggil saat relevan |
+| **Sumber eksternal** *(rev 1)* | `sources/` — artikel, paper, dokumen | gist Karpathy | Immutable; di-*ingest* ke `nodes/` (pola LLM Wiki) |
 
 Konsolidasi = memindahkan dari episodic ke semantic, persis seperti tidur memindahkan memory dari hippocampus ke neocortex.
 
@@ -154,6 +158,8 @@ Memory dormant yang dipakai lagi langsung naik tier — "teringat kembali".
 
 Selain activation, setiap node punya `importance` (1–5) dari konsolidasi/user. Memory penting yang jarang dipakai (mis. alergi, password policy) tidak boleh hilang hanya karena jarang muncul: `importance ≥ 4` → tidak pernah turun di bawah `active`.
 
+**Pengecualian decay** *(rev 1)*: node `preference`, constraint (`importance ≥ 4`), dan node `person: @me` **tidak dikenai decay sama sekali**. Mereka diurutkan dengan `importance` dan selalu diprioritaskan masuk `core`. Decay hanya berlaku untuk `fact`, `concept`, `project`, `artifact`, dan associative edge — memory yang relevansinya memang bergantung konteks.
+
 ---
 
 ## 4. Penyimpanan (jawaban atas kekhawatiran utama)
@@ -184,6 +190,8 @@ Kalau yang disimpan adalah **event** (`use`, `co_use`, `confirm`, `contradict`) 
 │   └── <device-id>/2026-10.jsonl     #   → tidak pernah konflik saat merge
 ├── sessions/                         # EPISODIC — ringkasan per sesi
 │   └── 2026-10-10/<session-id>.md
+├── sources/                          # SUMBER EKSTERNAL immutable (rev 1)
+│   └── 2026-10-10-karpathy-llm-wiki.md
 ├── inbox/                            # kandidat yang menunggu persetujuan
 ├── skills/<name>/SKILL.md            # PROCEDURAL
 ├── snapshot/CORE.md                  # hasil generate, yang diinject ke harness
@@ -200,15 +208,20 @@ title: Desain matang dulu sebelum coding
 aliases: [design-first]
 importance: 4
 confidence: confirmed        # confirmed | inferred
-valid_from: 2026-10-10
+valid_from: 2026-10-10       # valid-time: kapan berlaku di dunia
 valid_to: null
+recorded_at: 2026-10-10T15:02:11Z   # belief-time: kapan brain mulai mempercayainya (rev 1)
+retracted_at: null                   # kapan brain berhenti mempercayainya
 source: { harness: claude-code, session: 01JA8Z... }
 edges:
   - { rel: about, to: 01JA8Z...rewire }
   - { rel: derived_from, to: 01JA8Y...session }
 ---
 User ingin memvalidasi desain (terutama storage) sebelum implementasi dimulai.
+Terkait: [[rewire]], [[event-sourcing]].
 ```
+
+Body boleh memakai wikilink `[[slug]]` *(rev 1)* sehingga brain bisa dibuka langsung di Obsidian (graph view, backlinks) tanpa tool tambahan. Edge resmi tetap di frontmatter; wikilink di body diperlakukan sebagai `related_to` berprior rendah.
 
 **Event (JSONL):**
 
@@ -255,6 +268,9 @@ SessionStart ──► generate snapshot/CORE.md (tier core + spreading dari nod
 During ────────► recall(query)   → search + spread → ringkasan + ID   (tidak menulis event)
                  get(id)          → detail node                        (event use w=0.5)
                  remember(text)   → tulis ke sessions/ + inbox/        (cepat, tanpa gate)
+                 PUSH (rev 1)     → hook PreToolUse / saat file dibuka: suntikkan 1–3 node
+                                    `feedback`/`decision` yang terkait tool/path itu
+                                    (pola "LESSON:"), karena agent sering lupa memanggil recall
      │
 PreCompact ────► flush: minta agent menyimpan hal penting sebelum konteks dipadatkan
      │
@@ -263,12 +279,21 @@ SessionEnd ────► KONSOLIDASI SESI (async, tidak memblok user)
                  2. Ekstrak kandidat: entitas, fakta, preferensi, keputusan
                  3. Entity resolution: cocokkan ke node yang ada (FTS + embedding + LLM judge)
                  4. Tentukan aksi per kandidat: CREATE | UPDATE | SUPERSEDE | CONTRADICT | IGNORE
+                    — kontradiksi diselesaikan DI SINI (write-time), bukan menunggu lint (rev 1):
+                      klaim lama ditutup (valid_to / retracted_at), tidak dihapus
                  5. Nilai node mana yang benar-benar dipakai → event use/co_use
                  6. Security scan (injection, exfiltration, unicode tersembunyi)
-                 7. Tulis file + event, git commit "session <id>"
+                 7. Validasi skema, tulis file + event, git commit "session <id>"
+                 8. Health report per tahap (rev 1) — tahap gagal = laporan, bukan gagal diam-diam
+     │
+Ingest (rev 1) ► `rewire ingest <url|file>`: simpan ke sources/ (immutable) → ringkas →
+                 update/buat node terkait (biasanya 5–15) → event `derived_from` (pola LLM Wiki)
      │
 Periodik ──────► "TIDUR" (mis. harian)
                  - hitung ulang activation & tier
+                 - LINT INKREMENTAL (rev 1): hanya node yang berubah sejak tidur terakhir + tetangga
+                   1 hop (lint penuh kuadratik terhadap jumlah node): kontradiksi, node yatim,
+                   tautan hilang, klaim basi
                  - gabung duplikat, pangkas associative edge lemah
                  - ringkas ulang node hub yang terlalu panjang
                  - usulan ontology baru → inbox/
@@ -284,6 +309,9 @@ Aturan aman: aksi destruktif (SUPERSEDE, merge node, ubah `importance` ≥ 4) da
 | Risiko | Dampak | Mitigasi |
 |---|---|---|
 | **Rich-get-richer** | Snapshot membeku pada memory yang sama | Eksposur = 0 (§3.4), cap per sesi, exploration |
+| **Decay menyembunyikan constraint penting** *(rev 1)* | Agent melanggar aturan yang jarang dibaca | P5 + pengecualian decay (§3.5); temuan proyek Link di thread LLM Wiki |
+| **Agent tidak memanggil recall** *(rev 1)* | Pelajaran yang sudah tertulis tidak dipakai | Push kontekstual via hook (§5) |
+| **Pipeline gagal diam-diam** *(rev 1)* | Brain berhenti belajar tanpa ketahuan | Health report per tahap |
 | **Duplikat node** (entity resolution gagal) | Activation terpecah, graph kotor | `aliases`, resolusi bertahap, merge saat "tidur" (event lama dipindah ke node pemenang) |
 | **Ekstraksi LLM salah** | Fakta keliru jadi permanen | `confidence: inferred` vs `confirmed`, inbox, riwayat git untuk revert |
 | **Fakta basi tapi sering dipakai** | Agent yakin pada info lama | P2: validity terpisah; `contradict` → review; `valid_to` |
@@ -304,6 +332,8 @@ Urutan yang disarankan (murah → mahal):
 2. **Fase 1 — Storage + index + CLI**: format file, event log, rebuild SQLite, `recall/get/remember`, generate `CORE.md`. Uji: hapus `.index/` → rebuild → hasil identik.
 3. **Fase 2 — Konsolidasi**: pipeline SessionEnd dengan replay transcript nyata. Metrik: tingkat duplikat, presisi ekstraksi, berapa kandidat yang masuk inbox.
 4. **Fase 3 — Adapter harness**: Claude Code (hooks + MCP), Codex, satu harness tanpa hook (AGENTS.md + CLI).
+
+**Ablation wajib** *(rev 1)*: setiap eval dijalankan dengan dan tanpa activation (`β = 0`). Activation dipertahankan hanya jika menang secara terukur.
 
 **Metrik keberhasilan** (dibuat sebagai eval set): recall@k fakta yang dibutuhkan suatu tugas, token snapshot, tingkat fakta basi yang diambil, tingkat duplikat, stabilitas snapshot antar sesi.
 
@@ -329,3 +359,4 @@ Urutan yang disarankan (murah → mahal):
 - A-MEM (memory bergaya Zettelkasten yang saling menautkan & berevolusi) — Xu et al. (2025)
 - Graphiti / Zep — temporal knowledge graph dengan invalidasi fakta
 - Hermes (konsolidasi setelah sesi, snapshot beku), OpenClaw (dreaming dengan gate) — lihat dokumen riset
+- Karpathy, *LLM Wiki* (ingest / query / lint, index + log) dan thread komunitasnya (Link, post-graph) — lihat [riset](../research/karpathy-llm-wiki.md)
