@@ -89,7 +89,7 @@ def apply_change(brain: Brain, change: dict, source: dict | None = None) -> Node
     text = change["text"].strip()
     title = (change.get("title") or text)[:160]
     scope = change.get("scope") or "global"
-    fields = {k: change[k] for k in ("importance", "confidence", "provenance") if change.get(k) is not None}
+    fields = {k: change[k] for k in ("importance", "confidence", "provenance", "keywords") if change.get(k)}
     edges = [{"rel": e["rel"], "to": e["to"]} for e in change.get("edges") or []
              if isinstance(e, dict) and e.get("rel") in schema.RELATIONS and e.get("to")]
     if scope.startswith("project:"):

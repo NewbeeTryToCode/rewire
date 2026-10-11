@@ -15,6 +15,13 @@ from .util import ulid
 
 PROTOCOL = "2025-06-18"
 
+# Recall is keyword search over memories written in the user's language(s); the
+# calling agent is an LLM and widens the query far better than a stemmer can.
+QUERY_GUIDE = (
+    "Write the query as keywords, not a sentence: the key terms plus their synonyms, and the same "
+    "terms in both English and Indonesian (memories may be written in either language)."
+)
+
 TOOLS = [
     {
         "name": "recall",
@@ -26,7 +33,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What you want to remember"},
+                "query": {"type": "string", "description": "What you want to remember. " + QUERY_GUIDE},
                 "k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
                 "scope": {"type": "string", "description": "'global', 'project:<slug>' or 'all'. "
                           "Default: global + the project of the current directory."},

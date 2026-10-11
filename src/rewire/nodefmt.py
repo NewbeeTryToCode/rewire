@@ -35,7 +35,7 @@ DERIVED = ("aliases", "tags", "status")  # regenerated on every write
 _STEM_ID = re.compile(r"-([0-9a-z]{8})$")
 _LINK = re.compile(r"^\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]$")
 ORDER = ("id", "type", "title", "status", "aliases", "tags", "scope", "importance", "confidence", "provenance",
-         "valid_from", "valid_to", "recorded_at", "retracted_at", "source")
+         "valid_from", "valid_to", "recorded_at", "retracted_at", "source", "keywords")
 
 
 def short(ref: str) -> str:
