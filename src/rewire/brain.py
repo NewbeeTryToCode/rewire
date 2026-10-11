@@ -13,11 +13,11 @@ import time
 from dataclasses import dataclass
 
 from . import config as config_mod
-from . import fm, schema
+from . import fm, nodefmt, schema
 from .util import atomic_write, now_iso, slugify, ulid
 
 GITATTRIBUTES = "events/**/*.jsonl merge=union\n"
-GITIGNORE = ".index/\n.state/\n"
+GITIGNORE = ".index/\n.state/\n.obsidian/workspace*.json\n"
 
 
 class Locked(Exception):
@@ -87,6 +87,10 @@ class Brain:
         atomic_write(os.path.join(root, ".gitignore"), GITIGNORE)
         brain = cls(root)
         brain._init_local_state(device)
+        from . import ops  # noqa: PLC0415 (ops imports brain)
+        from .index import Index
+
+        ops.write_home(brain, Index(brain))
         if not os.path.isdir(os.path.join(root, ".git")):
             subprocess.run(["git", "init", "-q", root], check=False, capture_output=True)
         brain.commit("init brain")
@@ -119,23 +123,33 @@ class Brain:
 
     # ---- nodes -----------------------------------------------------------
 
+    def read_node(self, path: str) -> Node | None:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                meta, body = nodefmt.parse(fh.read())
+        except OSError:
+            return None
+        return Node(meta, body, path) if meta.get("id") else None
+
+    def locate(self, short_id: str) -> str | None:
+        """Path of the node whose id ends with short_id (file names carry the suffix)."""
+        hits = glob.glob(self.path("nodes", "*", f"*-{short_id.lower()}.md"))
+        return hits[0] if len(hits) == 1 else None
+
     def iter_nodes(self):
         for path in sorted(glob.glob(self.path("nodes", "*", "*.md"))):
-            with open(path, encoding="utf-8") as fh:
-                meta, body = fm.loads(fh.read())
-            if meta.get("id"):
-                yield Node(meta, body, path)
+            node = self.read_node(path)
+            if node:
+                yield node
 
     def nodes(self) -> dict[str, Node]:
         return {n.id: n for n in self.iter_nodes()}
 
     def get_node(self, node_id: str) -> Node | None:
-        hits = glob.glob(self.path("nodes", "*", f"*-{node_id[-8:].lower()}.md"))
-        for path in hits:
-            with open(path, encoding="utf-8") as fh:
-                meta, body = fm.loads(fh.read())
-            if meta.get("id") == node_id:
-                return Node(meta, body, path)
+        for path in glob.glob(self.path("nodes", "*", f"*-{node_id[-8:].lower()}.md")):
+            node = self.read_node(path)
+            if node and node.id == node_id:
+                return node
         return self.nodes().get(node_id)
 
     def new_meta(self, type_: str, title: str, **fields) -> dict:
@@ -161,8 +175,9 @@ class Brain:
         if path is None:
             slug = slugify(meta["title"])
             path = self.path("nodes", meta["type"], f"{slug}-{meta['id'][-8:].lower()}.md")
-        atomic_write(path, fm.dumps(meta, body))
-        return Node(meta, body, path)
+        meta = {**meta, "edges": [{"rel": e["rel"], "to": nodefmt.short(e["to"])} for e in meta.get("edges") or []]}
+        atomic_write(path, nodefmt.render(meta, body, path, self.locate))
+        return Node(meta, body.strip() + "\n" if body.strip() else "", path)
 
     # ---- inbox -----------------------------------------------------------
 

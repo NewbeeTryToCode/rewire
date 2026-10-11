@@ -14,19 +14,25 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from . import activation, fm
+from . import activation, nodefmt
 from .util import parse_iso
 
-SCHEMA = "2"
+SCHEMA = "3"
+# How much activation flows along each relation during recall (spreading activation).
+REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
+              "contradicts": 0.4, "supersedes": 0.2}
+HOP_DECAY = 0.5
 ACT_MAX_AGE = 300  # seconds; activation ages in hours, so 5 minutes of staleness is invisible
 SCAN_MAX_AGE = 60  # seconds between full stat() scans when no directory changed
 
 DDL = """
 CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE nodes(id TEXT PRIMARY KEY, type TEXT, title TEXT, body TEXT, scope TEXT,
-                   importance INT, active INT, recorded_at TEXT, path TEXT, meta TEXT);
-CREATE TABLE edges(src TEXT, dst TEXT, rel TEXT);
+                   importance INT, active INT, recorded_at TEXT, path TEXT, meta TEXT, short TEXT);
+CREATE INDEX nodes_short ON nodes(short);
+CREATE TABLE edges(src TEXT, dst TEXT, rel TEXT);  -- src: full id, dst: 8-char id suffix
 CREATE INDEX edges_src ON edges(src);
+CREATE INDEX edges_dst ON edges(dst);
 CREATE TABLE act(id TEXT PRIMARY KEY, b REAL);
 CREATE TABLE files(path TEXT PRIMARY KEY, mtime_ns INT, size INT, id TEXT);
 CREATE TABLE evfiles(path TEXT PRIMARY KEY, offset INT, tail TEXT);
@@ -154,7 +160,7 @@ class Index:
             if old and old["mtime_ns"] == mtime and old["size"] == size:
                 continue
             with open(path, encoding="utf-8") as fh:
-                meta, body = fm.loads(fh.read())
+                meta, body = nodefmt.parse(fh.read())
             if old and old["id"]:
                 self._delete_node(db, old["id"])
             node_id = meta.get("id")
@@ -163,10 +169,10 @@ class Index:
                     self._delete_node(db, node_id)
                 active = int(not meta.get("retracted_at") and not meta.get("valid_to"))
                 cur = db.execute(
-                    "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO nodes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (node_id, meta.get("type"), meta.get("title", ""), body, meta.get("scope", "global"),
                      meta.get("importance", 3), active, meta.get("recorded_at", ""), path,
-                     json.dumps(meta, ensure_ascii=False)),
+                     json.dumps(meta, ensure_ascii=False), node_id[-8:].lower()),
                 )
                 db.execute("INSERT INTO fts(rowid, id, title, body) VALUES (?,?,?,?)",
                            (cur.lastrowid, node_id, meta.get("title", ""), body))
@@ -258,15 +264,28 @@ class Index:
             params,
         ).fetchall()
 
+    def neighbors(self, node_id: str) -> list[tuple[str, str]]:
+        """(neighbor full id, relation) in both directions."""
+        short = node_id[-8:].lower()
+        out = self.db.execute(
+            "SELECT n.id, e.rel FROM edges e JOIN nodes n ON n.short = e.dst WHERE e.src = ? "
+            "UNION ALL SELECT e.src, e.rel FROM edges e WHERE e.dst = ?", (node_id, short)).fetchall()
+        return [(r[0], r[1]) for r in out if r[0] != node_id]
+
     def search(self, query: str, scopes: list[str] | None = None, k: int = 8,
-               beta: float | None = None, include_inactive: bool = False) -> list[dict]:
+               beta: float | None = None, include_inactive: bool = False, spread: bool = True) -> list[dict]:
+        """Full-text seeds, then spreading activation over the memory graph.
+
+        A memory that shares no words with the query can still be recalled when it
+        is linked to one that does (fan effect: hubs with many links spread less).
+        """
         terms = [t for t in re.findall(r"\w+", query.lower()) if len(t) > 1]
         if not terms:
             return []
         match = " OR ".join(f'"{t}"' for t in terms)
         sql = (
             "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0) AS rank "
-            "FROM fts JOIN nodes ON nodes.id = fts.id LEFT JOIN act ON act.id = nodes.id "
+            "FROM fts JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id "
             "WHERE fts MATCH ?"
         )
         params: list = [match]
@@ -284,11 +303,50 @@ class Index:
         best = min(r["rank"] for r in rows)  # bm25: more negative is better
         worst = max(r["rank"] for r in rows)
         span = (worst - best) or 1.0
+        rel = {r["id"]: 1.0 - (r["rank"] - best) / span * 0.9 for r in rows}  # 0.1..1.0
+        info = {r["id"]: r for r in rows}
+        energy = dict(rel)
+        via: dict[str, str] = {}
+        if spread:
+            frontier = sorted(rel.items(), key=lambda x: -x[1])[:10]
+            for hop in (1, 2):
+                nxt: dict[str, float] = {}
+                for src, amount in frontier:
+                    links = self.neighbors(src)
+                    if not links:
+                        continue
+                    fan = 1.0 + math.log(1 + len(links))
+                    for dst, relation in links:
+                        gain = amount * REL_WEIGHT.get(relation, 0.3) * HOP_DECAY ** hop / fan
+                        if gain < 0.02:
+                            continue
+                        nxt[dst] = nxt.get(dst, 0.0) + gain
+                        if dst not in rel and dst not in via:
+                            via[dst] = f"{relation} ↔ {info[src]['title'] if src in info else src[-8:].lower()}"
+                for dst, gain in nxt.items():
+                    energy[dst] = energy.get(dst, 0.0) + gain
+                frontier = sorted(nxt.items(), key=lambda x: -x[1])[:10]
+            missing = [i for i in energy if i not in info]
+            for chunk in range(0, len(missing), 500):
+                part = missing[chunk:chunk + 500]
+                marks = ",".join("?" * len(part))
+                cond = "" if include_inactive else " AND nodes.active = 1"
+                if scopes:
+                    cond += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
+                for r in self.db.execute(
+                        f"SELECT nodes.*, COALESCE(act.b,-20) AS b FROM nodes LEFT JOIN act USING(id) "
+                        f"WHERE id IN ({marks}){cond}", part + (scopes or [])):
+                    info[r["id"]] = r
         out = []
-        for r in rows:
-            rel = 1.0 - (r["rank"] - best) / span * 0.9  # 0.1..1.0
-            score = rel * (1.0 + beta * activation.squash(r["b"]))
-            out.append({"id": r["id"], "type": r["type"], "title": r["title"], "scope": r["scope"],
-                        "snippet": r["body"][:160], "score": round(score, 4), "b": round(r["b"], 3)})
+        for node_id, e in energy.items():
+            r = info.get(node_id)
+            if r is None or (r["type"] == "project" and node_id not in rel):
+                continue  # out of scope / inactive / hubs reached only through links
+            score = e * (1.0 + beta * activation.squash(r["b"]))
+            item = {"id": node_id, "type": r["type"], "title": r["title"], "scope": r["scope"],
+                    "snippet": r["body"][:160], "score": round(score, 4), "b": round(r["b"], 3)}
+            if node_id in via:
+                item["via"] = via[node_id]
+            out.append(item)
         out.sort(key=lambda x: x["score"], reverse=True)
         return out[:k]

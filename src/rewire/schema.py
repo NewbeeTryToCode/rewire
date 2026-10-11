@@ -1,9 +1,9 @@
-"""MVP ontology: 7 node types, 5 relations (docs/design/mvp-spec.md §3)."""
+"""Ontology: 7 node types, 6 relations (docs/design/mvp-spec.md §3; depends_on added in iteration 3)."""
 
 CLAIM_TYPES = ("constraint", "preference", "fact", "decision")
 HUB_TYPES = ("project", "person", "concept")
 TYPES = CLAIM_TYPES + HUB_TYPES
-RELATIONS = ("about", "part_of", "supersedes", "contradicts", "related_to")
+RELATIONS = ("about", "part_of", "depends_on", "related_to", "supersedes", "contradicts")
 DECAY_EXEMPT = ("constraint", "preference")
 CONFIDENCE = ("explicit", "inferred")
 PROVENANCE = ("user", "assistant", "tool")

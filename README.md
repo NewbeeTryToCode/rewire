@@ -42,12 +42,22 @@ rewire review approve <id|all>
 rewire consolidate --pending      # proses transcript yang tertunda
 rewire undo <session-id>          # batalkan hasil konsolidasi satu sesi
 rewire doctor                     # cek kesehatan brain
+rewire upgrade                    # tulis ulang memory ke format terbaru
+rewire remote set <url>           # sinkronkan brain lewat repo git PRIVAT
+rewire sync                       # pull + push manual
 ```
+
+## Membaca brain sebagai manusia
+
+- Buka `~/brain/README.md` (di GitHub atau editor apa pun): beranda yang selalu terbarui berisi aturan, preferensi, proyek, memory terbaru, sesi terakhir, dan usulan yang menunggu review.
+- Buka folder `~/brain` sebagai vault di **Obsidian**: setiap memory adalah satu catatan, relasi muncul di graph view dan backlinks, dan properti seperti `status`, `type`, `scope` bisa difilter.
+- Setiap file memory bisa diedit langsung; index menyesuaikan sendiri.
 
 ## Struktur brain
 
 ```
 ~/brain/
+├── README.md                     # beranda untuk manusia (dibuat otomatis)
 ├── brain.toml                    # parameter, budget, provider, peta proyek
 ├── nodes/<type>/<slug>-<id>.md   # memory (constraint, preference, fact, decision, project, person, concept)
 ├── events/<device>/YYYY-MM.jsonl # log pemakaian (merge=union, tidak pernah konflik)

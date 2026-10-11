@@ -33,14 +33,18 @@ TYPES = ["fact"] * 5 + ["decision"] * 2 + ["preference", "concept", "constraint"
 def build(n: int, root: str) -> Brain:
     rng = random.Random(n)
     brain = Brain.init(root, device="bench")
-    events = []
+    events, ids = [], []
     for i in range(n):
         t = TYPES[i % len(TYPES)]
         words = " ".join(rng.choice(WORDS) for _ in range(12))
         scope = "global" if i % 3 else f"project:p{i % 20}"
         meta = brain.new_meta(t, f"{t} {i} {words[:60]}", scope=scope, importance=rng.randint(1, 5),
                               confidence="explicit", provenance="user")
+        if ids:  # two relations per node, so recall exercises spreading activation
+            meta["edges"] = [{"rel": rng.choice(["related_to", "depends_on", "part_of"]), "to": rng.choice(ids)}
+                             for _ in range(2)]
         brain.write_node(meta, f"{words}. Detail number {i}.")
+        ids.append(meta["id"])
         for _ in range(10):
             day = rng.randint(1, 28)
             events.append({"ev": "use", "node": meta["id"], "w": 1.0, "session": f"s{rng.randint(0, 5000)}",
