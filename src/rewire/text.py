@@ -79,7 +79,7 @@ def time_window(query: str) -> tuple[str, str] | None:
     """Explicit time in the query -> (start, end) ISO dates, e.g. 'in July 2023' -> July 2023."""
     q = query.lower()
     m = re.search(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b", q)
-    if m:
+    if m and 1 <= int(m.group(2)) <= 12:  # not a range like "2022-23"
         y, mo, d = int(m.group(1)), int(m.group(2)), m.group(3)
         if d:
             return _days(y, mo, int(d), 3)
