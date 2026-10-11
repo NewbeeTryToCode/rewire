@@ -73,7 +73,9 @@ def install_claude_code(write: bool, settings_path: str | None = None) -> str:
         if os.path.exists(settings_path):
             with open(settings_path, encoding="utf-8") as fh:
                 current = json.load(fh)
-            shutil.copy(settings_path, settings_path + ".bak-rewire")
+            # Keep the first backup: it holds the user's settings from before rewire.
+            if not os.path.exists(settings_path + ".bak-rewire"):
+                shutil.copy(settings_path, settings_path + ".bak-rewire")
         hooks = current.setdefault("hooks", {})
         for event, entries in wanted["hooks"].items():
             existing = hooks.setdefault(event, [])
