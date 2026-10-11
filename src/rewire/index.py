@@ -14,10 +14,10 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from . import activation, nodefmt, text
+from . import activation, nodefmt, semantic, text
 from .util import parse_iso
 
-SCHEMA = "5"
+SCHEMA = "6"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -43,6 +43,8 @@ CREATE TABLE epfiles(path TEXT PRIMARY KEY, mtime_ns INT, size INT);
 CREATE TABLE episodes(path TEXT, date TEXT, text TEXT);
 CREATE INDEX episodes_path ON episodes(path);
 CREATE VIRTUAL TABLE fts_ep USING fts5(text, tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE vec(id TEXT PRIMARY KEY, v BLOB);
+CREATE TABLE epvec(rid INTEGER PRIMARY KEY, v BLOB);
 """
 
 
@@ -55,6 +57,8 @@ class Index:
         self.brain = brain
         self.path = brain.path(".index", "brain.db")
         self._db = None
+        self._mat = None  # cached (ids, scopes, active, matrix) for semantic search
+        self._epmat = None
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -81,6 +85,7 @@ class Index:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(DDL)
             db.execute("INSERT INTO meta VALUES ('schema', ?)", (SCHEMA,))
+            db.execute("INSERT INTO meta VALUES ('semantic', ?)", (str(int(semantic.available())),))
         return db
 
     def close(self):
@@ -103,11 +108,18 @@ class Index:
         if self._db is None:
             self._db = self._connect()
         db = self._db
+        sem = db.execute("SELECT v FROM meta WHERE k='semantic'").fetchone()
+        if sem and sem[0] != str(int(semantic.available())):  # extra installed/removed since the build
+            self.rebuild()
+            return
         db.execute("BEGIN IMMEDIATE")  # serialize concurrent refreshes (hook + MCP + consolidation)
         try:
             changed = self._sync_nodes(db)
             touched = self._sync_events(db)
-            self._sync_episodes(db)
+            ep_changed = self._sync_episodes(db)
+            if changed or ep_changed:
+                self._embed_pending(db)
+                self._mat = self._epmat = None
             row = db.execute("SELECT v FROM meta WHERE k='act_at'").fetchone()
             stale = not row or time.time() - float(row[0]) > max_age
             if stale:
@@ -132,6 +144,7 @@ class Index:
         db.execute("DELETE FROM nodes WHERE id=?", (node_id,))
         db.execute("DELETE FROM edges WHERE src=?", (node_id,))
         db.execute("DELETE FROM act WHERE id=?", (node_id,))
+        db.execute("DELETE FROM vec WHERE id=?", (node_id,))
 
     def _sync_nodes(self, db) -> set[str]:
         root = self.brain.path("nodes")
@@ -199,13 +212,16 @@ class Index:
             st = os.stat(path)
             seen[path] = (st.st_mtime_ns, st.st_size)
         known = {r["path"]: r for r in db.execute("SELECT * FROM epfiles")}
+        changed = False
         for path in set(known) - set(seen):
             self._delete_episodes(db, path)
+            changed = True
         for path, (mtime, size) in seen.items():
             old = known.get(path)
             if old and old["mtime_ns"] == mtime and old["size"] == size:
                 continue
             self._delete_episodes(db, path)
+            changed = True
             with open(path, encoding="utf-8") as fh:
                 content = fh.read()
             for part in content.split("\n---\n"):  # one file may hold several consolidation runs
@@ -220,24 +236,73 @@ class Index:
                         cur = db.execute("INSERT INTO episodes VALUES (?,?,?)", (path, date, chunk))
                         db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, chunk))
             db.execute("INSERT OR REPLACE INTO epfiles VALUES (?,?,?)", (path, mtime, size))
+        return changed
+
+    def _embed_pending(self, db) -> None:
+        """Vectors for nodes/episodes that have none yet (derived data, like everything here)."""
+        if not semantic.available():
+            return
+        rows = db.execute("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec)").fetchall()
+        for start in range(0, len(rows), 512):
+            part = rows[start:start + 512]
+            texts = []
+            for r in part:
+                kw = json.loads(r["meta"]).get("keywords") or []
+                texts.append(f"{r['title']}. {r['body']} {' '.join(kw) if isinstance(kw, list) else ''}")
+            vecs = semantic.embed(texts)
+            db.executemany("INSERT OR REPLACE INTO vec VALUES (?,?)",
+                           [(r["id"], v.tobytes()) for r, v in zip(part, vecs)])
+        eps = db.execute("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec)").fetchall()
+        for start in range(0, len(eps), 512):
+            part = eps[start:start + 512]
+            vecs = semantic.embed([r["text"] for r in part])
+            db.executemany("INSERT OR REPLACE INTO epvec VALUES (?,?)",
+                           [(r["rowid"], v.tobytes()) for r, v in zip(part, vecs)])
 
     def _delete_episodes(self, db, path: str) -> None:
         for (rowid,) in db.execute("SELECT rowid FROM episodes WHERE path=?", (path,)).fetchall():
             db.execute("DELETE FROM fts_ep WHERE rowid=?", (rowid,))
+            db.execute("DELETE FROM epvec WHERE rid=?", (rowid,))
         db.execute("DELETE FROM episodes WHERE path=?", (path,))
         db.execute("DELETE FROM epfiles WHERE path=?", (path,))
 
     def search_episodes(self, query: str, k: int = 5) -> list[dict]:
-        """Raw transcript excerpts (episodic memory) matching the query, best first."""
+        """Raw transcript excerpts (episodic memory), hybrid-ranked like memories."""
+        limit = max(k * 4, 20)
         match = text.match_expression(query)
-        if not match:
-            return []
-        rows = self.db.execute(
-            "SELECT episodes.rowid AS rid, episodes.path, episodes.date, episodes.text, bm25(fts_ep) AS rank "
-            "FROM fts_ep JOIN episodes ON episodes.rowid = fts_ep.rowid WHERE fts_ep MATCH ? "
-            "ORDER BY rank LIMIT ?", (match, k)).fetchall()
-        return [{"id": f"ep:{r['rid']}", "type": "episode", "date": r["date"],
-                 "session": os.path.relpath(r["path"], self.brain.root), "text": r["text"]} for r in rows]
+        fts = []
+        if match:
+            fts = [r[0] for r in self.db.execute(
+                "SELECT rowid FROM fts_ep WHERE fts_ep MATCH ? ORDER BY bm25(fts_ep) LIMIT ?", (match, limit))]
+        sem = []
+        if semantic.available():
+            if self._epmat is None:
+                import numpy as np
+
+                rows = self.db.execute("SELECT rid, v FROM epvec").fetchall()
+                self._epmat = ([r["rid"] for r in rows],
+                               np.frombuffer(b"".join(r["v"] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+                               if rows else None)
+            rids, mat = self._epmat
+            if mat is not None:
+                sims = mat @ semantic.embed([query])[0]
+                sem = [rids[i] for i in sims.argsort()[::-1][:limit]]
+        fused: dict[int, float] = {}
+        for ranks in (fts, sem):
+            for rank, rid in enumerate(ranks):
+                fused[rid] = fused.get(rid, 0.0) + 1.0 / (self.RRF_K + rank + 1)
+        window = text.time_window(query)
+        rows = {r["rid"]: r for r in self.db.execute(
+            f"SELECT rowid AS rid, path, date, text FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
+            list(fused))} if fused else {}
+        if window:
+            for rid, r in rows.items():
+                if window[0] <= (r["date"] or "")[:10] <= window[1]:
+                    fused[rid] += 1.0 / self.RRF_K
+        best = sorted(fused, key=lambda x: -fused[x])[:k]
+        return [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
+                 "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
+                for rid in best if rid in rows]
 
     def _sync_events(self, db) -> set[str]:
         touched = set()
@@ -328,38 +393,101 @@ class Index:
             "UNION ALL SELECT e.src, e.rel FROM edges e WHERE e.dst = ?", (node_id, short)).fetchall()
         return [(r[0], r[1]) for r in out if r[0] != node_id]
 
-    def search(self, query: str, scopes: list[str] | None = None, k: int = 8,
-               beta: float | None = None, include_inactive: bool = False, spread: bool = True) -> list[dict]:
-        """Full-text seeds, then spreading activation over the memory graph.
+    # ---- hybrid retrieval ------------------------------------------------
 
-        A memory that shares no words with the query can still be recalled when it
-        is linked to one that does (fan effect: hubs with many links spread less).
+    RRF_K = 60  # reciprocal-rank-fusion constant (standard value)
+    # The bundled static embeddings are much weaker than BM25 + keywords on their own (R@5 57% vs 90%),
+    # so they only add a small bonus; tuned in experiments/retrieval, validated on LoCoMo.
+    SEM_WEIGHT = 0.15
+    SEM_TOP = 10
+
+    def _matrix(self):
+        """(ids, scopes, matrix) of node vectors, cached until the index changes."""
+        if self._mat is None:
+            import numpy as np
+
+            rows = self.db.execute("SELECT nodes.id, nodes.scope, vec.v FROM vec JOIN nodes USING(id)").fetchall()
+            if not rows:
+                self._mat = ([], [], None)
+            else:
+                mat = np.frombuffer(b"".join(r["v"] for r in rows), dtype=np.float32).reshape(len(rows), -1)
+                self._mat = ([r["id"] for r in rows], [r["scope"] for r in rows], mat)
+        return self._mat
+
+    def _semantic_ranks(self, query: str, scopes, limit: int) -> list[str]:
+        if not semantic.available():
+            return []
+        ids, node_scopes, mat = self._matrix()
+        if mat is None:
+            return []
+        qv = semantic.embed([query])[0]
+        sims = mat @ qv
+        order = sims.argsort()[::-1]
+        allowed = set(scopes) if scopes else None
+        out = []
+        for i in order:
+            if allowed is None or node_scopes[i] in allowed:
+                out.append(ids[i])
+                if len(out) >= limit:
+                    break
+        return out
+
+    def search(self, query: str, scopes: list[str] | None = None, k: int = 8, beta: float | None = None,
+               include_inactive: bool = False, spread: bool = True, history: bool | None = None) -> list[dict]:
+        """Hybrid recall: BM25 + semantic vectors (if installed), fused by rank, then spread over the graph.
+
+        - Query time intent ("in July 2023") boosts memories dated in that window.
+        - Superseded memories hand their activation to their replacement; they are returned
+          themselves (marked "superseded") only for history questions ("used to", "first", "dulu").
         """
+        limit = max(k * 4, 20)
         match = text.match_expression(query)
-        if not match:
+        fts_ids: list[str] = []
+        info: dict = {}
+        if match:
+            sql = ("SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0, 2.0) AS rank FROM fts "
+                   "JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id WHERE fts MATCH ?")
+            params: list = [match]
+            if scopes:
+                sql += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
+                params += scopes
+            sql += " ORDER BY bm25(fts, 3.0, 1.0, 2.0) LIMIT ?"
+            params.append(limit)
+            for r in self.db.execute(sql, params):
+                fts_ids.append(r["id"])
+                info[r["id"]] = r
+        sem_ids = self._semantic_ranks(query, scopes, self.SEM_TOP) if self.SEM_WEIGHT > 0 else []
+        fused: dict[str, float] = {i: 0.0 for i in fts_ids + sem_ids}
+        window = text.time_window(query)
+        if window:  # dated memories inside the asked window join the candidates
+            for r in self.db.execute(
+                    "SELECT nodes.*, COALESCE(act.b,-20) AS b FROM nodes LEFT JOIN act USING(id) "
+                    "WHERE json_extract(meta, '$.valid_from') BETWEEN ? AND ? LIMIT 200", window):
+                if not scopes or r["scope"] in scopes:
+                    info.setdefault(r["id"], r)
+                    fused.setdefault(r["id"], 0.0)
+        if not fused:
             return []
-        # Inactive (superseded) memories are searched too: they never appear in the
-        # results, but they hand their activation to the memory that replaced them.
-        sql = (
-            "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0, 2.0) AS rank "
-            "FROM fts JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id "
-            "WHERE fts MATCH ?"
-        )
-        params: list = [match]
-        if scopes:
-            sql += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
-            params += scopes
-        sql += " ORDER BY rank LIMIT ?"
-        params.append(max(k * 4, 20))
-        rows = self.db.execute(sql, params).fetchall()
-        if not rows:
-            return []
-        beta = self.brain.config.recall_beta if beta is None else beta
-        best = min(r["rank"] for r in rows)  # bm25: more negative is better
-        worst = max(r["rank"] for r in rows)
+        self._fetch(info, [i for i in fused if i not in info])
+        # BM25 keeps its magnitudes (they carry real signal); the semantic ranker adds a bonus
+        # that decays with its rank. Plain RRF flattened BM25 and hurt MRR (experiments/retrieval).
+        ranks = {i: info[i]["rank"] for i in fts_ids}
+        best, worst = (min(ranks.values()), max(ranks.values())) if ranks else (0.0, 0.0)
         span = (worst - best) or 1.0
-        rel = {r["id"]: 1.0 - (r["rank"] - best) / span * 0.9 for r in rows}  # 0.1..1.0
-        info = {r["id"]: r for r in rows}
+        rel = {i: (1.0 - (ranks[i] - best) / span * 0.9) if i in ranks else 0.0 for i in fused}
+        for pos, i in enumerate(sem_ids):
+            rel[i] += self.SEM_WEIGHT * (1.0 - pos / max(len(sem_ids), 1))
+        top = max(rel.values()) or 1.0
+        rel = {i: max(0.1, v / top) for i, v in rel.items()}
+        if window:
+            for i in rel:
+                vf = json.loads(info[i]["meta"]).get("valid_from") or ""
+                if window[0] <= vf[:10] <= window[1]:
+                    rel[i] += 0.5
+            top = max(rel.values())
+            rel = {i: v / top for i, v in rel.items()}
+        history = text.history_intent(query) if history is None else history
+        beta = self.brain.config.recall_beta if beta is None else beta
         energy = dict(rel)
         via: dict[str, str] = {}
         if spread:
@@ -380,35 +508,37 @@ class Index:
                         if gain < 0.02:
                             continue
                         nxt[dst] = nxt.get(dst, 0.0) + gain
-                        if (dst not in rel or not info[dst]["active"]) and dst not in via:
+                        if dst not in rel and dst not in via:
                             via[dst] = (f"replaces outdated: {info[src]['title']}" if src_inactive else
                                         f"{relation} ↔ {info[src]['title'] if src in info else src[-8:].lower()}")
                 for dst, gain in nxt.items():
                     energy[dst] = energy.get(dst, 0.0) + gain
                 frontier = sorted(nxt.items(), key=lambda x: -x[1])[:10]
-            missing = [i for i in energy if i not in info]
-            for chunk in range(0, len(missing), 500):
-                part = missing[chunk:chunk + 500]
-                marks = ",".join("?" * len(part))
-                cond = ""
-                if scopes:
-                    cond += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
-                for r in self.db.execute(
-                        f"SELECT nodes.*, COALESCE(act.b,-20) AS b FROM nodes LEFT JOIN act USING(id) "
-                        f"WHERE id IN ({marks}){cond}", part + (scopes or [])):
-                    info[r["id"]] = r
+            self._fetch(info, [i for i in energy if i not in info], scopes)
         out = []
         for node_id, e in energy.items():
             r = info.get(node_id)
             if r is None or (r["type"] == "project" and node_id not in rel):
                 continue  # out of scope / hubs reached only through links
-            if not r["active"] and not include_inactive:
+            status = "active" if r["active"] else "superseded"
+            if status != "active" and not (include_inactive or history):
                 continue
-            score = e * (1.0 + beta * activation.squash(r["b"]))
+            score = e * (1.0 + beta * activation.squash(r["b"])) * (1.0 if status == "active" else 0.6)
+            meta = json.loads(r["meta"])
             item = {"id": node_id, "type": r["type"], "title": r["title"], "scope": r["scope"],
-                    "snippet": r["body"][:160], "score": round(score, 4), "b": round(r["b"], 3)}
+                    "snippet": r["body"][:160], "score": round(score, 4), "b": round(r["b"], 3),
+                    "date": (meta.get("valid_from") or "")[:10], "status": status}
             if node_id in via:
                 item["via"] = via[node_id]
             out.append(item)
         out.sort(key=lambda x: x["score"], reverse=True)
         return out[:k]
+
+    def _fetch(self, info: dict, ids: list[str], scopes=None) -> None:
+        for chunk in range(0, len(ids), 500):
+            part = ids[chunk:chunk + 500]
+            cond = f" AND nodes.scope IN ({','.join('?' * len(scopes))})" if scopes else ""
+            for r in self.db.execute(
+                    f"SELECT nodes.*, COALESCE(act.b,-20) AS b FROM nodes LEFT JOIN act USING(id) "
+                    f"WHERE id IN ({','.join('?' * len(part))}){cond}", part + (scopes or [])):
+                info[r["id"]] = r

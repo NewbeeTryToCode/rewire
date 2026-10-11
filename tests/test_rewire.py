@@ -11,6 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+os.environ.setdefault("REWIRE_SEMANTIC", "0")  # deterministic keyword ranking; semantic has its own test
 
 from rewire import activation, fm, integrations, nodefmt, ops, schema, security, snapshot  # noqa: E402
 from rewire import sync as sync_mod  # noqa: E402
@@ -490,6 +491,53 @@ class TestHumanReadable(BrainCase):
         mtime = os.stat(path).st_mtime_ns
         ops.write_home(self.brain, self.index)  # deterministic: unchanged memory -> untouched file
         self.assertEqual(os.stat(path).st_mtime_ns, mtime)
+
+
+class TestSemantic(BrainCase):
+    def setUp(self):
+        os.environ["REWIRE_SEMANTIC"] = "1"
+        from rewire import semantic
+        semantic.model.cache_clear()
+        if not semantic.available():
+            self.skipTest("rewire[semantic] not installed")
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        os.environ["REWIRE_SEMANTIC"] = "0"
+        from rewire import semantic
+        semantic.model.cache_clear()
+
+    def test_paraphrase_found_without_shared_words(self):
+        self.add("fact", "Evan lost his keys for half an hour")
+        self.add("fact", "Gina opened an online clothing store")
+        self.add("fact", "The deploy pipeline runs on GitHub Actions")
+        hits = self.index.search("Which shop did Gina launch on the internet", scopes=["global"])
+        self.assertEqual(hits[0]["title"], "Gina opened an online clothing store")
+        hits = self.index.search("misplaced", scopes=["global"])  # no keyword match at all
+        self.assertEqual(hits[0]["title"], "Evan lost his keys for half an hour")
+
+
+class TestTimeAndHistory(BrainCase):
+    def test_time_window_boosts_memories_from_that_month(self):
+        self.add("fact", "Melanie painted a lake", valid_from="2023-05-02")
+        self.add("fact", "Melanie painted a sunset", valid_from="2023-07-10")
+        hits = self.index.search("What did Melanie paint in July 2023?", scopes=["global"])
+        self.assertEqual(hits[0]["title"], "Melanie painted a sunset")
+        self.assertEqual(hits[0]["date"], "2023-07-10")
+
+    def test_superseded_only_for_history_questions(self):
+        old = self.add("fact", "atlas runs on Postgres 12")
+        ops.apply_change(self.brain, {"action": "SUPERSEDE", "target": old.id, "type": "fact",
+                                      "text": "atlas runs on Postgres 15", "confidence": "explicit",
+                                      "provenance": "user"})
+        self.index.refresh()
+        now = self.index.search("which postgres does atlas run", scopes=["global"])
+        self.assertEqual([h["title"] for h in now], ["atlas runs on Postgres 15"])
+        past = self.index.search("which postgres did atlas use before", scopes=["global"])
+        titles = {h["title"]: h["status"] for h in past}
+        self.assertEqual(titles["atlas runs on Postgres 12"], "superseded")
+        self.assertEqual(past[0]["title"], "atlas runs on Postgres 15")
 
 
 class TestGraphRecall(BrainCase):
