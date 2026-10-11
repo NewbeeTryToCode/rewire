@@ -26,6 +26,9 @@ def _print(data, as_json: bool):
         for item in data:
             if "error" in item:
                 print(f"! {item['ref']}: {item['error']}")
+            elif item.get("type") == "episode":
+                excerpt = " / ".join(item["text"].splitlines())[:240]
+                print(f"  ~ {item['date']} {item['session']}: {excerpt}")
             elif "body" in item:
                 print(f"[{item['id'][-8:].lower()}] {item['type']} · {item['scope']} · importance {item['importance']}")
                 print(f"  {item['title']}\n  {item['body']}\n")
@@ -59,7 +62,8 @@ def cmd_recall(args):
     brain = _brain(args)
     index = Index(brain)
     index.refresh()
-    hits = ops.recall(brain, index, " ".join(args.query), k=args.k, cwd=os.getcwd(), scope=args.scope)
+    hits = ops.recall(brain, index, " ".join(args.query), k=args.k, cwd=os.getcwd(), scope=args.scope,
+                      episodes=args.episodes)
     _print(hits, args.json)
 
 
@@ -254,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("recall", help="search memory")
     s.add_argument("query", nargs="+")
     s.add_argument("-k", type=int, default=8)
+    s.add_argument("--episodes", type=int, default=3, help="raw transcript excerpts to include (0 = none)")
     s.add_argument("--scope", help="global | project:<slug> | all")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_recall)

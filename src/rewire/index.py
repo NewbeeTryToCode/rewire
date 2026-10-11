@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from . import activation, nodefmt, text
 from .util import parse_iso
 
-SCHEMA = "4"
+SCHEMA = "5"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -39,6 +39,10 @@ CREATE TABLE evfiles(path TEXT PRIMARY KEY, offset INT, tail TEXT);
 CREATE TABLE uses(node TEXT, key TEXT, t TEXT, w REAL, PRIMARY KEY(node, key));
 CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, title, body, keywords,
                                   tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE epfiles(path TEXT PRIMARY KEY, mtime_ns INT, size INT);
+CREATE TABLE episodes(path TEXT, date TEXT, text TEXT);
+CREATE INDEX episodes_path ON episodes(path);
+CREATE VIRTUAL TABLE fts_ep USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 """
 
 
@@ -103,6 +107,7 @@ class Index:
         try:
             changed = self._sync_nodes(db)
             touched = self._sync_events(db)
+            self._sync_episodes(db)
             row = db.execute("SELECT v FROM meta WHERE k='act_at'").fetchone()
             stale = not row or time.time() - float(row[0]) > max_age
             if stale:
@@ -185,6 +190,54 @@ class Index:
                 changed.add(node_id)
             db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", (path, mtime, size, node_id))
         return changed
+
+    EP_WINDOW, EP_STEP = 6, 4  # turns per episode chunk, and stride (chunks overlap by 2 turns)
+
+    def _sync_episodes(self, db) -> None:
+        seen = {}
+        for path in glob.glob(self.brain.path("sessions", "*", "*.md")):
+            st = os.stat(path)
+            seen[path] = (st.st_mtime_ns, st.st_size)
+        known = {r["path"]: r for r in db.execute("SELECT * FROM epfiles")}
+        for path in set(known) - set(seen):
+            self._delete_episodes(db, path)
+        for path, (mtime, size) in seen.items():
+            old = known.get(path)
+            if old and old["mtime_ns"] == mtime and old["size"] == size:
+                continue
+            self._delete_episodes(db, path)
+            with open(path, encoding="utf-8") as fh:
+                content = fh.read()
+            for part in content.split("\n---\n"):  # one file may hold several consolidation runs
+                m = re.search(r"(?m)^- date: (\S+)", part)
+                date = m.group(1) if m else os.path.basename(os.path.dirname(path))
+                if "\n## Transcript\n" not in part:
+                    continue
+                lines = [l for l in part.split("\n## Transcript\n", 1)[1].splitlines() if l.startswith("[")]
+                for start in range(0, max(len(lines) - 2, 1), self.EP_STEP):
+                    chunk = "\n".join(lines[start:start + self.EP_WINDOW])
+                    if chunk:
+                        cur = db.execute("INSERT INTO episodes VALUES (?,?,?)", (path, date, chunk))
+                        db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, chunk))
+            db.execute("INSERT OR REPLACE INTO epfiles VALUES (?,?,?)", (path, mtime, size))
+
+    def _delete_episodes(self, db, path: str) -> None:
+        for (rowid,) in db.execute("SELECT rowid FROM episodes WHERE path=?", (path,)).fetchall():
+            db.execute("DELETE FROM fts_ep WHERE rowid=?", (rowid,))
+        db.execute("DELETE FROM episodes WHERE path=?", (path,))
+        db.execute("DELETE FROM epfiles WHERE path=?", (path,))
+
+    def search_episodes(self, query: str, k: int = 5) -> list[dict]:
+        """Raw transcript excerpts (episodic memory) matching the query, best first."""
+        match = text.match_expression(query)
+        if not match:
+            return []
+        rows = self.db.execute(
+            "SELECT episodes.rowid AS rid, episodes.path, episodes.date, episodes.text, bm25(fts_ep) AS rank "
+            "FROM fts_ep JOIN episodes ON episodes.rowid = fts_ep.rowid WHERE fts_ep MATCH ? "
+            "ORDER BY rank LIMIT ?", (match, k)).fetchall()
+        return [{"id": f"ep:{r['rid']}", "type": "episode", "date": r["date"],
+                 "session": os.path.relpath(r["path"], self.brain.root), "text": r["text"]} for r in rows]
 
     def _sync_events(self, db) -> set[str]:
         touched = set()

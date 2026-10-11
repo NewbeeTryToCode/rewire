@@ -31,12 +31,15 @@ def resolve_id(brain: Brain, ref: str) -> Node | None:
 
 
 def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None = None,
-           scope: str | None = None, beta: float | None = None) -> list[dict]:
+           scope: str | None = None, beta: float | None = None, episodes: int = 0) -> list[dict]:
     if scope:
         scopes = [scope] if scope != "all" else None
     else:
         scopes = project_mod.scopes_for(project_mod.detect(cwd, brain.config.projects))
-    return index.search(query, scopes=scopes, k=k, beta=beta)
+    hits = index.search(query, scopes=scopes, k=k, beta=beta)
+    if episodes:
+        hits += index.search_episodes(query, k=episodes)  # raw excerpts after the distilled facts
+    return hits
 
 
 def get(brain: Brain, refs: list[str], session: str, harness: str = "mcp") -> list[dict]:
@@ -89,7 +92,8 @@ def apply_change(brain: Brain, change: dict, source: dict | None = None) -> Node
     text = change["text"].strip()
     title = (change.get("title") or text)[:160]
     scope = change.get("scope") or "global"
-    fields = {k: change[k] for k in ("importance", "confidence", "provenance", "keywords") if change.get(k)}
+    fields = {k: change[k] for k in ("importance", "confidence", "provenance", "keywords", "valid_from")
+              if change.get(k)}
     edges = [{"rel": e["rel"], "to": e["to"]} for e in change.get("edges") or []
              if isinstance(e, dict) and e.get("rel") in schema.RELATIONS and e.get("to")]
     if scope.startswith("project:"):

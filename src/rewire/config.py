@@ -22,6 +22,12 @@ working = 2500
 # provider: "command" runs a CLI that reads the prompt on stdin and prints text,
 #           e.g. "claude -p" (uses your existing Claude Code login)
 # provider: "anthropic" uses the Anthropic SDK (pip install 'rewire[anthropic]')
+# profile: "coding" keeps durable working knowledge only (default);
+#          "general" remembers people, events and plans (a personal second brain).
+profile = "coding"
+# transcripts: keep a searchable, secret-redacted transcript in sessions/ ("episodes").
+#              "auto" = user turns for coding, everything for general; or "user" / "all" / "none".
+transcripts = "auto"
 provider = "command"
 command = "claude -p --output-format text"
 model = "claude-opus-5-5"
@@ -46,6 +52,8 @@ class Config:
     d: float = 0.7
     recall_beta: float = 0.3
     budgets: dict = field(default_factory=lambda: {"constraints": 1500, "preferences": 800, "working": 2500})
+    profile: str = "coding"
+    transcripts: str = "auto"
     provider: str = "command"
     command: str = "claude -p --output-format text"
     model: str = "claude-opus-5-5"
@@ -79,6 +87,8 @@ def load(path: str) -> Config:
     cfg.d = float(act.get("d", cfg.d))
     cfg.recall_beta = float(act.get("recall_beta", cfg.recall_beta))
     cfg.budgets.update(raw.get("budgets", {}))
+    cfg.profile = con.get("profile", cfg.profile)
+    cfg.transcripts = con.get("transcripts", cfg.transcripts)
     cfg.provider = con.get("provider", cfg.provider)
     cfg.command = con.get("command", cfg.command)
     cfg.model = con.get("model", cfg.model)
