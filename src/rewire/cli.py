@@ -6,7 +6,8 @@ import os
 import sys
 
 from . import __version__, integrations, ops, snapshot
-from .brain import Brain, default_path
+from . import sync as sync_mod
+from .brain import Brain, Locked, default_path
 from .index import Index
 
 
@@ -35,8 +36,14 @@ def _print(data, as_json: bool):
 
 
 def cmd_init(args):
-    brain = Brain.init(args.brain, device=args.device)
-    print(f"brain created at {brain.root}")
+    if args.from_url:
+        brain = Brain.clone(args.from_url, args.brain, device=args.device)
+        print(f"brain cloned from {args.from_url} to {brain.root} (device: {brain.device})")
+        if not brain.config.sync_auto:
+            print("auto sync is off; enable with `rewire remote set <url>`")
+    else:
+        brain = Brain.init(args.brain, device=args.device)
+        print(f"brain created at {brain.root} (device: {brain.device})")
     print("next: `rewire install claude-code` and/or `rewire install codex`")
 
 
@@ -83,7 +90,7 @@ def cmd_remember(args):
 
 
 def cmd_consolidate(args):
-    from .consolidate import Consolidator, Locked
+    from .consolidate import Consolidator
 
     brain = _brain(args)
     log = (lambda *_: None) if args.quiet else (lambda m: print(m, file=sys.stderr))
@@ -96,6 +103,12 @@ def cmd_consolidate(args):
     except Locked as exc:
         print(f"skipped: {exc}", file=sys.stderr)
         return
+    if brain.config.sync_auto and args.pending:
+        try:
+            with brain.lock(timeout=120):
+                log("sync: " + "; ".join(sync_mod.push(brain)))
+        except (Locked, sync_mod.SyncError) as exc:
+            log(f"sync: push skipped: {exc}")
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=1))
         return
@@ -155,6 +168,30 @@ def cmd_undo(args):
         sys.exit(str(exc))
 
 
+def cmd_remote(args):
+    brain = _brain(args)
+    if args.action == "set":
+        if not args.url:
+            sys.exit("usage: rewire remote set <git-url>")
+        print("\n".join(sync_mod.set_remote(brain, args.url)))
+    else:
+        url = sync_mod.remote_url(brain)
+        print(f"origin: {url or '(none)'}; auto sync: {'on' if brain.config.sync_auto else 'off'}; "
+              f"device: {brain.device}")
+
+
+def cmd_sync(args):
+    brain = _brain(args)
+    steps = {"pull": [sync_mod.pull], "push": [sync_mod.push]}.get(args.only, [sync_mod.pull, sync_mod.push])
+    try:
+        with brain.lock(timeout=120):
+            for step in steps:
+                for note in step(brain):
+                    print(note)
+    except (Locked, sync_mod.SyncError) as exc:
+        sys.exit(f"sync failed: {exc}")
+
+
 def cmd_mcp(args):
     from .mcp import serve
 
@@ -189,8 +226,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("init", help="create a new brain")
-    s.add_argument("--device", help="device name used for the event log")
+    s = sub.add_parser("init", help="create a new brain, or attach to an existing one with --from")
+    s.add_argument("--from", dest="from_url", metavar="URL", help="clone an existing brain repository")
+    s.add_argument("--device", help="name of this machine in the event log (default: hostname)")
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("prime", help="print the session-start memory snapshot")
@@ -239,6 +277,15 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("undo", help="revert a session's consolidation")
     s.add_argument("session")
     s.set_defaults(func=cmd_undo)
+
+    s = sub.add_parser("remote", help="show or set the git remote used to sync this brain")
+    s.add_argument("action", choices=["show", "set"], nargs="?", default="show")
+    s.add_argument("url", nargs="?")
+    s.set_defaults(func=cmd_remote)
+
+    s = sub.add_parser("sync", help="pull and push the brain")
+    s.add_argument("--only", choices=["pull", "push"])
+    s.set_defaults(func=cmd_sync)
 
     sub.add_parser("mcp", help="run the MCP server on stdio").set_defaults(func=cmd_mcp)
 

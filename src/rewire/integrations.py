@@ -8,7 +8,8 @@ import sys
 from importlib import resources
 
 from . import snapshot
-from .brain import Brain
+from . import sync as sync_mod
+from .brain import Brain, Locked
 from .index import Index
 
 HOOK_EVENTS = {"session-start": "SessionStart", "session-end": "SessionEnd", "pre-compact": "PreCompact"}
@@ -37,9 +38,26 @@ def spawn_consolidation(brain: Brain) -> None:
 
 def hook(brain: Brain, event: str, payload: dict, harness: str = "claude-code") -> str:
     """Run a lifecycle hook. Returns text for stdout (SessionStart context)."""
-    if internal() or not brain.exists:
+    if internal():
         return ""
+    if not brain.exists:
+        # Ephemeral machines (cloud sessions, fresh Codespaces): fetch the brain
+        # from REWIRE_REMOTE on first use.
+        url = os.environ.get("REWIRE_REMOTE")
+        if not url:
+            return ""
+        try:
+            brain = Brain.clone(url, brain.root)
+        except (OSError, RuntimeError) as exc:
+            print(f"rewire: could not clone brain: {exc}", file=sys.stderr)
+            return ""
     out = ""
+    if event == "session-start" and brain.config.sync_auto:
+        try:
+            with brain.lock():
+                sync_mod.pull(brain, timeout=8)  # hook budget is short; stale is better than slow
+        except (Locked, sync_mod.SyncError) as exc:
+            print(f"rewire: pull skipped: {exc}", file=sys.stderr)
     if event == "session-start":
         index = Index(brain)
         index.refresh()

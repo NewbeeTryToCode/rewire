@@ -1,4 +1,5 @@
 import os
+import re
 import socket
 import tomllib
 from dataclasses import dataclass, field
@@ -6,7 +7,6 @@ from dataclasses import dataclass, field
 DEFAULT_TOML = """\
 # rewire brain configuration
 schema = 1
-device = "{device}"
 
 [activation]
 model = "actr"
@@ -28,6 +28,10 @@ model = "claude-opus-5-5"
 effort = "medium"
 max_chunk_chars = 60000
 
+[sync]
+# Set by `rewire remote set <url>`: pull at session start, push after consolidation.
+auto = false
+
 # Map repositories to project slugs. Without a match the git top-level
 # directory name is used.
 # [projects.myproject]
@@ -37,7 +41,8 @@ max_chunk_chars = 60000
 
 @dataclass
 class Config:
-    device: str = "default"
+    device: str = ""  # legacy: device used to live in brain.toml (shared!); see Brain.device
+    sync_auto: bool = False
     d: float = 0.7
     recall_beta: float = 0.3
     budgets: dict = field(default_factory=lambda: {"constraints": 1500, "preferences": 800, "working": 2500})
@@ -49,12 +54,16 @@ class Config:
     projects: dict = field(default_factory=dict)
 
 
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-") or "default"
+
+
 def default_device() -> str:
     return (socket.gethostname().split(".")[0] or "default").lower()
 
 
-def render_default(device: str | None = None) -> str:
-    return DEFAULT_TOML.format(device=device or default_device())
+def render_default() -> str:
+    return DEFAULT_TOML
 
 
 def load(path: str) -> Config:
@@ -65,7 +74,8 @@ def load(path: str) -> Config:
     act = raw.get("activation", {})
     con = raw.get("consolidation", {})
     cfg = Config()
-    cfg.device = raw.get("device", cfg.device)
+    cfg.device = raw.get("device", "")
+    cfg.sync_auto = bool(raw.get("sync", {}).get("auto", False))
     cfg.d = float(act.get("d", cfg.d))
     cfg.recall_beta = float(act.get("recall_beta", cfg.recall_beta))
     cfg.budgets.update(raw.get("budgets", {}))

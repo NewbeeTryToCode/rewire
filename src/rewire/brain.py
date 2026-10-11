@@ -3,6 +3,8 @@
 Source of truth is files; .index/ is derived and .state/ is device-local.
 """
 
+import contextlib
+import fcntl
 import glob
 import json
 import os
@@ -16,6 +18,10 @@ from .util import atomic_write, now_iso, slugify, ulid
 
 GITATTRIBUTES = "events/**/*.jsonl merge=union\n"
 GITIGNORE = ".index/\n.state/\n"
+
+
+class Locked(Exception):
+    pass
 
 
 def default_path() -> str:
@@ -53,6 +59,20 @@ class Brain:
     def exists(self) -> bool:
         return os.path.exists(self.path("brain.toml"))
 
+    @property
+    def device(self) -> str:
+        """Device name for the event log. Device-local (never synced), so every
+        machine sharing a brain writes its own events/<device>/ files."""
+        env = os.environ.get("REWIRE_DEVICE")
+        if env:
+            return config_mod.slug(env)
+        state = self.read_state("device")
+        if state.get("name"):
+            return state["name"]
+        name = config_mod.slug(self.config.device or config_mod.default_device())
+        self.write_state("device", {"name": name})
+        return name
+
     # ---- lifecycle -------------------------------------------------------
 
     @classmethod
@@ -62,17 +82,40 @@ class Brain:
             raise FileExistsError(f"brain already exists at {root}")
         for sub in ("nodes", "events", "sessions", "inbox", ".index", ".state"):
             os.makedirs(os.path.join(root, sub), exist_ok=True)
-        atomic_write(os.path.join(root, "brain.toml"), config_mod.render_default(device))
+        atomic_write(os.path.join(root, "brain.toml"), config_mod.render_default())
         atomic_write(os.path.join(root, ".gitattributes"), GITATTRIBUTES)
         atomic_write(os.path.join(root, ".gitignore"), GITIGNORE)
         brain = cls(root)
-        # Only transcripts written after init are consolidated automatically;
-        # older history can be imported explicitly with `rewire consolidate <file>`.
-        brain.write_state("scan", {"since": now_iso(), "since_ts": time.time()})
+        brain._init_local_state(device)
         if not os.path.isdir(os.path.join(root, ".git")):
             subprocess.run(["git", "init", "-q", root], check=False, capture_output=True)
         brain.commit("init brain")
         return brain
+
+    @classmethod
+    def clone(cls, url: str, root: str | None = None, device: str | None = None) -> "Brain":
+        """Attach this machine to an existing brain repository."""
+        root = os.path.abspath(os.path.expanduser(root or default_path()))
+        if os.path.exists(root) and os.listdir(root):
+            raise FileExistsError(f"{root} is not empty")
+        r = subprocess.run(["git", "clone", "-q", url, root], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"git clone failed: {r.stderr.strip()}")
+        brain = cls(root)
+        if not brain.exists:
+            raise RuntimeError(f"{url} is not a rewire brain (no brain.toml)")
+        for sub in ("nodes", "events", "sessions", "inbox", ".index", ".state"):
+            os.makedirs(os.path.join(root, sub), exist_ok=True)
+        # A cloned brain.toml may carry another machine's legacy device name.
+        brain._init_local_state(device or config_mod.default_device())
+        return brain
+
+    def _init_local_state(self, device: str | None) -> None:
+        # Only transcripts written from now on are consolidated automatically;
+        # older history can be imported explicitly with `rewire consolidate <file>`.
+        self.write_state("scan", {"since": now_iso(), "since_ts": time.time()})
+        if device:
+            self.write_state("device", {"name": config_mod.slug(device)})
 
     # ---- nodes -----------------------------------------------------------
 
@@ -141,7 +184,7 @@ class Brain:
         if not events:
             return
         month = now_iso()[:7]
-        path = self.path("events", self.config.device, f"{month}.jsonl")
+        path = self.path("events", self.device, f"{month}.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             for ev in events:
@@ -170,6 +213,27 @@ class Brain:
 
     def write_state(self, name: str, data: dict) -> None:
         atomic_write(self.path(".state", f"{name}.json"), json.dumps(data, indent=1, sort_keys=True))
+
+    @contextlib.contextmanager
+    def lock(self, timeout: float = 0.0):
+        """Exclusive lock for writers (consolidation, sync). Raises Locked."""
+        os.makedirs(self.path(".state"), exist_ok=True)
+        fh = open(self.path(".state", "brain.lock"), "w")
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    fh.close()
+                    raise Locked("another rewire process is writing to the brain")
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
 
     # ---- git -------------------------------------------------------------
 

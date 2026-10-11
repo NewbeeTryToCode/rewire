@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from rewire import activation, fm, integrations, ops, schema, security, snapshot  # noqa: E402
+from rewire import sync as sync_mod  # noqa: E402
 from rewire import transcripts as tx  # noqa: E402
 from rewire.brain import Brain  # noqa: E402
 from rewire.consolidate import Consolidator, gate  # noqa: E402
@@ -355,6 +356,111 @@ class TestMCPAndHooks(BrainCase):
             backup = json.load(fh)
         self.assertEqual([h["command"] for e in backup["hooks"]["SessionStart"] for h in e["hooks"]], ["other"])
         self.assertIn("PreCompact", hooks)
+
+
+class TestSync(unittest.TestCase):
+    """Two machines sharing one brain through a bare git remote."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.remote = os.path.join(self.tmp, "remote.git")
+        subprocess.run(["git", "init", "-q", "--bare", self.remote], check=True)
+        self.a = Brain.init(os.path.join(self.tmp, "a"), device="laptop")
+        sync_mod.set_remote(self.a, self.remote)
+        self.add(self.a, "fact", "Shared fact from the laptop")
+        sync_mod.sync(self.a)
+        self.b = Brain.clone(self.remote, os.path.join(self.tmp, "b"), device="codespace")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def add(self, brain, type_, text):
+        node = ops.apply_change(brain, {"action": "NEW", "type": type_, "text": text, "confidence": "explicit",
+                                        "provenance": "user"})
+        brain.commit("add")
+        return node
+
+    def test_clone_sees_nodes_and_keeps_own_device(self):
+        self.assertEqual([n.meta["title"] for n in self.b.iter_nodes()], ["Shared fact from the laptop"])
+        self.assertTrue(self.b.config.sync_auto)
+        self.assertEqual((self.a.device, self.b.device), ("laptop", "codespace"))
+
+    def test_events_from_both_devices_merge(self):
+        node = next(self.a.iter_nodes())
+        ops.get(self.a, [node.id], session="sa")
+        ops.get(self.b, [node.id], session="sb")
+        self.add(self.b, "preference", "Codespace preference")
+        sync_mod.sync(self.b)
+        sync_mod.sync(self.a)
+        sync_mod.sync(self.b)
+        for brain in (self.a, self.b):
+            sessions = sorted(e["session"] for e in brain.iter_events())
+            self.assertEqual(sessions, ["sa", "sb"])
+            self.assertEqual(len(list(brain.iter_nodes())), 2)
+        self.assertTrue(os.path.isdir(self.a.path("events", "laptop")))
+        self.assertTrue(os.path.isdir(self.a.path("events", "codespace")))
+
+    def test_node_conflict_newest_wins_loser_in_inbox(self):
+        node = next(self.a.iter_nodes())
+        na, nb = self.a.get_node(node.id), self.b.get_node(node.id)
+        self.a.write_node({**na.meta, "title": "Laptop edit", "recorded_at": "2030-01-01T00:00:00Z"},
+                          "laptop body", path=na.path)
+        self.a.commit("edit a")
+        self.b.write_node({**nb.meta, "title": "Codespace edit", "recorded_at": "2030-01-02T00:00:00Z"},
+                          "codespace body", path=nb.path)
+        self.b.commit("edit b")
+        sync_mod.sync(self.a)
+        notes = sync_mod.sync(self.b)
+        self.assertTrue(any("newest" in n for n in notes), notes)
+        self.assertEqual(self.b.get_node(node.id).meta["title"], "Codespace edit")
+        inbox = list(self.b.iter_inbox())
+        self.assertEqual([(i.meta["action"], i.meta["target"], i.meta["title"]) for i in inbox],
+                         [("UPDATE", node.id, "Laptop edit")])
+        self.assertEqual(self.b.git("diff", "--name-only", "--diff-filter=U").stdout.strip(), "")
+        sync_mod.sync(self.a)
+        self.assertEqual(self.a.get_node(node.id).meta["title"], "Codespace edit")
+
+    def test_session_start_hook_pulls(self):
+        self.add(self.b, "preference", "Remember from the codespace")
+        sync_mod.sync(self.b)
+        orig = integrations.spawn_consolidation
+        integrations.spawn_consolidation = lambda b: None
+        try:
+            out = integrations.hook(self.a, "session-start", {"cwd": self.tmp})
+        finally:
+            integrations.spawn_consolidation = orig
+        self.assertIn("Remember from the codespace", out)
+
+    def test_legacy_device_in_toml_is_not_shared(self):
+        legacy = Brain.init(os.path.join(self.tmp, "legacy"))
+        with open(legacy.path("brain.toml")) as fh:
+            text = fh.read()
+        with open(legacy.path("brain.toml"), "w") as fh:  # brains from v0.1 kept the device at the top
+            fh.write(text.replace("schema = 1\n", 'schema = 1\ndevice = "old-box"\n', 1))
+        os.remove(legacy.path(".state", "device.json")) if os.path.exists(legacy.path(".state", "device.json")) else None
+        legacy = Brain(legacy.root)
+        remote2 = os.path.join(self.tmp, "remote2.git")
+        subprocess.run(["git", "init", "-q", "--bare", remote2], check=True)
+        sync_mod.set_remote(legacy, remote2)
+        sync_mod.sync(legacy)
+        self.assertEqual(legacy.device, "old-box")
+        with open(legacy.path("brain.toml")) as fh:
+            self.assertNotIn("old-box", fh.read())
+        other = Brain.clone(remote2, os.path.join(self.tmp, "other"))
+        self.assertNotEqual(other.device, "old-box")
+
+    def test_hook_clones_missing_brain_from_env(self):
+        target = Brain(os.path.join(self.tmp, "fresh"))
+        os.environ["REWIRE_REMOTE"] = self.remote
+        orig = integrations.spawn_consolidation
+        integrations.spawn_consolidation = lambda b: None
+        try:
+            out = integrations.hook(target, "session-start", {"cwd": self.tmp})
+        finally:
+            integrations.spawn_consolidation = orig
+            del os.environ["REWIRE_REMOTE"]
+        self.assertTrue(Brain(target.root).exists)
+        self.assertIn("Shared fact from the laptop", out)
 
 
 class TestCLI(unittest.TestCase):
