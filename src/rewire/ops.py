@@ -158,8 +158,10 @@ def doctor(brain: Brain) -> list[str]:
     report.append(f"inbox: {len(inbox)} item(s) awaiting review")
     remotes = brain.git("remote", "-v").stdout.strip()
     if remotes:
-        report.append("remote configured: make sure the brain repository is PRIVATE:\n  " +
-                      remotes.splitlines()[0])
+        report.append(f"sync: {'auto' if brain.config.sync_auto else 'manual'} · device {brain.device} · "
+                      "make sure the brain repository is PRIVATE:\n  " + remotes.splitlines()[0])
+    else:
+        report.append(f"sync: no remote (this brain lives only on this machine) · device {brain.device}")
     failed = brain.read_state("failed")
     if failed:
         report.append(f"failed consolidations: {len(failed)} (see .state/failed.json)")

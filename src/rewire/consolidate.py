@@ -7,7 +7,6 @@ Idempotent per (harness, session, content hash); incremental per transcript
 via a line watermark, so it can run lazily at any time.
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -106,10 +105,6 @@ JUDGE_SCHEMA = {
 }
 
 
-class Locked(Exception):
-    pass
-
-
 def _format_turns(turns: list[dict]) -> list[str]:
     out = []
     for t in turns:
@@ -150,7 +145,7 @@ class Consolidator:
     # ---- entry points ----------------------------------------------------
 
     def run_pending(self, extra_paths: list[str] | None = None) -> list[dict]:
-        with self._lock():
+        with self.brain.lock():
             results = self._run_pending_once(extra_paths)
             # Hooks that fired while we held the lock were skipped; pick up what
             # they queued before releasing (bounded, in case a session is chatty).
@@ -184,29 +179,10 @@ class Consolidator:
         return results
 
     def run_file(self, path: str, harness: str | None = None) -> dict:
-        with self._lock():
+        with self.brain.lock():
             return self._process(path, harness)
 
     # ---- pipeline --------------------------------------------------------
-
-    def _lock(self):
-        brain = self.brain
-
-        class _L:
-            def __enter__(s):
-                os.makedirs(brain.path(".state"), exist_ok=True)
-                s.fh = open(brain.path(".state", "consolidate.lock"), "w")
-                try:
-                    fcntl.flock(s.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError:
-                    s.fh.close()
-                    raise Locked("another consolidation is running")
-
-            def __exit__(s, *exc):
-                fcntl.flock(s.fh, fcntl.LOCK_UN)
-                s.fh.close()
-
-        return _L()
 
     def _process(self, path: str, harness: str | None) -> dict:
         marks = self.brain.read_state("watermarks")
