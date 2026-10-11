@@ -36,6 +36,7 @@ from rewire.index import Index  # noqa: E402
 from rewire.llm import CommandProvider, extract_json  # noqa: E402
 
 CATS = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
+INNER = 4  # concurrent LLM calls per conversation (see --parallel)
 
 
 def claude(prompt: str, timeout: int = 900) -> str:
@@ -195,7 +196,7 @@ def run_conv(conv, out, k, label, skip_ingest, profile="coding", episodes=0):
     cache = os.path.join(out, f"answers-{label}-{conv['sample_id']}.json")
     answers = json.load(open(cache)) if os.path.exists(cache) else {}
     todo = [q for q in qs if q["qid"] not in answers]
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(INNER) as pool:
         for res in pool.map(lambda b: answer_batch(b, ref), [todo[i:i + 8] for i in range(0, len(todo), 8)]):
             answers.update(res)
             json.dump(answers, open(cache, "w"), indent=1)
@@ -204,7 +205,7 @@ def run_conv(conv, out, k, label, skip_ingest, profile="coding", episodes=0):
     jcache = os.path.join(out, f"judged-{label}-{conv['sample_id']}.json")
     judged = json.load(open(jcache)) if os.path.exists(jcache) else {}
     todo = [q for q in qs if q["qid"] not in judged]
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(INNER) as pool:
         for res in pool.map(judge_batch, [todo[i:i + 20] for i in range(0, len(todo), 20)]):
             judged.update(res)
             json.dump(judged, open(jcache, "w"), indent=1)
@@ -225,11 +226,15 @@ def main():
     ap.add_argument("--skip-ingest", action="store_true")
     ap.add_argument("--profile", default="coding")
     ap.add_argument("--episodes", type=int, default=0, help="raw transcript excerpts added to the answer context")
+    ap.add_argument("--parallel", type=int, default=3, help="conversations processed at once")
+    ap.add_argument("--inner", type=int, default=4, help="concurrent LLM calls per conversation")
     args = ap.parse_args()
+    global INNER
+    INNER = args.inner
     data = {c["sample_id"]: c for c in json.load(open(args.data))}
-    convs = [data[c] for c in args.convs.split(",")]
+    convs = list(data.values()) if args.convs == "all" else [data[c] for c in args.convs.split(",")]
     os.makedirs(args.out, exist_ok=True)
-    with ThreadPoolExecutor(len(convs)) as pool:
+    with ThreadPoolExecutor(min(args.parallel, len(convs))) as pool:
         results = list(pool.map(lambda c: run_conv(c, args.out, args.k, args.label, args.skip_ingest,
                                                    args.profile, args.episodes), convs))
     qs = [q for r in results for q in r]
