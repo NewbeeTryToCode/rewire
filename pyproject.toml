@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 anthropic = ["anthropic"]
+semantic = ["wordllama", "numpy"]
 
 [project.scripts]
 rewire = "rewire.cli:main"
