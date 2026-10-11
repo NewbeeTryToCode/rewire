@@ -52,7 +52,11 @@ Validasi: frontmatter diparse dengan PyYAML (parser YAML yang standar), semua li
 
 Eval baru ([experiments/retrieval](../experiments/retrieval/README.md)): 70 memory + 60 pertanyaan dibuat LLM terpisah, 6 kategori. Keseluruhan R@5 77% → **100%**, MRR 0.63 → **0.91**, lewat stopword + stemming EN/ID, fakta basi yang mengarahkan ke penggantinya, kata kunci dwibahasa dari konsolidasi, dan panduan query untuk agent. Temuan penting: angka parafrase awal (70%) semu. Hasil akhir optimis karena satu keluarga model membuat data dan query; validasi berikutnya harus pakai data user.
 
-## Berikutnya (iterasi 5)
+## Iterasi 5 — 2026-10-11: LoCoMo, dibandingkan dengan Mem0 dan Zep
+
+Benchmark publik end-to-end ([experiments/locomo](../experiments/locomo/README.md)) dengan **prompt jawaban dan judge resmi Mem0**, 389 pertanyaan dari 3 percakapan. J: **69.7% → 91.3% → 96.7%** (Mem0 platform mempublikasikan 92.5% dengan judge yang sama). Tiga perubahan, masing-masing diambil dari cara kerja pesaing: klaim diberi tanggal kejadian (temporal 38.5 → 93.8%), profil ekstraksi `general` untuk second brain personal, dan episode (transcript yang bisa dicari, secret disamarkan). Batasan: subset, judge longgar dan sekeluarga dengan model penjawab, Mem0/Zep tidak dijalankan ulang.
+
+## Berikutnya (iterasi 6)
 
 1. **E1 penuh:** konsolidasi 20 transcript nyata (Claude Code + Codex) milik user, label manual, ukur presisi & duplikat.
 2. **Verifikasi parser Codex** dengan file `~/.codex/sessions/**/rollout-*.jsonl` asli (fixture saat ini dibuat dari dokumentasi pihak ketiga).
