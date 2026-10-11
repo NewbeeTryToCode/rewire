@@ -27,6 +27,16 @@ INJECTION_PATTERNS = [
 ]
 
 
+def redact(text: str) -> str:
+    """Mask secrets in text that is kept verbatim (session transcripts)."""
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    for tok in re.findall(r"[A-Za-z0-9+/_\-]{32,}", text):
+        if _high_entropy_token(tok):
+            text = text.replace(tok, "[redacted]")
+    return text
+
+
 def strip_private(text: str) -> str:
     return PRIVATE.sub("[private]", text)
 

@@ -199,6 +199,11 @@ class TestSecurity(unittest.TestCase):
         self.assertEqual(security.scan("The user prefers tabs over spaces"), [])
         self.assertEqual(security.strip_private("a <private>x</private> b"), "a [private] b")
 
+    def test_redact(self):
+        out = security.redact("use key sk-ant-abcdefghijklmnopqrstuvwxyz0123 here")
+        self.assertNotIn("sk-ant", out)
+        self.assertIn("[redacted]", out)
+
     def test_remember_refuses_secret(self):
         tmp = tempfile.mkdtemp()
         try:
@@ -342,6 +347,28 @@ class TestConsolidation(BrainCase):
         b = self.brain.get_node(ids["Rebuild the index after a clone"])
         self.assertIn({"rel": "depends_on", "to": known.id[-8:].lower()}, a.meta["edges"])
         self.assertIn({"rel": "related_to", "to": a.id[-8:].lower()}, b.meta["edges"])
+
+    def test_transcript_is_kept_redacted_and_searchable(self):
+        provider = FakeProvider(self.extraction([]))
+        self.brain.config.transcripts = "all"
+        r = self.run_fixture(provider)
+        files = glob.glob(self.brain.path("sessions", "*", "*.md"))
+        self.assertEqual(len(files), 1)
+        self.assertIn("2026-10-01", files[0])  # dated by the session, not by consolidation
+        content = open(files[0]).read()
+        self.assertIn("## Transcript", content)
+        self.assertIn("never deploy on Fridays", content)
+        self.index.refresh()
+        hits = self.index.search_episodes("deploy fridays")
+        self.assertTrue(hits and "Fridays" in hits[0]["text"])
+        self.assertEqual(r["status"], "consolidated")
+
+    def test_coding_profile_keeps_only_user_turns(self):
+        self.run_fixture(FakeProvider(self.extraction([])))
+        content = open(glob.glob(self.brain.path("sessions", "*", "*.md"))[0]).read()
+        self.assertIn("concise", content)
+        self.assertNotIn("I think you like YAML", content)  # assistant turn
+        self.assertNotIn("evil.example", content)  # tool output
 
     def test_gate_rules(self):
         base = {"confidence": "explicit", "provenance": "user", "type": "fact", "flags": []}
