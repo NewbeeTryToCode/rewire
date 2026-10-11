@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-from importlib import resources
 
 from . import snapshot
 from . import sync as sync_mod
@@ -114,6 +113,8 @@ def install_codex(skills_dir: str | None = None) -> str:
     skills_dir = os.path.expanduser(skills_dir or "~/.agents/skills")
     target = os.path.join(skills_dir, "rewire", "SKILL.md")
     os.makedirs(os.path.dirname(target), exist_ok=True)
+    from importlib import resources  # only needed here; keeps hook startup fast
+
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(resources.files("rewire").joinpath("templates/SKILL.md").read_text(encoding="utf-8"))
     return "\n\n".join([

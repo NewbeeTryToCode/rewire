@@ -257,9 +257,9 @@ class Consolidator:
             queued.append({"inbox_id": self.brain.write_inbox(item, claim["text"]), "action": action,
                            "title": claim["title"]})
 
-        nodes = {n.id.lower()[-8:]: n.id for n in self.brain.iter_nodes()}
         for short in used:
-            full = nodes.get(short[-8:])
+            node = ops.resolve_id(self.brain, short[-8:])
+            full = node.id if node else None
             if full:
                 events.append({"ev": "use", "node": full, "w": 1.0, "session": session, "harness": harness})
         self.brain.append_events(events)

@@ -1,3 +1,4 @@
+import glob
 import io
 import json
 import os
@@ -140,6 +141,35 @@ class TestSnapshotAndRecall(BrainCase):
         n = self.add("fact", "x" * 590)
         snap = snapshot.build(self.brain, self.index, project=None)
         self.assertIn(n.id[-8:].lower(), snap["ids"])
+
+    def test_incremental_refresh_tracks_every_change(self):
+        a = self.add("fact", "alpha original wording")
+        b = self.add("fact", "bravo stays")
+        # edit a node file by hand (as a user would in Obsidian)
+        meta = dict(a.meta, title="alpha edited by hand")
+        self.brain.write_node(meta, "alpha edited by hand", path=a.path)
+        self.index.refresh()
+        self.assertEqual([h["title"] for h in self.index.search("alpha", scopes=["global"])], ["alpha edited by hand"])
+        # delete a node file
+        os.remove(b.path)
+        self.index.refresh()
+        self.assertEqual(self.index.search("bravo", scopes=["global"]), [])
+        # new events raise activation without touching node files
+        before = self.index.rows("id = ?", (a.id,))[0]["b"]
+        self.brain.append_events([{"ev": "use", "node": a.id, "w": 1.0, "session": f"s{i}"} for i in range(5)])
+        self.index.refresh()
+        self.assertGreater(self.index.rows("id = ?", (a.id,))[0]["b"], before)
+        # an event log rewritten in place (git revert) forces a correct full rebuild
+        ev_file = glob.glob(self.brain.path("events", "*", "*.jsonl"))[0]
+        with open(ev_file, "w") as fh:
+            fh.write(json.dumps({"ev": "use", "node": a.id, "w": 1.0, "session": "x",
+                                 "t": "2026-01-01T00:00:00Z"}) + "\n")
+        self.index.refresh()
+        fresh = Index(self.brain)
+        fresh.rebuild()
+        self.assertAlmostEqual(self.index.rows("id = ?", (a.id,))[0]["b"],
+                               fresh.rows("id = ?", (a.id,))[0]["b"], places=3)
+        fresh.close()
 
     def test_get_logs_use_and_short_ids(self):
         n = self.add("fact", "Short ids work")
