@@ -35,5 +35,8 @@ def validate(meta: dict, body: str) -> None:
             raise SchemaError(f"bad edge: {edge}")
     if meta["type"] in CLAIM_TYPES and len(body.strip()) > 600:
         raise SchemaError("claim body too long; claims must be atomic (<= 600 chars)")
+    kw = meta.get("keywords")
+    if kw is not None and not (isinstance(kw, list) and all(isinstance(k, str) for k in kw)):
+        raise SchemaError("keywords must be a list of strings")
     if not meta["title"].strip() or len(meta["title"]) > 160:
         raise SchemaError("title must be 1-160 chars")

@@ -21,9 +21,14 @@ from .index import Index
 from .util import now_iso, slugify
 
 ASSISTANT_CHARS = 1500
-LINK_RELS = ("part_of", "depends_on", "related_to")  # long assistant turns are condensed; user turns are kept whole
+LINK_RELS = ("part_of", "depends_on", "related_to")
+KEYWORDS_RULE = (
+    "keywords: 8-15 lowercase search terms someone might use later to look for this memory without "
+    "remembering its wording: synonyms, related everyday words, and translations of the key terms in "
+    "BOTH Indonesian and English. Single words or short phrases."
+)  # long assistant turns are condensed; user turns are kept whole
 
-EXTRACT_SYSTEM = """You maintain a user's long-term memory across AI coding sessions.
+EXTRACT_SYSTEM = f"""You maintain a user's long-term memory across AI coding sessions.
 Read a session transcript and extract ONLY durable knowledge worth remembering in future sessions:
 - constraint: hard rules the user wants always followed ("never push to main")
 - preference: how the user likes to work or communicate
@@ -44,6 +49,7 @@ Rules:
 - scope = "project" if it only matters for the session's project, else "global".
 - importance 1-5 (5 = must never be forgotten, e.g. safety rules).
 - used_memory_ids: ids from KNOWN MEMORY that the session actually relied on or referenced (not merely shown).
+- {KEYWORDS_RULE}
 - links: how a claim relates to other memory. "to" is a KNOWN MEMORY id, or "claim:<n>" for the n-th
   claim (0-based) in your own answer. rel is part_of (a piece of the target), depends_on (needs the
   target to hold) or related_to (same topic). Only add links a reader would find useful; [] is fine.
@@ -66,6 +72,7 @@ EXTRACT_SCHEMA = {
                     "importance": {"type": "integer"},
                     "confidence": {"type": "string", "enum": list(schema.CONFIDENCE)},
                     "evidence_turn": {"type": "integer"},
+                    "keywords": {"type": "array", "items": {"type": "string"}},
                     "links": {
                         "type": "array",
                         "items": {
@@ -80,7 +87,7 @@ EXTRACT_SCHEMA = {
                     },
                 },
                 "required": ["text", "title", "type", "scope", "importance", "confidence", "evidence_turn",
-                             "links"],
+                             "keywords", "links"],
                 "additionalProperties": False,
             },
         },
@@ -143,6 +150,15 @@ def _chunks(lines: list[str], limit: int) -> list[str]:
     if cur:
         chunks.append("\n".join(cur))
     return chunks
+
+
+def normalize_keywords(raw) -> list[str]:
+    out = []
+    for k in raw or []:
+        k = " ".join(str(k).lower().split())[:40]
+        if k and k not in out:
+            out.append(k)
+    return out[:20]
 
 
 def gate(claim: dict, action: str) -> bool:
@@ -335,8 +351,9 @@ class Consolidator:
         scope = f"project:{project}" if c.get("scope") == "project" and project else "global"
         importance = min(5, max(1, int(c.get("importance") or 3)))
         title = str(c.get("title") or text).strip()[:160]
+        keywords = normalize_keywords(c.get("keywords"))
         return {"text": text, "title": title, "type": c["type"], "scope": scope, "importance": importance,
-                "confidence": confidence, "provenance": provenance, "evidence_turn": turn,
+                "confidence": confidence, "provenance": provenance, "evidence_turn": turn, "keywords": keywords,
                 "flags": security.scan(text + " " + title)}
 
     def _judge(self, claims: list[dict], project: str | None) -> list[tuple[str, str, str]]:

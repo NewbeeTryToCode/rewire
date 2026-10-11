@@ -14,10 +14,10 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from . import activation, nodefmt
+from . import activation, nodefmt, text
 from .util import parse_iso
 
-SCHEMA = "3"
+SCHEMA = "4"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -37,7 +37,8 @@ CREATE TABLE act(id TEXT PRIMARY KEY, b REAL);
 CREATE TABLE files(path TEXT PRIMARY KEY, mtime_ns INT, size INT, id TEXT);
 CREATE TABLE evfiles(path TEXT PRIMARY KEY, offset INT, tail TEXT);
 CREATE TABLE uses(node TEXT, key TEXT, t TEXT, w REAL, PRIMARY KEY(node, key));
-CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, title, body, tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, title, body, keywords,
+                                  tokenize='unicode61 remove_diacritics 2');
 """
 
 
@@ -174,8 +175,10 @@ class Index:
                      meta.get("importance", 3), active, meta.get("recorded_at", ""), path,
                      json.dumps(meta, ensure_ascii=False), node_id[-8:].lower()),
                 )
-                db.execute("INSERT INTO fts(rowid, id, title, body) VALUES (?,?,?,?)",
-                           (cur.lastrowid, node_id, meta.get("title", ""), body))
+                keywords = meta.get("keywords") or []
+                db.execute("INSERT INTO fts(rowid, id, title, body, keywords) VALUES (?,?,?,?,?)",
+                           (cur.lastrowid, node_id, meta.get("title", ""), body,
+                            " ".join(keywords) if isinstance(keywords, list) else str(keywords)))
                 db.executemany("INSERT INTO edges VALUES (?,?,?)",
                                [(node_id, e["to"], e["rel"]) for e in meta.get("edges") or []
                                 if isinstance(e, dict) and e.get("to")])
@@ -279,18 +282,17 @@ class Index:
         A memory that shares no words with the query can still be recalled when it
         is linked to one that does (fan effect: hubs with many links spread less).
         """
-        terms = [t for t in re.findall(r"\w+", query.lower()) if len(t) > 1]
-        if not terms:
+        match = text.match_expression(query)
+        if not match:
             return []
-        match = " OR ".join(f'"{t}"' for t in terms)
+        # Inactive (superseded) memories are searched too: they never appear in the
+        # results, but they hand their activation to the memory that replaced them.
         sql = (
-            "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0) AS rank "
+            "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0, 2.0) AS rank "
             "FROM fts JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id "
             "WHERE fts MATCH ?"
         )
         params: list = [match]
-        if not include_inactive:
-            sql += " AND nodes.active = 1"
         if scopes:
             sql += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
             params += scopes
@@ -316,13 +318,18 @@ class Index:
                     if not links:
                         continue
                     fan = 1.0 + math.log(1 + len(links))
+                    src_inactive = src in info and not info[src]["active"]
                     for dst, relation in links:
-                        gain = amount * REL_WEIGHT.get(relation, 0.3) * HOP_DECAY ** hop / fan
+                        if src_inactive and relation == "supersedes":
+                            gain = amount * 0.9  # an outdated memory points straight at its replacement
+                        else:
+                            gain = amount * REL_WEIGHT.get(relation, 0.3) * HOP_DECAY ** hop / fan
                         if gain < 0.02:
                             continue
                         nxt[dst] = nxt.get(dst, 0.0) + gain
-                        if dst not in rel and dst not in via:
-                            via[dst] = f"{relation} ↔ {info[src]['title'] if src in info else src[-8:].lower()}"
+                        if (dst not in rel or not info[dst]["active"]) and dst not in via:
+                            via[dst] = (f"replaces outdated: {info[src]['title']}" if src_inactive else
+                                        f"{relation} ↔ {info[src]['title'] if src in info else src[-8:].lower()}")
                 for dst, gain in nxt.items():
                     energy[dst] = energy.get(dst, 0.0) + gain
                 frontier = sorted(nxt.items(), key=lambda x: -x[1])[:10]
@@ -330,7 +337,7 @@ class Index:
             for chunk in range(0, len(missing), 500):
                 part = missing[chunk:chunk + 500]
                 marks = ",".join("?" * len(part))
-                cond = "" if include_inactive else " AND nodes.active = 1"
+                cond = ""
                 if scopes:
                     cond += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
                 for r in self.db.execute(
@@ -341,7 +348,9 @@ class Index:
         for node_id, e in energy.items():
             r = info.get(node_id)
             if r is None or (r["type"] == "project" and node_id not in rel):
-                continue  # out of scope / inactive / hubs reached only through links
+                continue  # out of scope / hubs reached only through links
+            if not r["active"] and not include_inactive:
+                continue
             score = e * (1.0 + beta * activation.squash(r["b"]))
             item = {"id": node_id, "type": r["type"], "title": r["title"], "scope": r["scope"],
                     "snippet": r["body"][:160], "score": round(score, 4), "b": round(r["b"], 3)}

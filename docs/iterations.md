@@ -48,7 +48,11 @@ Pemicu: perbandingan dengan Obsidian dan graph DB. Fondasinya (file sebagai sumb
 
 Validasi: frontmatter diparse dengan PyYAML (parser YAML yang standar), semua link di README menunjuk file yang ada, 43 test lulus, konsolidasi nyata menghasilkan klaim berbahasa Indonesia + relasi + beranda, dan recall MCP tetap 16 ms pada 10.000 memory dengan 20.000 relasi.
 
-## Berikutnya (iterasi 4)
+## Iterasi 4 — 2026-10-11: mengukur kualitas retrieval
+
+Eval baru ([experiments/retrieval](../experiments/retrieval/README.md)): 70 memory + 60 pertanyaan dibuat LLM terpisah, 6 kategori. Keseluruhan R@5 77% → **100%**, MRR 0.63 → **0.91**, lewat stopword + stemming EN/ID, fakta basi yang mengarahkan ke penggantinya, kata kunci dwibahasa dari konsolidasi, dan panduan query untuk agent. Temuan penting: angka parafrase awal (70%) semu. Hasil akhir optimis karena satu keluarga model membuat data dan query; validasi berikutnya harus pakai data user.
+
+## Berikutnya (iterasi 5)
 
 1. **E1 penuh:** konsolidasi 20 transcript nyata (Claude Code + Codex) milik user, label manual, ukur presisi & duplikat.
 2. **Verifikasi parser Codex** dengan file `~/.codex/sessions/**/rollout-*.jsonl` asli (fixture saat ini dibuat dari dokumentasi pihak ketiga).

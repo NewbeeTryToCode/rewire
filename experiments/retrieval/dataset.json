@@ -1,0 +1,1397 @@
+{
+ "memories": [
+  {
+   "id": "m01",
+   "type": "preference",
+   "scope": "global",
+   "title": "Commit message: Conventional Commits",
+   "text": "Pakai Conventional Commits untuk semua pesan commit, ditulis dalam bahasa Inggris.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m02",
+   "type": "preference",
+   "scope": "global",
+   "title": "Never skip pre-commit hooks",
+   "text": "Never skip pre-commit hooks; fix the lint error instead of using --no-verify.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m03",
+   "type": "fact",
+   "scope": "global",
+   "title": "Zona waktu WIB, timestamp UTC",
+   "text": "Zona waktu kerja saya WIB (UTC+7), tapi semua timestamp di database dan log disimpan dalam UTC.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m04",
+   "type": "preference",
+   "scope": "global",
+   "title": "Short answers, code first",
+   "text": "Keep explanations short and give code first; I read Indonesian and English equally well.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m05",
+   "type": "constraint",
+   "scope": "global",
+   "title": "Jangan commit .env atau API key",
+   "text": "Jangan pernah commit file .env atau kunci API ke repo; gunakan secret manager atau file .env.local yang di-gitignore.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m06",
+   "type": "preference",
+   "scope": "global",
+   "title": "Neovim, tab width per bahasa",
+   "text": "Editor utama saya Neovim dengan tab width 4 untuk Python dan tab asli untuk Go.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m07",
+   "type": "fact",
+   "scope": "global",
+   "title": "Laptop ThinkPad Ubuntu 16 GB",
+   "text": "My laptop is a ThinkPad running Ubuntu 24.04 with 16 GB RAM, so heavy emulators are slow.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m08",
+   "type": "person",
+   "scope": "global",
+   "title": "Pak Hendra, mentor arsitektur",
+   "text": "Pak Hendra adalah mentor saya yang sering memberi saran arsitektur; kami ngobrol tiap Jumat sore.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m09",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas: Go 1.22 with chi",
+   "text": "Atlas is a payments API written in Go 1.22 using the chi router.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m10",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas pakai PostgreSQL 12 di VPS",
+   "text": "Atlas menyimpan data transaksi di PostgreSQL 12 yang di-host di satu VPS.",
+   "links": [],
+   "superseded_by": "m11"
+  },
+  {
+   "id": "m11",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas pindah ke PostgreSQL 15",
+   "text": "Atlas sekarang memakai PostgreSQL 15 di Cloud SQL setelah migrasi bulan Agustus.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m12",
+   "type": "constraint",
+   "scope": "project:atlas",
+   "title": "Money as integer minor units",
+   "text": "All money amounts in atlas are stored as integer minor units (cents/sen); never use float64 for currency.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m22"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m13",
+   "type": "decision",
+   "scope": "project:atlas",
+   "title": "sqlc dipilih daripada GORM",
+   "text": "Kami memilih sqlc daripada GORM untuk akses database di atlas karena query-nya perlu dikontrol manual.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m14",
+   "type": "constraint",
+   "scope": "project:atlas",
+   "title": "Idempotency-Key required on payments",
+   "text": "Every payment endpoint must require an Idempotency-Key header to prevent double charges.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m12"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m15",
+   "type": "decision",
+   "scope": "project:atlas",
+   "title": "Deploy atlas via docker-compose VPS",
+   "text": "Deploy atlas dilakukan lewat docker-compose di VPS dengan perintah ssh lalu docker compose up -d.",
+   "links": [],
+   "superseded_by": "m16"
+  },
+  {
+   "id": "m16",
+   "type": "decision",
+   "scope": "project:atlas",
+   "title": "Deploy atlas via GitHub Actions GKE",
+   "text": "Deploy atlas sekarang lewat GitHub Actions yang membangun image dan menerapkan manifest ke cluster GKE; tidak ada lagi ssh manual.",
+   "links": [
+    {
+     "rel": "depends_on",
+     "to": "m29"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m17",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas rate limit 100/min",
+   "text": "Atlas API rate limit is 100 requests per minute per merchant.",
+   "links": [],
+   "superseded_by": "m18"
+  },
+  {
+   "id": "m18",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas rate limit raised to 300/min",
+   "text": "Atlas API rate limit was raised to 300 requests per minute per merchant.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m19",
+   "type": "constraint",
+   "scope": "project:atlas",
+   "title": "Verifikasi HMAC pada webhook",
+   "text": "Webhook dari payment gateway harus diverifikasi dengan signature HMAC-SHA256 sebelum diproses.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m23"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m20",
+   "type": "preference",
+   "scope": "project:atlas",
+   "title": "Table-driven Go tests with -race",
+   "text": "Write table-driven tests in Go and run them with go test -race ./... before opening a PR.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m21",
+   "type": "person",
+   "scope": "project:atlas",
+   "title": "Rina, tech lead atlas",
+   "text": "Rina adalah tech lead atlas yang me-review semua PR; dia wajib approve perubahan di modul ledger.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m22"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m22",
+   "type": "concept",
+   "scope": "project:atlas",
+   "title": "Ledger uses double-entry bookkeeping",
+   "text": "The ledger module uses double-entry bookkeeping: every transfer creates a debit row and a credit row that must sum to zero.",
+   "links": [
+    {
+     "rel": "part_of",
+     "to": "m09"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m23",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Midtrans utama, Xendit cadangan",
+   "text": "Atlas terintegrasi dengan Midtrans sebagai payment gateway utama dan Xendit sebagai cadangan.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m24",
+   "type": "decision",
+   "scope": "project:atlas",
+   "title": "zerolog JSON, never log PAN",
+   "text": "Logging in atlas uses zerolog with JSON output; never log card numbers or full PANs.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m25",
+   "type": "constraint",
+   "scope": "project:atlas",
+   "title": "Migrasi harus bisa di-rollback",
+   "text": "Migrasi database atlas memakai golang-migrate dan harus bisa di-rollback; jangan ubah file migrasi yang sudah di-merge.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m13"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m26",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas staging resets Sunday night",
+   "text": "Staging environment for atlas lives at staging.atlas.example.dev and is reset every Sunday night.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m27",
+   "type": "concept",
+   "scope": "project:atlas",
+   "title": "Circuit breaker klien Midtrans",
+   "text": "Circuit breaker di klien Midtrans terbuka setelah 5 kegagalan berturut-turut dan dicoba lagi setelah 30 detik.",
+   "links": [
+    {
+     "rel": "depends_on",
+     "to": "m23"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m28",
+   "type": "preference",
+   "scope": "project:atlas",
+   "title": "Bungkus error dengan %w",
+   "text": "Error di atlas dibungkus dengan fmt.Errorf dan %w supaya bisa dicek dengan errors.Is.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m29",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas CI ~6 minutes",
+   "text": "Atlas CI runs on GitHub Actions and takes about 6 minutes, including integration tests with testcontainers.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m30",
+   "type": "constraint",
+   "scope": "project:atlas",
+   "title": "Atlas stays PCI-DSS friendly",
+   "text": "Atlas must stay PCI-DSS friendly: no cardholder data may touch our servers, only gateway tokens.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m24"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m31",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Kebun: Flutter plant watering app",
+   "text": "Kebun is a Flutter app that helps home gardeners track plant watering schedules.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m32",
+   "type": "decision",
+   "scope": "project:kebun",
+   "title": "Kebun pakai Provider",
+   "text": "State management di kebun memakai Provider.",
+   "links": [],
+   "superseded_by": "m33"
+  },
+  {
+   "id": "m33",
+   "type": "decision",
+   "scope": "project:kebun",
+   "title": "Kebun pindah ke Riverpod",
+   "text": "Kebun pindah ke Riverpod untuk state management karena Provider sulit dites.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m38"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m34",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Drift local DB, Firestore sync",
+   "text": "Kebun stores data locally with Drift (SQLite) and syncs to Firebase Firestore when online.",
+   "links": [
+    {
+     "rel": "part_of",
+     "to": "m31"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m35",
+   "type": "decision",
+   "scope": "project:kebun",
+   "title": "Deploy kebun lewat Fastlane",
+   "text": "Deploy kebun ke Play Store lewat Fastlane: jalankan fastlane android beta lalu promosikan ke production secara manual di console.",
+   "links": [
+    {
+     "rel": "depends_on",
+     "to": "m47"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m36",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Kebun minSdkVersion 21",
+   "text": "Kebun supports Android minSdkVersion 21.",
+   "links": [],
+   "superseded_by": "m37"
+  },
+  {
+   "id": "m37",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Kebun minSdkVersion raised to 23",
+   "text": "Kebun minSdkVersion was raised to 23 because of the notification plugin.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m38",
+   "type": "constraint",
+   "scope": "project:kebun",
+   "title": "Check mounted after await",
+   "text": "Never call setState after await without checking mounted; it crashed the plant detail screen before.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m39",
+   "type": "preference",
+   "scope": "project:kebun",
+   "title": "Widget kecil, file maks 200 baris",
+   "text": "Widget di kebun dipecah kecil-kecil; satu file maksimal sekitar 200 baris.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m40",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Notifikasi siram pakai local_notifications",
+   "text": "Notifikasi pengingat siram tanaman memakai flutter_local_notifications dan dijadwalkan sesuai zona waktu perangkat.",
+   "links": [
+    {
+     "rel": "depends_on",
+     "to": "m37"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m41",
+   "type": "person",
+   "scope": "project:kebun",
+   "title": "Dewi, UI designer kebun",
+   "text": "Dewi is the UI designer for kebun; her Figma file is the source of truth for colors and spacing.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m42",
+   "type": "concept",
+   "scope": "project:kebun",
+   "title": "Warna tema kebun",
+   "text": "Warna utama kebun adalah hijau daun #2E7D32 dengan aksen kuning; tema gelap memakai latar #121212.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m41"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m43",
+   "type": "constraint",
+   "scope": "project:kebun",
+   "title": "Test on physical low-end device",
+   "text": "Test on a physical low-end Android device before every release; emulators hide jank on image-heavy lists.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m44",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Foto dikompres maks 800 KB",
+   "text": "Foto tanaman di-upload ke Firebase Storage setelah dikompres hingga maksimal 800 KB.",
+   "links": [
+    {
+     "rel": "depends_on",
+     "to": "m34"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m45",
+   "type": "decision",
+   "scope": "project:kebun",
+   "title": "go_router with named routes",
+   "text": "Kebun uses go_router for navigation with named routes only.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m46",
+   "type": "preference",
+   "scope": "project:kebun",
+   "title": "flutter analyze dan dart format",
+   "text": "Gunakan flutter analyze dan dart format sebelum push; CI kebun gagal kalau ada warning.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m47",
+   "type": "fact",
+   "scope": "project:kebun",
+   "title": "Kebun CI on Codemagic ~12 min",
+   "text": "Kebun's CI runs on Codemagic and takes roughly 12 minutes per build.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m48",
+   "type": "constraint",
+   "scope": "project:kebun",
+   "title": "UI strings via l10n only",
+   "text": "String UI kebun harus lewat file l10n (intl) dalam bahasa Indonesia dan Inggris; jangan hardcode teks.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m49",
+   "type": "concept",
+   "scope": "project:kebun",
+   "title": "Plant care recurrence model",
+   "text": "Plant care schedules are stored as a recurrence rule (interval in days) plus a last-watered timestamp.",
+   "links": [
+    {
+     "rel": "part_of",
+     "to": "m31"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m50",
+   "type": "decision",
+   "scope": "project:kebun",
+   "title": "iOS ditunda",
+   "text": "Kebun belum memakai iOS; rilis iOS ditunda sampai akun Apple Developer dibeli.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m51",
+   "type": "fact",
+   "scope": "project:notes",
+   "title": "Notes: markdown CLI in ~/notes",
+   "text": "Notes is a personal Python CLI for quick markdown notes stored in ~/notes as plain files.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m52",
+   "type": "decision",
+   "scope": "project:notes",
+   "title": "Notes pakai argparse",
+   "text": "CLI notes memakai argparse untuk parsing argumen.",
+   "links": [],
+   "superseded_by": "m53"
+  },
+  {
+   "id": "m53",
+   "type": "decision",
+   "scope": "project:notes",
+   "title": "Notes pindah ke Typer",
+   "text": "CLI notes sekarang memakai Typer supaya subcommand dan help otomatis lebih rapi.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m61"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m54",
+   "type": "constraint",
+   "scope": "project:notes",
+   "title": "Notes must work offline",
+   "text": "Notes must have zero network dependencies at runtime; it has to work offline.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m55",
+   "type": "preference",
+   "scope": "project:notes",
+   "title": "Front matter YAML catatan",
+   "text": "Format catatan: front matter YAML dengan field title, tags, dan created.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m60"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m56",
+   "type": "fact",
+   "scope": "project:notes",
+   "title": "Search uses ripgrep with fallback",
+   "text": "Notes search uses ripgrep under the hood, falling back to pure Python if rg is not installed.",
+   "links": [
+    {
+     "rel": "part_of",
+     "to": "m51"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m57",
+   "type": "decision",
+   "scope": "project:notes",
+   "title": "Sinkronisasi via git pribadi",
+   "text": "Sinkronisasi catatan dilakukan lewat git repo pribadi, bukan layanan cloud, supaya sederhana dan privat.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m66"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m58",
+   "type": "preference",
+   "scope": "project:notes",
+   "title": "Python 3.11, pytest, mypy strict",
+   "text": "Notes targets Python 3.11 and uses pytest with type hints checked by mypy --strict.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m59",
+   "type": "fact",
+   "scope": "project:notes",
+   "title": "notes new: nama file berawalan tanggal",
+   "text": "Perintah `notes new` membuat file berawalan tanggal ISO, misalnya 2026-10-11-judul.md.",
+   "links": [
+    {
+     "rel": "part_of",
+     "to": "m51"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m60",
+   "type": "concept",
+   "scope": "project:notes",
+   "title": "Tag format and index rebuild",
+   "text": "Tags in notes are lowercase, hyphenated words; the tag index is rebuilt on each search rather than cached.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m61",
+   "type": "constraint",
+   "scope": "project:notes",
+   "title": "Install pakai pipx, dependency ringan",
+   "text": "Notes memakai pipx untuk instalasi; jangan tambah dependency berat seperti pandas.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m62",
+   "type": "fact",
+   "scope": "project:notes",
+   "title": "Notes deploy is pipx install",
+   "text": "Deploy of notes is just `pipx install --force .` from the repo; no server involved.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m63",
+   "type": "decision",
+   "scope": "project:notes",
+   "title": "Config di ~/.config/notes",
+   "text": "Konfigurasi notes disimpan di ~/.config/notes/config.toml, bukan variabel lingkungan.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m64",
+   "type": "preference",
+   "scope": "project:notes",
+   "title": "rich output, plain when not TTY",
+   "text": "Notes output uses rich for tables but must degrade to plain text when stdout is not a TTY.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m65",
+   "type": "constraint",
+   "scope": "project:kebun",
+   "title": "Firebase config is gitignored",
+   "text": "Kebun Firebase config comes from google-services.json which is gitignored; each dev downloads their own copy.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m66",
+   "type": "fact",
+   "scope": "project:notes",
+   "title": "Nightly backup to private Gitea",
+   "text": "Backup of the notes repo runs nightly via a cron job that pushes to a private Gitea instance.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m67",
+   "type": "preference",
+   "scope": "project:notes",
+   "title": "Pesan error singkat, exit non-zero",
+   "text": "Pesan error CLI notes ditulis dalam bahasa Inggris singkat dan exit code non-zero.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m68",
+   "type": "decision",
+   "scope": "project:notes",
+   "title": "Tests use tmp_path fixtures",
+   "text": "Tests for notes use tmp_path fixtures so the real ~/notes directory is never touched.",
+   "links": [],
+   "superseded_by": null
+  },
+  {
+   "id": "m69",
+   "type": "fact",
+   "scope": "project:atlas",
+   "title": "Atlas secrets from Secret Manager",
+   "text": "Atlas secrets come from Google Secret Manager at startup; local dev uses .env.local.",
+   "links": [
+    {
+     "rel": "related_to",
+     "to": "m05"
+    }
+   ],
+   "superseded_by": null
+  },
+  {
+   "id": "m70",
+   "type": "fact",
+   "scope": "global",
+   "title": "Jam ngoding pribadi malam hari",
+   "text": "Waktu pemrograman pribadi saya malam hari, pukul 20.00–23.00 WIB, sesudah pulang kantor.",
+   "links": [],
+   "superseded_by": null
+  }
+ ],
+ "queries": [
+  {
+   "q": "Which router does atlas use in Go?",
+   "category": "lexical",
+   "project": "atlas",
+   "gold": [
+    "m09"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Apakah endpoint pembayaran wajib punya header Idempotency-Key?",
+   "category": "lexical",
+   "project": "atlas",
+   "gold": [
+    "m14"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Does atlas logging use zerolog with JSON output?",
+   "category": "lexical",
+   "project": "atlas",
+   "gold": [
+    "m24"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "How does kebun sync Drift SQLite data to Firestore?",
+   "category": "lexical",
+   "project": "kebun",
+   "gold": [
+    "m34"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Does notes search use ripgrep?",
+   "category": "lexical",
+   "project": "notes",
+   "gold": [
+    "m56"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "How long does the Codemagic build for kebun take?",
+   "category": "lexical",
+   "project": "kebun",
+   "gold": [
+    "m47"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Does kebun navigation use go_router named routes?",
+   "category": "lexical",
+   "project": "kebun",
+   "gold": [
+    "m45"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Apa perintah fastlane untuk rilis beta kebun ke Play Store?",
+   "category": "lexical",
+   "project": "kebun",
+   "gold": [
+    "m35"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Bagaimana format front matter YAML untuk catatan notes?",
+   "category": "lexical",
+   "project": "notes",
+   "gold": [
+    "m55"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Bagaimana atlas memverifikasi signature HMAC pada webhook?",
+   "category": "lexical",
+   "project": "atlas",
+   "gold": [
+    "m19"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "What number format should I avoid for representing cash?",
+   "category": "paraphrase",
+   "project": "atlas",
+   "gold": [
+    "m12"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Is it acceptable to circumvent the automatic validation that fires before saving my changes in git?",
+   "category": "paraphrase",
+   "project": null,
+   "gold": [
+    "m02"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Boleh tidak menaruh password dan token rahasia ke dalam version control?",
+   "category": "paraphrase",
+   "project": null,
+   "gold": [
+    "m05"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "What real handset should I try the build on prior to shipping?",
+   "category": "paraphrase",
+   "project": "kebun",
+   "gold": [
+    "m43"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "How should the program print its results when redirected to a file?",
+   "category": "paraphrase",
+   "project": "notes",
+   "gold": [
+    "m64"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Kapan versi untuk iPhone akan tersedia?",
+   "category": "paraphrase",
+   "project": "kebun",
+   "gold": [
+    "m50"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Siapa pembimbing senior yang rutin saya temui sore hari menjelang akhir pekan?",
+   "category": "paraphrase",
+   "project": null,
+   "gold": [
+    "m08"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Before updating the UI after an async call completes, what must I verify?",
+   "category": "paraphrase",
+   "project": "kebun",
+   "gold": [
+    "m38"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "What invariant ensures each fund movement nets out to nothing?",
+   "category": "paraphrase",
+   "project": "atlas",
+   "gold": [
+    "m22"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Kapan biasanya saya ngoding proyek sampingan?",
+   "category": "paraphrase",
+   "project": null,
+   "gold": [
+    "m70"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Header apa yang wajib ada supaya pembayaran tidak tertagih dua kali?",
+   "category": "cross_lingual",
+   "project": "atlas",
+   "gold": [
+    "m14"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Apakah notes harus bisa jalan tanpa internet?",
+   "category": "cross_lingual",
+   "project": "notes",
+   "gold": [
+    "m54"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Perangkat apa yang harus dipakai untuk uji sebelum rilis kebun?",
+   "category": "cross_lingual",
+   "project": "kebun",
+   "gold": [
+    "m43"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Kapan lingkungan staging atlas di-reset?",
+   "category": "cross_lingual",
+   "project": "atlas",
+   "gold": [
+    "m26"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Versi Python dan alat type check apa yang dipakai notes?",
+   "category": "cross_lingual",
+   "project": "notes",
+   "gold": [
+    "m58"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Bolehkah saya melewati pre-commit hook?",
+   "category": "cross_lingual",
+   "project": null,
+   "gold": [
+    "m02"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Which payment gateways does atlas integrate with?",
+   "category": "cross_lingual",
+   "project": "atlas",
+   "gold": [
+    "m23"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Can I hardcode UI strings in kebun?",
+   "category": "cross_lingual",
+   "project": "kebun",
+   "gold": [
+    "m48"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Can I edit a migration file that is already merged in atlas?",
+   "category": "cross_lingual",
+   "project": "atlas",
+   "gold": [
+    "m25"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "How do I sync my notes across devices?",
+   "category": "cross_lingual",
+   "project": "notes",
+   "gold": [
+    "m57"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Siapa yang harus memberi restu untuk modifikasi pada sistem pembukuan berpasangan?",
+   "category": "relational",
+   "project": "atlas",
+   "gold": [
+    "m21"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "What numeric representation should balances use in the double-entry ledger?",
+   "category": "relational",
+   "project": "atlas",
+   "gold": [
+    "m12"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Apa yang terjadi kalau penyedia pembayaran utama kita terus error?",
+   "category": "relational",
+   "project": "atlas",
+   "gold": [
+    "m27"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "How should I check callbacks coming from our main payment provider?",
+   "category": "relational",
+   "project": "atlas",
+   "gold": [
+    "m19"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "How are images handled given the offline-first Drift storage?",
+   "category": "relational",
+   "project": "kebun",
+   "gold": [
+    "m44"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Fitur apa yang memaksa minSdk dinaikkan ke 23?",
+   "category": "relational",
+   "project": "kebun",
+   "gold": [
+    "m40"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Apa nilai hex yang diacu desainer di Figma?",
+   "category": "relational",
+   "project": "kebun",
+   "gold": [
+    "m42"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Bagaimana cara memasang CLI yang memakai Typer ke mesin baru?",
+   "category": "relational",
+   "project": "notes",
+   "gold": [
+    "m61"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Karena catatan disinkronkan lewat git pribadi, bagaimana perlindungannya terhadap kehilangan data?",
+   "category": "relational",
+   "project": "notes",
+   "gold": [
+    "m66"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Pipeline yang mengirim image ke GKE itu berapa lama jalannya?",
+   "category": "relational",
+   "project": "atlas",
+   "gold": [
+    "m29"
+   ],
+   "stale": [],
+   "wrong_scope": []
+  },
+  {
+   "q": "Berapa rate limit API atlas sekarang?",
+   "category": "stale",
+   "project": "atlas",
+   "gold": [
+    "m18"
+   ],
+   "stale": [
+    "m17"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Which PostgreSQL version does atlas run on?",
+   "category": "stale",
+   "project": "atlas",
+   "gold": [
+    "m11"
+   ],
+   "stale": [
+    "m10"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Bagaimana cara deploy atlas?",
+   "category": "stale",
+   "project": "atlas",
+   "gold": [
+    "m16"
+   ],
+   "stale": [
+    "m15"
+   ],
+   "wrong_scope": [
+    "m35",
+    "m62"
+   ]
+  },
+  {
+   "q": "State management library apa yang dipakai kebun?",
+   "category": "stale",
+   "project": "kebun",
+   "gold": [
+    "m33"
+   ],
+   "stale": [
+    "m32"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "What is the minimum Android SDK for kebun?",
+   "category": "stale",
+   "project": "kebun",
+   "gold": [
+    "m37"
+   ],
+   "stale": [
+    "m36"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Library apa untuk parsing argumen CLI notes?",
+   "category": "stale",
+   "project": "notes",
+   "gold": [
+    "m53"
+   ],
+   "stale": [
+    "m52"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Is atlas still deployed with docker-compose on a VPS?",
+   "category": "stale",
+   "project": "atlas",
+   "gold": [
+    "m16"
+   ],
+   "stale": [
+    "m15"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Is kebun still using Provider?",
+   "category": "stale",
+   "project": "kebun",
+   "gold": [
+    "m33"
+   ],
+   "stale": [
+    "m32"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Does atlas still run on Postgres 12?",
+   "category": "stale",
+   "project": "atlas",
+   "gold": [
+    "m11"
+   ],
+   "stale": [
+    "m10"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "How many requests per minute can a merchant make to atlas?",
+   "category": "stale",
+   "project": "atlas",
+   "gold": [
+    "m18"
+   ],
+   "stale": [
+    "m17"
+   ],
+   "wrong_scope": []
+  },
+  {
+   "q": "Bagaimana langkah deploy?",
+   "category": "scope",
+   "project": "atlas",
+   "gold": [
+    "m16"
+   ],
+   "stale": [
+    "m15"
+   ],
+   "wrong_scope": [
+    "m35",
+    "m62"
+   ]
+  },
+  {
+   "q": "How do I deploy a release?",
+   "category": "scope",
+   "project": "kebun",
+   "gold": [
+    "m35"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m16",
+    "m62"
+   ]
+  },
+  {
+   "q": "How do I deploy this?",
+   "category": "scope",
+   "project": "notes",
+   "gold": [
+    "m62"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m16",
+    "m35"
+   ]
+  },
+  {
+   "q": "How long does CI take?",
+   "category": "scope",
+   "project": "atlas",
+   "gold": [
+    "m29"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m47"
+   ]
+  },
+  {
+   "q": "How long does CI take?",
+   "category": "scope",
+   "project": "kebun",
+   "gold": [
+    "m47"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m29"
+   ]
+  },
+  {
+   "q": "Di mana konfigurasi rahasia diambil saat aplikasi start?",
+   "category": "scope",
+   "project": "atlas",
+   "gold": [
+    "m69"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m65"
+   ]
+  },
+  {
+   "q": "Di mana konfigurasi rahasia diambil saat aplikasi start?",
+   "category": "scope",
+   "project": "kebun",
+   "gold": [
+    "m65"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m69"
+   ]
+  },
+  {
+   "q": "What should I run before opening a PR?",
+   "category": "scope",
+   "project": "atlas",
+   "gold": [
+    "m20"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m46",
+    "m58"
+   ]
+  },
+  {
+   "q": "Apa yang harus lolos sebelum saya push?",
+   "category": "scope",
+   "project": "kebun",
+   "gold": [
+    "m46"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m20",
+    "m58"
+   ]
+  },
+  {
+   "q": "What tooling checks the code before I push?",
+   "category": "scope",
+   "project": "notes",
+   "gold": [
+    "m58"
+   ],
+   "stale": [],
+   "wrong_scope": [
+    "m46",
+    "m20"
+   ]
+  }
+ ]
+}
