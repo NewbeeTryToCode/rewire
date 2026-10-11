@@ -39,12 +39,22 @@ CATS = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 INNER = 4  # concurrent LLM calls per conversation (see --parallel)
 
 
-def claude(prompt: str, timeout: int = 900) -> str:
-    r = subprocess.run(["claude", "-p", "--output-format", "text"], input=prompt, capture_output=True, text=True,
-                       timeout=timeout, cwd=HERE, env={**os.environ, "REWIRE_INTERNAL": "1"})
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr[:300])
-    return r.stdout
+def claude(prompt: str, timeout: int = 900, attempts: int = 6) -> str:
+    """claude -p with retries: usage limits and transient failures back off instead of killing the run."""
+    import time
+
+    for attempt in range(attempts):
+        try:
+            r = subprocess.run(["claude", "-p", "--output-format", "text"], input=prompt, capture_output=True,
+                               text=True, timeout=timeout, cwd=HERE, env={**os.environ, "REWIRE_INTERNAL": "1"})
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout
+            err = (r.stderr or r.stdout)[:300]
+        except subprocess.TimeoutExpired:
+            err = "timeout"
+        if attempt < attempts - 1:
+            time.sleep(min(60 * 2 ** attempt, 900))
+    raise RuntimeError(f"claude -p failed after {attempts} attempts: {err}")
 
 
 def session_date(raw: str) -> str:
@@ -77,7 +87,18 @@ def ingest(conv: dict, root: str, profile: str) -> None:
         open(toml, "w").write(text)
     brain = Brain(root)
     done = json.load(open(done_path)) if os.path.exists(done_path) else []
-    con = Consolidator(brain, provider=CommandProvider("claude -p --output-format text",
+    class RetryingProvider(CommandProvider):
+        def complete_json(self, system, prompt, schema):
+            for attempt in range(6):
+                try:
+                    return super().complete_json(system, prompt, schema)
+                except Exception:
+                    if attempt == 5:
+                        raise
+                    import time
+                    time.sleep(min(60 * 2 ** attempt, 900))
+
+    con = Consolidator(brain, provider=RetryingProvider("claude -p --output-format text",
                                                         os.path.join(root, ".state", "llm")),
                        log=lambda *_: None)
     for key, date, turns in sessions_of(conv):
@@ -234,9 +255,15 @@ def main():
     data = {c["sample_id"]: c for c in json.load(open(args.data))}
     convs = list(data.values()) if args.convs == "all" else [data[c] for c in args.convs.split(",")]
     os.makedirs(args.out, exist_ok=True)
+    def safe(c):
+        try:
+            return run_conv(c, args.out, args.k, args.label, args.skip_ingest, args.profile, args.episodes)
+        except Exception as exc:  # one conversation failing must not lose the others; rerun resumes it
+            print(f"[{c['sample_id']}] FAILED: {exc}", flush=True)
+            return []
+
     with ThreadPoolExecutor(min(args.parallel, len(convs))) as pool:
-        results = list(pool.map(lambda c: run_conv(c, args.out, args.k, args.label, args.skip_ingest,
-                                                   args.profile, args.episodes), convs))
+        results = list(pool.map(safe, convs))
     qs = [q for r in results for q in r]
     json.dump(qs, open(os.path.join(args.out, f"results-{args.label}.json"), "w"), indent=1, ensure_ascii=False)
     by = defaultdict(list)

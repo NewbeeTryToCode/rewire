@@ -94,7 +94,10 @@ class Index:
             self._db = None
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:  # e.g. collected on another thread; the OS reclaims the handle
+            self._db = None
 
     def rebuild(self) -> int:
         self.close()
