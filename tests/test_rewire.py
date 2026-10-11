@@ -526,6 +526,12 @@ class TestTimeAndHistory(BrainCase):
         self.assertEqual(hits[0]["title"], "Melanie painted a sunset")
         self.assertEqual(hits[0]["date"], "2023-07-10")
 
+    def test_time_window_ignores_year_ranges(self):
+        from rewire.text import time_window
+
+        self.assertEqual(time_window("the 2022-23 season"), None)
+        self.assertEqual(time_window("since 2023-07"), ("2023-07-01", "2023-07-31"))
+
     def test_superseded_only_for_history_questions(self):
         old = self.add("fact", "atlas runs on Postgres 12")
         ops.apply_change(self.brain, {"action": "SUPERSEDE", "target": old.id, "type": "fact",
