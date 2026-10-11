@@ -351,6 +351,9 @@ class TestMCPAndHooks(BrainCase):
             hooks = json.load(fh)["hooks"]
         cmds = [h["command"] for e in hooks["SessionStart"] for h in e["hooks"]]
         self.assertEqual(cmds, ["other", "rewire hook session-start"])
+        with open(path + ".bak-rewire") as fh:  # backup keeps the pre-rewire settings
+            backup = json.load(fh)
+        self.assertEqual([h["command"] for e in backup["hooks"]["SessionStart"] for h in e["hooks"]], ["other"])
         self.assertIn("PreCompact", hooks)
 
 
