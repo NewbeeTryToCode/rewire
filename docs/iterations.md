@@ -35,7 +35,20 @@ Setiap iterasi: apa yang diuji, dengan data apa, apa yang ditemukan, apa yang di
 
 **Performa:** hook awal sesi 1.240 → 168 ms dan recall MCP 908 → 34 ms pada 10.000 memory, lewat index inkremental. Detail di [experiments/perf](../experiments/perf/README.md).
 
-## Berikutnya (iterasi 3)
+## Iterasi 3 — 2026-10-11: brain yang bisa dibaca manusia + graph
+
+Pemicu: perbandingan dengan Obsidian dan graph DB. Fondasinya (file sebagai sumber, index turunan) dipertahankan, tapi tiga kekurangan diperbaiki.
+
+| Kekurangan | Perubahan |
+|---|---|
+| Dibuka di Obsidian, graph view kosong; relasi berupa ID panjang | Relasi ditulis sebagai properti `[[wikilink]]` (Obsidian) **dan** link markdown relatif di bagian `## Related` (bisa diklik di GitHub). Ditambah `status`, `tags`, `aliases`; `source` jadi teks biasa. Format lama tetap terbaca; `rewire upgrade` menulis ulang |
+| Tidak ada tempat untuk "melihat isi kepala" | `README.md` di root brain, dibuat ulang otomatis: aturan, preferensi, proyek beserta memory-nya, yang baru dipelajari, sesi terakhir, dan inbox. Deterministik: tidak berubah kalau memory tidak berubah |
+| Tabel relasi ada tapi tidak dipakai recall | Spreading activation 2 langkah dari hasil pencarian teks, dengan bobot per relasi dan fan effect; hasil menyertakan `via` (alasan memory itu ikut muncul). Hub proyek tidak membanjiri hasil |
+| Konsolidasi hanya membuat relasi `about` | LLM boleh menautkan klaim ke memory yang ada atau ke klaim lain di sesi yang sama (`part_of`, `depends_on`, `related_to`) |
+
+Validasi: frontmatter diparse dengan PyYAML (parser YAML yang standar), semua link di README menunjuk file yang ada, 43 test lulus, konsolidasi nyata menghasilkan klaim berbahasa Indonesia + relasi + beranda, dan recall MCP tetap 16 ms pada 10.000 memory dengan 20.000 relasi.
+
+## Berikutnya (iterasi 4)
 
 1. **E1 penuh:** konsolidasi 20 transcript nyata (Claude Code + Codex) milik user, label manual, ukur presisi & duplikat.
 2. **Verifikasi parser Codex** dengan file `~/.codex/sessions/**/rollout-*.jsonl` asli (fixture saat ini dibuat dari dokumentasi pihak ketiga).

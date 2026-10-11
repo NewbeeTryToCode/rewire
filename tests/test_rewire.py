@@ -1,6 +1,7 @@
 import glob
 import io
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from rewire import activation, fm, integrations, ops, schema, security, snapshot  # noqa: E402
+from rewire import activation, fm, integrations, nodefmt, ops, schema, security, snapshot  # noqa: E402
 from rewire import sync as sync_mod  # noqa: E402
 from rewire import transcripts as tx  # noqa: E402
 from rewire.brain import Brain  # noqa: E402
@@ -326,6 +327,22 @@ class TestConsolidation(BrainCase):
         self.assertEqual(sorted(r["harness"] for r in results), ["claude-code", "codex"])
         self.assertEqual(brain.read_state("pending"), {})
 
+    def test_relations_between_claims_and_known_memory(self):
+        known = self.add("decision", "Brain is stored as markdown files")
+        claim_a = dict(self.claim("Index is derived from the files", 2, type_="decision"),
+                       links=[{"rel": "depends_on", "to": known.id[-8:].lower()}])
+        claim_b = dict(self.claim("Rebuild the index after a clone", 2, type_="fact"),
+                       links=[{"rel": "related_to", "to": "claim:0"}])
+        provider = FakeProvider(self.extraction([claim_a, claim_b]),
+                                {"decisions": [{"claim": 0, "action": "NEW", "target": "", "reason": ""},
+                                               {"claim": 1, "action": "NEW", "target": "", "reason": ""}]})
+        r = self.run_fixture(provider)
+        ids = {a["title"]: a["id"] for a in r["applied"]}
+        a = self.brain.get_node(ids["Index is derived from the files"])
+        b = self.brain.get_node(ids["Rebuild the index after a clone"])
+        self.assertIn({"rel": "depends_on", "to": known.id[-8:].lower()}, a.meta["edges"])
+        self.assertIn({"rel": "related_to", "to": a.id[-8:].lower()}, b.meta["edges"])
+
     def test_gate_rules(self):
         base = {"confidence": "explicit", "provenance": "user", "type": "fact", "flags": []}
         self.assertTrue(gate(base, "NEW"))
@@ -386,6 +403,94 @@ class TestMCPAndHooks(BrainCase):
             backup = json.load(fh)
         self.assertEqual([h["command"] for e in backup["hooks"]["SessionStart"] for h in e["hooks"]], ["other"])
         self.assertIn("PreCompact", hooks)
+
+
+class TestHumanReadable(BrainCase):
+    def test_node_file_is_obsidian_and_github_friendly(self):
+        hub_fact = self.add("fact", "rewire stores memory as markdown", scope="project:rewire")
+        with open(hub_fact.path) as fh:
+            text = fh.read()
+        self.assertIn('about: ["[[rewire-', text)                 # Obsidian property link
+        self.assertRegex(text, r"## Related\n- about: \[rewire\]\(\.\./project/rewire-[0-9a-z]{8}\.md\)")
+        self.assertIn('tags: ["rewire/fact"]', text)
+        self.assertIn('status: "active"', text)
+        node = self.brain.get_node(hub_fact.id)
+        self.assertEqual(node.body.strip(), "rewire stores memory as markdown")  # Related is not body
+        self.assertEqual([e["rel"] for e in node.meta["edges"]], ["about"])
+        target = os.path.join(os.path.dirname(hub_fact.path), "../project")
+        self.assertTrue(os.listdir(target))
+
+    def test_legacy_edges_are_read_and_upgraded(self):
+        hub = ops.ensure_project_hub(self.brain, "legacy")
+        legacy = fm.dumps({"id": "01AAAAAAAAAAAAAAAAAAAAAAAA", "type": "fact", "title": "old format",
+                           "scope": "project:legacy", "importance": 3, "confidence": "explicit",
+                           "provenance": "user", "recorded_at": "2026-01-01T00:00:00Z",
+                           "edges": [{"rel": "about", "to": hub.id}],
+                           "source": {"harness": "codex", "session": "abcdef123456", "turn": 4}}, "legacy body")
+        path = self.brain.path("nodes", "fact", "old-format-aaaaaaaa.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(legacy)
+        node = self.brain.read_node(path)
+        self.assertEqual(node.meta["edges"], [{"rel": "about", "to": hub.id[-8:].lower()}])
+        self.brain.write_node(node.meta, node.body, path)
+        with open(path) as fh:
+            text = fh.read()
+        self.assertNotIn('"edges"', text)
+        self.assertIn('source: "codex · abcdef12 · turn 4"', text)
+        self.assertEqual(self.brain.read_node(path).meta["edges"], node.meta["edges"])
+
+    def test_superseded_status_visible(self):
+        old = self.add("fact", "Deploy on Heroku")
+        ops.apply_change(self.brain, {"action": "SUPERSEDE", "target": old.id, "type": "fact",
+                                      "text": "Deploy on Fly.io", "confidence": "explicit", "provenance": "user"})
+        with open(old.path) as fh:
+            self.assertIn('status: "superseded"', fh.read())
+
+    def test_home_page(self):
+        self.add("constraint", "Never push to main", importance=5)
+        self.add("preference", "Answer in Bahasa Indonesia")
+        self.add("decision", "Use SQLite", scope="project:rewire")
+        ops.remember(self.brain, "Maybe use tabs", type_="preference")
+        path = ops.write_home(self.brain, self.index)
+        with open(path) as fh:
+            home = fh.read()
+        for expected in ("## Rules (always applied)", "Never push to main", "## Preferences",
+                         "## Projects", "Use SQLite", "## Waiting for review", "Maybe use tabs"):
+            self.assertIn(expected, home)
+        for link in re.findall(r"\]\((nodes/[^)]+)\)", home):
+            self.assertTrue(os.path.exists(self.brain.path(link)), link)
+        mtime = os.stat(path).st_mtime_ns
+        ops.write_home(self.brain, self.index)  # deterministic: unchanged memory -> untouched file
+        self.assertEqual(os.stat(path).st_mtime_ns, mtime)
+
+
+class TestGraphRecall(BrainCase):
+    def test_linked_memory_is_recalled_without_shared_words(self):
+        engine = self.add("decision", "Use SQLite FTS5 as the search engine")
+        reason = ops.apply_change(self.brain, {"action": "NEW", "type": "fact", "confidence": "explicit",
+                                               "provenance": "user", "text": "Zero server dependencies were a hard requirement",
+                                               "edges": [{"rel": "depends_on", "to": engine.id}]})
+        self.add("fact", "Unrelated note about cooking")
+        self.index.refresh()
+        hits = self.index.search("sqlite", scopes=["global"])
+        titles = [h["title"] for h in hits]
+        self.assertEqual(titles[0], "Use SQLite FTS5 as the search engine")
+        self.assertIn(reason.meta["title"], titles)
+        linked = next(h for h in hits if h["title"] == reason.meta["title"])
+        self.assertIn("depends_on", linked["via"])
+        self.assertNotIn("Unrelated note about cooking", titles)
+        plain = self.index.search("sqlite", scopes=["global"], spread=False)
+        self.assertEqual([h["title"] for h in plain], ["Use SQLite FTS5 as the search engine"])
+
+    def test_hubs_do_not_flood_results(self):
+        for i in range(30):
+            self.add("fact", f"project detail number {i}", scope="project:big")
+        self.add("fact", "deployment checklist lives in the wiki", scope="project:big")
+        hits = self.index.search("deployment", scopes=["global", "project:big"], k=8)
+        self.assertEqual(hits[0]["title"], "deployment checklist lives in the wiki")
+        # siblings reached only through the shared project hub get little energy (fan effect)
+        self.assertTrue(all(h["score"] < hits[0]["score"] * 0.2 for h in hits[1:]))
 
 
 class TestSync(unittest.TestCase):

@@ -11,7 +11,7 @@ import os
 import re
 import subprocess
 
-from . import fm
+from . import nodefmt
 from .util import now_iso
 
 GIT_TIMEOUT = 30
@@ -93,8 +93,8 @@ def _resolve(brain) -> list[str]:
                     fh.write(keep or "")
                 notes.append(f"{path}: kept the side that was not deleted")
             else:
-                m_ours, b_ours = fm.loads(ours)
-                m_theirs, b_theirs = fm.loads(theirs)
+                m_ours, b_ours = nodefmt.parse(ours)
+                m_theirs, b_theirs = nodefmt.parse(theirs)
                 if _stamp(m_theirs) > _stamp(m_ours):
                     winner, (m_lose, b_lose) = theirs, (m_ours, b_ours)
                 else:

@@ -79,6 +79,7 @@ def cmd_remember(args):
             node = ops.apply_change(brain, {"action": "NEW", "type": args.type, "text": text, "scope": args.scope,
                                             "importance": args.importance, "confidence": "explicit",
                                             "provenance": provenance})
+            ops.write_home(brain, Index(brain))
             brain.commit(f"remember {node.id}")
             print(f"saved [{node.id[-8:].lower()}] {node.meta['title']}")
         else:
@@ -150,11 +151,24 @@ def cmd_review(args):
                 print(f"rejected {inbox_id}")
         except ops.OpError as exc:
             print(f"! {exc}", file=sys.stderr)
+    ops.write_home(brain, Index(brain))
     brain.commit(f"review {args.action} {len(ids)} item(s)")
 
 
 def cmd_rebuild(args):
     print(f"indexed {Index(_brain(args)).rebuild()} nodes")
+
+
+def cmd_upgrade(args):
+    brain = _brain(args)
+    count = 0
+    for node in brain.iter_nodes():
+        brain.write_node(node.meta, node.body, path=node.path)
+        count += 1
+    Index(brain).refresh()
+    ops.write_home(brain, Index(brain))
+    brain.commit("upgrade node format")
+    print(f"rewrote {count} nodes in the current format")
 
 
 def cmd_doctor(args):
@@ -273,6 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("rebuild", help="rebuild the index").set_defaults(func=cmd_rebuild)
     sub.add_parser("doctor", help="health check").set_defaults(func=cmd_doctor)
+    sub.add_parser("upgrade", help="rewrite all nodes in the current file format").set_defaults(func=cmd_upgrade)
 
     s = sub.add_parser("undo", help="revert a session's consolidation")
     s.add_argument("session")
