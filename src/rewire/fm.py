@@ -23,8 +23,23 @@ def loads(text: str) -> tuple[dict, str]:
     end = text.find("\n" + DELIM, len(DELIM))
     if end == -1:
         return {}, text
+    block = text[len(DELIM) + 1 : end]
+    body = text[end + len(DELIM) + 1 :].lstrip("\n")
+    # Fast path for files rewire wrote (every value is JSON): one parse per file.
+    pairs = []
+    for line in block.splitlines():
+        key, sep, raw = line.partition(":")
+        if not sep or not raw.strip() or line.lstrip().startswith("#"):
+            pairs = None
+            break
+        pairs.append(f"{json.dumps(key.strip())}:{raw.strip()}")
+    if pairs is not None:
+        try:
+            return json.loads("{" + ",".join(pairs) + "}"), body
+        except json.JSONDecodeError:
+            pass
     meta = {}
-    for line in text[len(DELIM) + 1 : end].splitlines():
+    for line in block.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         key, sep, raw = line.partition(":")
@@ -35,5 +50,4 @@ def loads(text: str) -> tuple[dict, str]:
             meta[key.strip()] = json.loads(raw) if raw else None
         except json.JSONDecodeError:
             meta[key.strip()] = raw  # hand-written plain YAML scalar
-    body = text[end + len(DELIM) + 1 :].lstrip("\n")
     return meta, body

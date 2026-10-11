@@ -1,9 +1,10 @@
 """High-level operations shared by the CLI, MCP server and consolidation."""
 
+import glob
 import os
 
 from . import project as project_mod
-from . import schema, security
+from . import fm, schema, security
 from .brain import Brain, Node
 from .index import Index
 from .util import now_iso
@@ -18,6 +19,14 @@ def resolve_id(brain: Brain, ref: str) -> Node | None:
     if len(ref) == 26:
         return brain.get_node(ref.upper())
     ref = ref.lower()
+    if len(ref) == 8:  # file names end with the last 8 id chars: no full scan needed
+        hits = []
+        for path in glob.glob(brain.path("nodes", "*", f"*-{ref}.md")):
+            with open(path, encoding="utf-8") as fh:
+                meta, body = fm.loads(fh.read())
+            if str(meta.get("id", "")).lower().endswith(ref):
+                hits.append(Node(meta, body, path))
+        return hits[0] if len(hits) == 1 else None
     matches = [n for n in brain.iter_nodes() if n.id.lower().endswith(ref)]
     return matches[0] if len(matches) == 1 else None
 
@@ -66,8 +75,11 @@ def remember(brain: Brain, text: str, type_: str = "fact", scope: str = "global"
 # ---- applying changes -----------------------------------------------------
 
 def ensure_project_hub(brain: Brain, slug: str) -> Node:
-    for n in brain.iter_nodes():
-        if n.type == "project" and n.meta.get("scope") == f"project:{slug}" and n.active:
+    for path in glob.glob(brain.path("nodes", "project", "*.md")):  # hubs only, not every node
+        with open(path, encoding="utf-8") as fh:
+            meta, body = fm.loads(fh.read())
+        n = Node(meta, body, path)
+        if meta.get("scope") == f"project:{slug}" and n.active:
             return n
     meta = brain.new_meta("project", slug, scope=f"project:{slug}", importance=3,
                           confidence="explicit", provenance="user")
