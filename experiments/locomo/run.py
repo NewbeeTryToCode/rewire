@@ -33,7 +33,7 @@ from official_prompts import ANSWER_GENERATION_PROMPT, JUDGE_PROMPT  # noqa: E40
 from rewire.brain import Brain  # noqa: E402
 from rewire.consolidate import Consolidator  # noqa: E402
 from rewire.index import Index  # noqa: E402
-from rewire.llm import CommandProvider, extract_json  # noqa: E402
+from rewire.llm import CommandProvider, LLMError, extract_json  # noqa: E402
 
 CATS = {1: "multi-hop", 2: "temporal", 3: "open-domain", 4: "single-hop"}
 INNER = 4  # concurrent LLM calls per conversation (see --parallel)
@@ -55,6 +55,19 @@ def claude(prompt: str, timeout: int = 900, attempts: int = 6) -> str:
         if attempt < attempts - 1:
             time.sleep(min(60 * 2 ** attempt, 900))
     raise RuntimeError(f"claude -p failed after {attempts} attempts: {err}")
+
+
+def claude_json(prompt: str, attempts: int = 3) -> dict:
+    """claude() whose reply must parse as a JSON object; a malformed reply is asked again."""
+    for attempt in range(attempts):
+        try:
+            out = extract_json(claude(prompt))
+            if isinstance(out, dict):
+                return out
+        except LLMError:
+            if attempt == attempts - 1:
+                raise
+    raise ValueError("model did not return a JSON object")
 
 
 def session_date(raw: str) -> str:
@@ -201,7 +214,7 @@ def answer_batch(batch: list[dict], ref_date: str) -> dict:
               "that list for that question.\n\n" + "\n\n".join(blocks) +
               "\n\nWork through Steps 1-7 for each question privately. Then output ONLY a JSON object mapping "
               "each QUESTION id to its final concise answer string.")
-    return {str(k): str(v) for k, v in extract_json(claude(prompt)).items()}
+    return {str(k): str(v) for k, v in claude_json(prompt).items()}
 
 
 def judge_batch(batch: list[dict]) -> dict:
@@ -212,7 +225,7 @@ def judge_batch(batch: list[dict]) -> dict:
     rules = JUDGE_PROMPT.split("## Question")[0]
     prompt = (rules + "\nJudge EACH item below independently with these rules.\n\n" + items +
               '\n\nReturn ONLY a JSON object mapping each ITEM id to "CORRECT" or "WRONG".')
-    return {str(k): str(v).upper() for k, v in extract_json(claude(prompt)).items()}
+    return {str(k): str(v).upper() for k, v in claude_json(prompt).items()}
 
 
 def f1(pred: str, gold: str) -> float:
