@@ -139,17 +139,52 @@ def backfill_transcripts(conv: dict, root: str) -> None:
 
 
 def memories_for(index: Index, question: str, k: int, episodes: int = 0) -> list[dict]:
-    hits = index.search(question, scopes=None, k=k)
+    """What rewire's recall returns (the same path MCP and the CLI use), as Mem0-style memory rows."""
+    from rewire import ops
+
     out = []
-    for ep in index.search_episodes(question, k=episodes) if episodes else []:
-        out.append({"memory": "Conversation excerpt: " + " / ".join(ep["text"].splitlines()),
-                    "created_at": ep["date"]})
-    for h in hits:
+    for h in ops.recall(index.brain, index, question, k=k, scope="all", episodes=episodes):
+        if h["type"] == "episode":
+            out.append({"memory": "Conversation excerpt: " + " / ".join(h["text"].splitlines()),
+                        "created_at": h["date"]})
+            continue
         row = index.rows("id = ?", (h["id"],))[0]
         meta = json.loads(row["meta"])
         out.append({"memory": f"{row['title']}: {row['body'].strip()}" if row["body"].strip() != row["title"]
                     else row["title"], "created_at": meta.get("valid_from") or meta.get("recorded_at", "")[:10]})
     return out
+
+
+def link_sources(root: str) -> int:
+    """Brains ingested before sources kept the full session id ('conv-26-'): restore it from git.
+
+    Each consolidation is one commit ("consolidate locomo/<session>") adding that session's nodes.
+    """
+    from rewire import nodefmt
+
+    brain = Brain(root)
+    log = subprocess.run(["git", "-C", root, "log", "--reverse", "--name-status", "--format=@@%s"],
+                         capture_output=True, text=True).stdout
+    first: dict[str, str] = {}
+    session = None
+    for line in log.splitlines():
+        if line.startswith("@@"):
+            m = re.match(r"@@consolidate locomo/(\S+)", line)
+            session = m.group(1) if m else None
+        elif session and line.startswith("A\t") and line.endswith(".md") and "/nodes/" in "/" + line[2:]:
+            first.setdefault(line[2:].split("/")[-1], session)
+    fixed = 0
+    for node in brain.iter_nodes():
+        src = node.meta.get("source")
+        if not isinstance(src, str) or nodefmt.parse_source(src) and not src.split(" · ")[1].endswith("-"):
+            continue
+        session = first.get(os.path.basename(node.path))
+        m = re.search(r"turn (\d+)", src)
+        if session and m:
+            brain.write_node({**node.meta, "source": {"harness": "locomo", "session": session,
+                                                      "turn": int(m.group(1))}}, node.body, node.path)
+            fixed += 1
+    return fixed
 
 
 def answer_batch(batch: list[dict], ref_date: str) -> dict:
@@ -200,6 +235,7 @@ def run_conv(conv, out, k, label, skip_ingest, profile="coding", episodes=0):
         approve_all(root)
     if episodes and not glob.glob(os.path.join(root, "sessions", "*", "locomo-*session-*.md")):
         backfill_transcripts(conv, root)
+    link_sources(root)
     brain = Brain(root)
     index = Index(brain)
     index.refresh()

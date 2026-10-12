@@ -8,7 +8,7 @@
     tags: ["rewire/preference"]
     scope: "project:rewire"
     ...
-    source: "claude-code · e824c8b5 · turn 338"
+    source: "claude-code · e824c8b5-6b94-52f5-9188-fd31fa5ca77d · turn 338"
     about: ["[[rewire-tp7kc0q7]]"]
     ---
     Pengguna ingin desain dicek solid sebelum mulai membangun.
@@ -60,10 +60,27 @@ def source_text(source) -> str | None:
         return source
     parts = [source.get("harness")]
     if source.get("session"):
-        parts.append(str(source["session"])[:8])
+        parts.append(str(source["session"]))  # in full: it names the session file the claim came from
     if source.get("turn"):
         parts.append(f"turn {source['turn']}")
     return " · ".join(str(p) for p in parts if p)
+
+
+def parse_source(source) -> tuple[str, str, int] | None:
+    """(harness, session, turn) of a claim, from either stored form; None if incomplete."""
+    if isinstance(source, dict):
+        h, s, t = source.get("harness"), source.get("session"), source.get("turn")
+    elif isinstance(source, str):
+        parts = source.split(" · ")
+        if len(parts) != 3 or not parts[2].startswith("turn "):
+            return None
+        h, s, t = parts[0], parts[1], parts[2][5:]
+    else:
+        return None
+    try:
+        return (str(h), str(s), int(t)) if h and s and t else None
+    except ValueError:
+        return None
 
 
 def parse(text: str) -> tuple[dict, str]:
