@@ -29,7 +29,10 @@ def extract_json(text: str) -> dict:
     try:
         return json.loads(text[start:end + 1])
     except json.JSONDecodeError as exc:
-        raise LLMError(f"invalid JSON from model: {exc}") from exc
+        try:  # an object followed by more text (or a second object): keep the first complete one
+            return json.JSONDecoder().raw_decode(text[start:])[0]
+        except json.JSONDecodeError:
+            raise LLMError(f"invalid JSON from model: {exc}") from exc
 
 
 class CommandProvider:
