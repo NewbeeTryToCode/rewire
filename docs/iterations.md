@@ -56,7 +56,11 @@ Eval baru ([experiments/retrieval](../experiments/retrieval/README.md)): 70 memo
 
 Benchmark publik end-to-end ([experiments/locomo](../experiments/locomo/README.md)) dengan **prompt jawaban dan judge resmi Mem0**, 389 pertanyaan dari 3 percakapan. J: **69.7% → 91.3% → 96.7%** (Mem0 platform mempublikasikan 92.5% dengan judge yang sama). Tiga perubahan, masing-masing diambil dari cara kerja pesaing: klaim diberi tanggal kejadian (temporal 38.5 → 93.8%), profil ekstraksi `general` untuk second brain personal, dan episode (transcript yang bisa dicari, secret disamarkan). Batasan: subset, judge longgar dan sekeluarga dengan model penjawab, Mem0/Zep tidak dijalankan ulang.
 
-## Berikutnya (iterasi 6)
+## Iterasi 6 — 2026-10-12: insight pesaing + LoCoMo penuh
+
+Diimplementasikan dari analisis Mem0/Zep: semantic search opsional (WordLlama, offline, fusi aditif dengan BM25), bonus jendela waktu ("in July 2023"), dan pertanyaan sejarah mengembalikan fakta `superseded` berlabel. LoCoMo **penuh** (10 percakapan, 1.540 pertanyaan, judge resmi Mem0): **94.2%** hybrid, **94.9%** kata kunci saja, vs 92.5% Mem0 platform. Ablasi: semantik tidak membantu di LoCoMo (17 vs 29 pertanyaan berbeda, tidak signifikan) karena episode + kata kunci sudah menutupinya, jadi tetap opsional. Sisa kelemahan: open-domain 75% — kebanyakan pertanyaan spekulatif yang butuh pengetahuan dunia, bukan memory. Bug ditemukan run penuh: `time_window` crash pada "2022-23".
+
+## Berikutnya (iterasi 7)
 
 1. **E1 penuh:** konsolidasi 20 transcript nyata (Claude Code + Codex) milik user, label manual, ukur presisi & duplikat.
 2. **Verifikasi parser Codex** dengan file `~/.codex/sessions/**/rollout-*.jsonl` asli (fixture saat ini dibuat dari dokumentasi pihak ketiga).
