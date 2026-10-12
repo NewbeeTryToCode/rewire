@@ -61,6 +61,10 @@ Rules:
 - Time: when a claim is about something that happened or is planned, state WHEN as an absolute date
   computed from SESSION DATE ("yesterday" in a session on 2023-05-08 -> "on 2023-05-07"; "last year"
   -> "in 2022"). Never leave relative dates.
+- Timelines: when something starts, ends or has lasted a while, keep both ends findable. Durations
+  become a start date ("has had the turtles for 3 years" in 2022 -> "since about 2019"); finishing
+  something says when it began if the session tells ("finished the book on 2022-10-05, started in
+  2022-06"). Link a finish or change to the claim about its start with related_to.
 - Write each claim (text and title) in the language the user writes in. If the user writes Indonesian,
   the claim is in Indonesian.
 - Describe what a project is or does as a "fact" with scope "project" (project pages are managed separately).

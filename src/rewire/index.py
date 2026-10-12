@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from . import activation, nodefmt, semantic, text
 from .util import parse_iso
 
-SCHEMA = "6"
+SCHEMA = "7"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -40,12 +40,15 @@ CREATE TABLE uses(node TEXT, key TEXT, t TEXT, w REAL, PRIMARY KEY(node, key));
 CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, title, body, keywords,
                                   tokenize='unicode61 remove_diacritics 2');
 CREATE TABLE epfiles(path TEXT PRIMARY KEY, mtime_ns INT, size INT);
-CREATE TABLE episodes(path TEXT, date TEXT, text TEXT);
+CREATE TABLE episodes(path TEXT, date TEXT, text TEXT, first INT, last INT);  -- turn range
 CREATE INDEX episodes_path ON episodes(path);
 CREATE VIRTUAL TABLE fts_ep USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 CREATE TABLE vec(id TEXT PRIMARY KEY, v BLOB);
 CREATE TABLE epvec(rid INTEGER PRIMARY KEY, v BLOB);
 """
+
+
+_TURN = re.compile(r"\[(\d+) ")
 
 
 class _Stale(Exception):
@@ -234,9 +237,12 @@ class Index:
                     continue
                 lines = [l for l in part.split("\n## Transcript\n", 1)[1].splitlines() if l.startswith("[")]
                 for start in range(0, max(len(lines) - 2, 1), self.EP_STEP):
-                    chunk = "\n".join(lines[start:start + self.EP_WINDOW])
+                    part_lines = lines[start:start + self.EP_WINDOW]
+                    chunk = "\n".join(part_lines)
                     if chunk:
-                        cur = db.execute("INSERT INTO episodes VALUES (?,?,?)", (path, date, chunk))
+                        turns = [int(m.group(1)) for m in map(_TURN.match, part_lines) if m]
+                        cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?)",
+                                         (path, date, chunk, min(turns, default=0), max(turns, default=0)))
                         db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, chunk))
             db.execute("INSERT OR REPLACE INTO epfiles VALUES (?,?,?)", (path, mtime, size))
         return changed
@@ -269,8 +275,12 @@ class Index:
         db.execute("DELETE FROM episodes WHERE path=?", (path,))
         db.execute("DELETE FROM epfiles WHERE path=?", (path,))
 
-    def search_episodes(self, query: str, k: int = 5) -> list[dict]:
-        """Raw transcript excerpts (episodic memory), hybrid-ranked like memories."""
+    def search_episodes(self, query: str, k: int = 5, seeds: list[dict] | None = None) -> list[dict]:
+        """Raw transcript excerpts (episodic memory), hybrid-ranked like memories.
+
+        `seeds` are memory hits for the same query: the excerpt each one was extracted from
+        (its source session and turn) is boosted, so a well-matched fact brings its context.
+        """
         limit = max(k * 4, 20)
         match = text.match_expression(query)
         fts = []
@@ -294,6 +304,8 @@ class Index:
         for ranks in (fts, sem):
             for rank, rid in enumerate(ranks):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (self.RRF_K + rank + 1)
+        for rid, bonus in self._seed_episodes(seeds or []).items():
+            fused[rid] = fused.get(rid, 0.0) + bonus
         window = text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
             f"SELECT rowid AS rid, path, date, text FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
@@ -306,6 +318,30 @@ class Index:
         return [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
                  "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
                 for rid in best if rid in rows]
+
+    SEED_WEIGHT = 1.0  # source-excerpt bonus for the top memory hit, in units of a rank-1 RRF score
+
+    def _seed_episodes(self, seeds: list[dict]) -> dict[int, float]:
+        """Episode rowid -> bonus, for the excerpts the seed memories were extracted from."""
+        from .util import slugify
+
+        out: dict[int, float] = {}
+        if not seeds or self.SEED_WEIGHT <= 0:
+            return out
+        top = max(h.get("score", 0) for h in seeds) or 1.0
+        metas = {r["id"]: r["meta"] for r in self.db.execute(
+            f"SELECT id, meta FROM nodes WHERE id IN ({','.join('?' * len(seeds))})", [h["id"] for h in seeds])}
+        for h in seeds:
+            src = nodefmt.parse_source(json.loads(metas.get(h["id"]) or "{}").get("source"))
+            if not src:
+                continue
+            harness, session, turn = src
+            name = f"{harness}-{slugify(session, 40)}.md"
+            bonus = self.SEED_WEIGHT * (h.get("score", 0) / top) / (self.RRF_K + 1)
+            for r in self.db.execute("SELECT rowid AS rid FROM episodes WHERE path LIKE ? AND first <= ? AND last >= ?",
+                                     ("%" + os.sep + name, turn, turn)):
+                out[r["rid"]] = out.get(r["rid"], 0.0) + bonus
+        return out
 
     def _sync_events(self, db) -> set[str]:
         touched = set()

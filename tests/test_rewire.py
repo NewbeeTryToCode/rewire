@@ -465,7 +465,7 @@ class TestHumanReadable(BrainCase):
         with open(path) as fh:
             text = fh.read()
         self.assertNotIn('"edges"', text)
-        self.assertIn('source: "codex · abcdef12 · turn 4"', text)
+        self.assertIn('source: "codex · abcdef123456 · turn 4"', text)
         self.assertEqual(self.brain.read_node(path).meta["edges"], node.meta["edges"])
 
     def test_superseded_status_visible(self):
@@ -525,6 +525,32 @@ class TestTimeAndHistory(BrainCase):
         hits = self.index.search("What did Melanie paint in July 2023?", scopes=["global"])
         self.assertEqual(hits[0]["title"], "Melanie painted a sunset")
         self.assertEqual(hits[0]["date"], "2023-07-10")
+
+    def test_fact_pulls_in_the_excerpt_it_came_from(self):
+        lines = [f"[{n} user] Ann: small talk number {n}" for n in range(1, 21)]
+        lines[1] = "[2 user] Ann: I would like a pet someday"
+        lines[14] = "[15 user] Ann: He is so playful, we named him Rex"
+        path = self.brain.path("sessions", "2023-05-08", "locomo-conv-1-session-1.md")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as fh:
+            fh.write("# s\n\n- date: 2023-05-08\n\n## Transcript\n\n" + "\n".join(lines) + "\n")
+        node = ops.apply_change(self.brain, {"action": "NEW", "type": "fact", "text": "Ann adopted a pet dog, Rex",
+                                             "confidence": "explicit", "provenance": "user"},
+                                source={"harness": "locomo", "session": "conv-1-session_1", "turn": 15})
+        self.assertIn("conv-1-session_1 · turn 15", open(node.path).read())  # full session id on disk
+        self.index.refresh()
+        plain = self.index.search_episodes("Ann pet", k=1)
+        self.assertNotIn("Rex", plain[0]["text"])
+        hits = ops.recall(self.brain, self.index, "Ann pet", k=5, scope="all", episodes=1)
+        self.assertEqual(hits[0]["id"], node.id)
+        self.assertIn("named him Rex", hits[-1]["text"])
+
+    def test_count_questions_get_more_excerpts(self):
+        from rewire.text import count_intent
+
+        self.assertTrue(count_intent("How many times has Joanna been hiking?"))
+        self.assertTrue(count_intent("berapa kali deploy gagal?"))
+        self.assertFalse(count_intent("What did Joanna hike?"))
 
     def test_time_window_ignores_year_ranges(self):
         from rewire.text import time_window
