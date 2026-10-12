@@ -304,8 +304,9 @@ class Index:
         for ranks in (fts, sem):
             for rank, rid in enumerate(ranks):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (self.RRF_K + rank + 1)
+        scale = max(fused.values(), default=1.0 / (self.RRF_K + 1))  # bonus relative to the best match
         for rid, bonus in self._seed_episodes(seeds or []).items():
-            fused[rid] = fused.get(rid, 0.0) + bonus
+            fused[rid] = fused.get(rid, 0.0) + bonus * scale
         window = text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
             f"SELECT rowid AS rid, path, date, text FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
@@ -319,7 +320,7 @@ class Index:
                  "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
                 for rid in best if rid in rows]
 
-    SEED_WEIGHT = 1.0  # source-excerpt bonus for the top memory hit, in units of a rank-1 RRF score
+    SEED_WEIGHT = 0.35  # source-excerpt bonus for the top memory hit, as a share of the best excerpt's score (tuned: experiments/locomo/evidence.py)
 
     def _seed_episodes(self, seeds: list[dict]) -> dict[int, float]:
         """Episode rowid -> bonus, for the excerpts the seed memories were extracted from."""
@@ -337,7 +338,7 @@ class Index:
                 continue
             harness, session, turn = src
             name = f"{harness}-{slugify(session, 40)}.md"
-            bonus = self.SEED_WEIGHT * (h.get("score", 0) / top) / (self.RRF_K + 1)
+            bonus = self.SEED_WEIGHT * h.get("score", 0) / top
             for r in self.db.execute("SELECT rowid AS rid FROM episodes WHERE path LIKE ? AND first <= ? AND last >= ?",
                                      ("%" + os.sep + name, turn, turn)):
                 out[r["rid"]] = out.get(r["rid"], 0.0) + bonus
