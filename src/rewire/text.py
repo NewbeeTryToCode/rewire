@@ -113,15 +113,6 @@ def _days(y: int, mo: int, d: int, slack: int) -> tuple[str, str]:
     return (center - timedelta(days=slack)).isoformat(), (center + timedelta(days=slack)).isoformat()
 
 
-_COUNT = re.compile(r"\b(how many|how often|number of|every time|all the times|berapa (?:kali|banyak|sering)|"
-                    r"seberapa sering|jumlah)\b", re.I)
-
-
-def count_intent(query: str) -> bool:
-    """The answer aggregates over many occurrences ('how many times'): one excerpt is not enough."""
-    return bool(_COUNT.search(query))
-
-
 def history_intent(query: str) -> bool:
     """The question is about the past ('used to', 'first', 'dulu'): superseded memories are relevant."""
     return bool(_HISTORY.search(query))

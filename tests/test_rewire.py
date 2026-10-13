@@ -545,13 +545,6 @@ class TestTimeAndHistory(BrainCase):
         self.assertEqual(hits[0]["id"], node.id)
         self.assertIn("named him Rex", hits[-1]["text"])
 
-    def test_count_questions_get_more_excerpts(self):
-        from rewire.text import count_intent
-
-        self.assertTrue(count_intent("How many times has Joanna been hiking?"))
-        self.assertTrue(count_intent("berapa kali deploy gagal?"))
-        self.assertFalse(count_intent("What did Joanna hike?"))
-
     def test_time_window_ignores_year_ranges(self):
         from rewire.text import time_window
 
