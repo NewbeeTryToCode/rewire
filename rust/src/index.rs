@@ -174,6 +174,10 @@ fn turn_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"^\[(\d+) ").unwrap())
 }
 
+fn by_energy(a: &(String, f64), b: &(String, f64)) -> std::cmp::Ordering {
+    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0))
+}
+
 fn marks(n: usize) -> String {
     vec!["?"; n].join(",")
 }
@@ -709,7 +713,7 @@ impl Index {
                 sql.push_str(&format!(" AND nodes.scope IN ({})", marks(s.len())));
                 values.extend(s.iter().cloned());
             }
-            sql.push_str(" ORDER BY bm25(fts, 3.0, 1.0, 2.0) LIMIT ?");
+            sql.push_str(" ORDER BY bm25(fts, 3.0, 1.0, 2.0), nodes.id LIMIT ?");
             values.push(limit.to_string());
             let db = self.db()?;
             let mut st = db.prepare(&sql)?;
@@ -773,7 +777,7 @@ impl Index {
         let mut via: HashMap<String, String> = HashMap::new();
         if opts.spread {
             let mut frontier: Vec<(String, f64)> = rel.iter().map(|(k, v)| (k.clone(), *v)).collect();
-            frontier.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            frontier.sort_by(by_energy);
             frontier.truncate(10);
             for hop in [1, 2] {
                 let mut nxt: IndexMap<String, f64> = IndexMap::new();
@@ -809,7 +813,7 @@ impl Index {
                     *energy.entry(dst.clone()).or_insert(0.0) += gain;
                 }
                 frontier = nxt.into_iter().collect();
-                frontier.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                frontier.sort_by(by_energy);
                 frontier.truncate(10);
             }
             let missing: Vec<String> = energy.keys().filter(|i| !info.contains_key(*i)).cloned().collect();
@@ -841,7 +845,8 @@ impl Index {
                 text: String::new(),
             });
         }
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        // ties by id: deterministic across implementations
+        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.id.cmp(&b.id)));
         out.truncate(opts.k);
         Ok(out)
     }
@@ -854,7 +859,8 @@ impl Index {
         let mut fused: IndexMap<i64, f64> = IndexMap::new();
         if let Some(m) = text::match_expression(query) {
             let db = self.db()?;
-            let mut st = db.prepare("SELECT rowid FROM fts_ep WHERE fts_ep MATCH ? ORDER BY bm25(fts_ep) LIMIT ?")?;
+            let mut st = db.prepare("SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ? \
+                 ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?")?;
             let ids = st.query_map(params![m, limit as i64], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for (rank, rid) in ids.into_iter().enumerate() {
                 *fused.entry(rid).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
@@ -866,15 +872,15 @@ impl Index {
             *fused.entry(rid).or_insert(0.0) += bonus * scale;
         }
         let window = text::time_window(query);
-        let mut rows: HashMap<i64, (String, String, String)> = HashMap::new();
+        let mut rows: HashMap<i64, (String, String, String, i64)> = HashMap::new();
         if !fused.is_empty() {
             let ids: Vec<i64> = fused.keys().cloned().collect();
             let db = self.db()?;
             for part in ids.chunks(500) {
-                let sql = format!("SELECT rowid, path, date, text FROM episodes WHERE rowid IN ({})", marks(part.len()));
+                let sql = format!("SELECT rowid, path, date, text, first FROM episodes WHERE rowid IN ({})", marks(part.len()));
                 let mut st = db.prepare(&sql)?;
                 for r in st.query_map(params_from_iter(part), |r| {
-                    Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?)))
+                    Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0))))
                 })? {
                     let (rid, v) = r?;
                     rows.insert(rid, v);
@@ -882,7 +888,7 @@ impl Index {
             }
         }
         if let Some((start, end)) = &window {
-            for (rid, (_, date, _)) in &rows {
+            for (rid, (_, date, _, _)) in &rows {
                 let d: String = date.chars().take(10).collect();
                 if start.as_str() <= d.as_str() && d.as_str() <= end.as_str() {
                     *fused.get_mut(rid).unwrap() += 1.0 / RRF_K;
@@ -890,13 +896,14 @@ impl Index {
             }
         }
         let mut order: Vec<(i64, f64)> = fused.into_iter().collect();
-        order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let tie = |rid: &i64| rows.get(rid).map(|r| (r.0.clone(), r.3)).unwrap_or_default();
+        order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| tie(&a.0).cmp(&tie(&b.0))));
         order.truncate(k);
         let root = self.root.clone();
         Ok(order
             .into_iter()
             .filter_map(|(rid, _)| {
-                let (path, date, text) = rows.get(&rid)?;
+                let (path, date, text, _) = rows.get(&rid)?;
                 Some(Hit {
                     id: format!("ep:{rid}"),
                     type_: "episode".into(),

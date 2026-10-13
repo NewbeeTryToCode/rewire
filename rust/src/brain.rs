@@ -353,6 +353,24 @@ impl Brain {
         Ok(())
     }
 
+    /// Every event in every device log (torn lines from a crash are skipped).
+    pub fn iter_events(&self) -> Vec<Value> {
+        let mut files = Vec::new();
+        if let Ok(devs) = fs::read_dir(self.path(&["events"])) {
+            for d in devs.flatten() {
+                if let Ok(fs_) = fs::read_dir(d.path()) {
+                    files.extend(fs_.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|e| e == "jsonl")));
+                }
+            }
+        }
+        files.sort();
+        files
+            .iter()
+            .filter_map(|p| fs::read_to_string(p).ok())
+            .flat_map(|t| t.lines().filter_map(|l| serde_json::from_str(l.trim()).ok()).collect::<Vec<Value>>())
+            .collect()
+    }
+
     // ---- device-local state ---------------------------------------------
 
     pub fn read_state(&self, name: &str) -> Meta {

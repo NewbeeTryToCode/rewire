@@ -23,8 +23,14 @@ pub fn internal() -> bool {
     std::env::var("REWIRE_INTERNAL").as_deref() == Ok("1")
 }
 
+/// Tests turn this off: the hook must not start a real background consolidation.
+pub static SPAWN_BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 /// Start `rewire consolidate --pending` in the background; it outlives the hook.
 pub fn spawn_consolidation(brain: &Brain) {
+    if !SPAWN_BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else { return };
     let log = fs::OpenOptions::new().create(true).append(true).open(brain.path(&[".state", "consolidate.log"]));
     let (out, err) = match &log {
