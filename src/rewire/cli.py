@@ -66,8 +66,12 @@ def cmd_recall(args):
     brain = _brain(args)
     index = Index(brain)
     index.refresh()
-    hits = ops.recall(brain, index, " ".join(args.query), k=args.k, cwd=os.getcwd(), scope=args.scope,
-                      episodes=args.episodes)
+    try:
+        hits = ops.recall(brain, index, " ".join(args.query), k=args.k, cwd=os.getcwd(), scope=args.scope,
+                          episodes=args.episodes,
+                          refers_to={"from": args.since, "to": args.until} if args.since or args.until else None)
+    except ops.OpError as exc:
+        sys.exit(str(exc))
     _print(hits, args.json)
 
 
@@ -264,6 +268,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-k", type=int, default=8)
     s.add_argument("--episodes", type=int, default=3, help="raw transcript excerpts to include (0 = none)")
     s.add_argument("--scope", help="global | project:<slug> | all")
+    s.add_argument("--from", dest="since", metavar="YYYY-MM-DD", help="the question is about this period: boost it")
+    s.add_argument("--to", dest="until", metavar="YYYY-MM-DD")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_recall)
 

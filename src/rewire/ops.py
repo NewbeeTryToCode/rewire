@@ -3,6 +3,7 @@
 import glob
 import hashlib
 import os
+import re
 
 from . import project as project_mod
 from . import schema, security
@@ -32,20 +33,36 @@ def resolve_id(brain: Brain, ref: str) -> Node | None:
 
 
 def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None = None,
-           scope: str | None = None, beta: float | None = None, episodes: int = 0) -> list[dict]:
+           scope: str | None = None, beta: float | None = None, episodes: int = 0,
+           refers_to: dict | None = None) -> list[dict]:
+    """`refers_to` {from, to}: the time the question is about, resolved by the calling model
+    ("last week", "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter)."""
+    window = time_range(refers_to)
     if scope:
         scopes = [scope] if scope != "all" else None
     else:
         scopes = project_mod.scopes_for(project_mod.detect(cwd, brain.config.projects))
-    hits = index.search(query, scopes=scopes, k=k, beta=beta)
+    hits = index.search(query, scopes=scopes, k=k, beta=beta, window=window)
     for hit in hits:  # re-scanned when shown: files can be edited by hand or arrive by sync
         why = security.blocked(hit["title"] + " " + hit["snippet"])
         if why:
             hit["title"], hit["snippet"] = f"[BLOCKED: {why}; check this note with `rewire doctor`]", ""
     if episodes:
         # raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
-        hits += index.search_episodes(query, k=episodes, seeds=hits)
+        hits += index.search_episodes(query, k=episodes, seeds=hits, window=window)
     return hits
+
+
+def time_range(refers_to: dict | None) -> tuple[str, str] | None:
+    if not refers_to:
+        return None
+    if not isinstance(refers_to, dict):
+        raise OpError("refers_to must be an object {from, to}")
+    start, end = str(refers_to.get("from") or "")[:10], str(refers_to.get("to") or "")[:10]
+    start, end = start or end, end or start
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+        raise OpError("refers_to needs ISO dates: {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}")
+    return (start, end) if start <= end else (end, start)
 
 
 def get(brain: Brain, refs: list[str], session: str, harness: str = "mcp") -> list[dict]:

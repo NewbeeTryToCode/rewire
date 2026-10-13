@@ -23,6 +23,12 @@ QUERY_GUIDE = (
     "terms in both English and Indonesian (memories may be written in either language)."
 )
 
+REFERS_TO_GUIDE = (
+    "When the question is about a time ('last week', 'in March', 'kemarin'), resolve it to ISO dates "
+    "{\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}; when a word is ambiguous, cover both readings. "
+    "Notes and excerpts from that period rank higher (nothing is filtered out)."
+)
+
 TOOLS = [
     {
         "name": "recall",
@@ -42,6 +48,9 @@ TOOLS = [
                              "timelines and 'how long between' questions (measured: experiments/longmemeval)."},
                 "scope": {"type": "string", "description": "'global', 'project:<slug>' or 'all'. "
                           "Default: global + the project of the current directory."},
+                "refers_to": {"type": "object", "description": REFERS_TO_GUIDE,
+                              "properties": {"from": {"type": "string"}, "to": {"type": "string"}},
+                              "additionalProperties": False},
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -89,7 +98,8 @@ class Server:
         if name == "recall":
             self.index.refresh()
             return ops.recall(self.brain, self.index, args["query"], k=int(args.get("k", 8)),
-                              cwd=self.cwd, scope=args.get("scope"), episodes=max(0, min(int(args.get("episodes", 3)), 30)))
+                              cwd=self.cwd, scope=args.get("scope"), episodes=max(0, min(int(args.get("episodes", 3)), 30)),
+                              refers_to=args.get("refers_to"))
         if name == "get":
             return ops.get(self.brain, list(args["ids"]), session=self.session)
         if name == "remember":

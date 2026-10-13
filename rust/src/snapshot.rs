@@ -83,6 +83,11 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let base = format!("active = 1 AND scope IN ({marks})");
     let sp: Vec<&dyn ToSql> = scopes.iter().map(|s| s as &dyn ToSql).collect();
     let b = &brain.config.budgets;
+    // The profile view (who the user is and the people around them) comes first, with its own budget.
+    let profile = index.rows(
+        "active = 1 AND scope = 'global' AND (type = 'person' OR (type = 'fact' AND importance >= 4)) ORDER BY importance DESC, b DESC, id",
+        &[],
+    )?;
     let constraints = index.rows(&format!("{base} AND type = 'constraint' ORDER BY importance DESC, recorded_at"), &sp)?;
     let prefs = index.rows(&format!("{base} AND type = 'preference' ORDER BY importance DESC, b DESC"), &sp)?;
     let mut working: Vec<NodeRow> = match &project {
@@ -96,7 +101,12 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         &format!("{base} AND type IN ('fact','decision','person','concept') ORDER BY b DESC, importance DESC"),
         &sp,
     )?);
+    let about = fill(&profile, b.profile);
+    let shown: std::collections::HashSet<String> =
+        about.0.iter().filter_map(|l| l.rsplit_once('[').map(|(_, r)| r.trim_end_matches(']').to_string())).collect();
+    working.retain(|r| !shown.contains(&crate::util::short_of(&r.id))); // not twice
     let sections = [
+        ("## About the user", about),
         ("## Rules (always apply)", fill(&constraints, b.constraints)),
         ("## Preferences", fill(&prefs, b.preferences)),
         ("## Current context", fill(&working, b.working)),

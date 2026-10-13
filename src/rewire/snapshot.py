@@ -73,6 +73,9 @@ def build(brain, index, cwd: str | None = None, project: str | None = None) -> d
     budgets = brain.config.budgets
     base = f"active = 1 AND scope IN ({marks})"
 
+    # The profile view (who the user is and the people around them) comes first, with its own budget.
+    profile = index.rows("active = 1 AND scope = 'global' AND (type = 'person' OR (type = 'fact' AND importance >= 4)) "
+                         "ORDER BY importance DESC, b DESC, id", ())
     constraints = index.rows(f"{base} AND type = 'constraint' ORDER BY importance DESC, recorded_at", scopes)
     prefs = index.rows(f"{base} AND type = 'preference' ORDER BY importance DESC, b DESC", scopes)
     hub = index.rows("active = 1 AND type = 'project' AND scope = ? AND body != ''",
@@ -81,7 +84,11 @@ def build(brain, index, cwd: str | None = None, project: str | None = None) -> d
         f"{base} AND type IN ('fact','decision','person','concept') ORDER BY b DESC, importance DESC", scopes
     )
 
+    about = _fill(profile, budgets.get("profile", 600))
+    shown = {line.rsplit("[", 1)[1].rstrip("]") for line in about[0]}
+    working = [r for r in working if r["id"][-8:].lower() not in shown]  # not twice
     sections = {
+        "profile": about,
         "constraints": _fill(constraints, budgets["constraints"]),
         "preferences": _fill(prefs, budgets["preferences"]),
         "working": _fill(list(hub) + list(working), budgets["working"]),
@@ -89,7 +96,7 @@ def build(brain, index, cwd: str | None = None, project: str | None = None) -> d
     parts = [HEADER]
     if project:
         parts.append(f"Active project: {project}\n")
-    titles = {"constraints": "## Rules (always apply)", "preferences": "## Preferences",
+    titles = {"profile": "## About the user", "constraints": "## Rules (always apply)", "preferences": "## Preferences",
               "working": "## Current context"}
     for key, (lines, left) in sections.items():
         if lines:

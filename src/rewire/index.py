@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from . import activation, nodefmt, semantic, text
 from .util import parse_iso
 
-SCHEMA = "7"
+SCHEMA = "8"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -54,6 +54,16 @@ _TURN = re.compile(r"\[(\d+) ")
 class _Stale(Exception):
     """An event log was rewritten (e.g. git revert): fall back to a full rebuild."""
 
+
+
+SUMMARY_CHARS = 600
+
+
+def _summary(part: str) -> str:
+    """'Summary: …' row text of one consolidation run in a session file ('' if none)."""
+    m = re.search(r"\n## Summary\n(.*?)(?:\n## |\Z)", part, re.S)
+    body = " ".join(m.group(1).split()) if m else ""
+    return f"Summary: {body[:SUMMARY_CHARS]}" if body and body != "-" else ""
 
 class Index:
     def __init__(self, brain):
@@ -233,6 +243,10 @@ class Index:
             for part in content.split("\n---\n"):  # one file may hold several consolidation runs
                 m = re.search(r"(?m)^- date: (\S+)", part)
                 date = m.group(1) if m else os.path.basename(os.path.dirname(path))
+                summary = _summary(part)
+                if summary:  # the session's goal and outcome, searchable like an excerpt (first = last = 0)
+                    cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?)", (path, date, summary, 0, 0))
+                    db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, summary))
                 if "\n## Transcript\n" not in part:
                     continue
                 lines = [l for l in part.split("\n## Transcript\n", 1)[1].splitlines() if l.startswith("[")]
@@ -275,7 +289,8 @@ class Index:
         db.execute("DELETE FROM episodes WHERE path=?", (path,))
         db.execute("DELETE FROM epfiles WHERE path=?", (path,))
 
-    def search_episodes(self, query: str, k: int = 5, seeds: list[dict] | None = None) -> list[dict]:
+    def search_episodes(self, query: str, k: int = 5, seeds: list[dict] | None = None,
+                        window: tuple[str, str] | None = None) -> list[dict]:
         """Raw transcript excerpts (episodic memory), hybrid-ranked like memories.
 
         `seeds` are memory hits for the same query: the excerpt each one was extracted from
@@ -308,7 +323,7 @@ class Index:
         scale = max(fused.values(), default=1.0 / (self.RRF_K + 1))  # bonus relative to the best match
         for rid, bonus in self._seed_episodes(seeds or []).items():
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
-        window = text.time_window(query)
+        window = window or text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
             f"SELECT rowid AS rid, path, date, text, first FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
             list(fused))} if fused else {}
@@ -317,9 +332,17 @@ class Index:
                 if window[0] <= (r["date"] or "")[:10] <= window[1]:
                     fused[rid] += 1.0 / self.RRF_K
         best = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))[:k]
-        return [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
-                 "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
-                for rid in best if rid in rows]
+        out = [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
+                "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
+               for rid in best if rid in rows]
+        if out and rows[best[0]]["first"] != 0:
+            # the top excerpt carries its session's goal and outcome (bookends), unless it is the summary itself
+            summary = " / ".join(r[0] for r in self.db.execute(
+                "SELECT text FROM episodes WHERE path = ? AND first = 0 AND last = 0 ORDER BY rowid",
+                (rows[best[0]]["path"],)))
+            if summary:
+                out[0]["summary"] = summary[:300]
+        return out
 
     SEED_WEIGHT = 0.35  # source-excerpt bonus for the top memory hit, as a share of the best excerpt's score (tuned: experiments/locomo/evidence.py)
 
@@ -474,7 +497,8 @@ class Index:
         return out
 
     def search(self, query: str, scopes: list[str] | None = None, k: int = 8, beta: float | None = None,
-               include_inactive: bool = False, spread: bool = True, history: bool | None = None) -> list[dict]:
+               include_inactive: bool = False, spread: bool = True, history: bool | None = None,
+               window: tuple[str, str] | None = None) -> list[dict]:
         """Hybrid recall: BM25 + semantic vectors (if installed), fused by rank, then spread over the graph.
 
         - Query time intent ("in July 2023") boosts memories dated in that window.
@@ -499,7 +523,7 @@ class Index:
                 info[r["id"]] = r
         sem_ids = self._semantic_ranks(query, scopes, self.SEM_TOP) if self.SEM_WEIGHT > 0 else []
         fused: dict[str, float] = {i: 0.0 for i in fts_ids + sem_ids}
-        window = text.time_window(query)
+        window = window or text.time_window(query)  # an explicit window comes from the calling model
         if window:  # dated memories inside the asked window join the candidates
             for r in self.db.execute(
                     "SELECT nodes.*, COALESCE(act.b,-20) AS b FROM nodes LEFT JOIN act USING(id) "
