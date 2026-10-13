@@ -279,6 +279,9 @@ fn transcripts_claude_code_codex_and_internal() {
 
 // ---- consolidation -------------------------------------------------------
 
+/// Prompts the fake provider received (most recent last).
+static PROMPTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 struct Fake {
     responses: RefCell<VecDeque<Meta>>,
 }
@@ -290,7 +293,8 @@ impl Fake {
 }
 
 impl Provider for Fake {
-    fn complete_json(&self, _system: &str, _prompt: &str, _schema: &Value) -> Result<Meta> {
+    fn complete_json(&self, _system: &str, prompt: &str, _schema: &Value) -> Result<Meta> {
+        PROMPTS.lock().unwrap_or_else(|e| e.into_inner()).push(prompt.to_string());
         Ok(self.responses.borrow_mut().pop_front().expect("unexpected LLM call"))
     }
 }
@@ -386,6 +390,49 @@ fn approve_refuses_when_target_changed() {
     assert!(!rewire::brain::is_set(c.brain.get_node(existing.id()).unwrap().meta.get("retracted_at")));
     ops::approve(&c.brain, &id, true).unwrap();
     assert!(rewire::brain::is_set(c.brain.get_node(existing.id()).unwrap().meta.get("retracted_at")));
+}
+
+#[test]
+fn skills_are_proposed_reviewed_listed_and_read() {
+    let mut c = Case::new();
+    let skill = json!({"name": "Deploy Billing", "action": "create", "description": "Deploying the billing service",
+                       "steps": "1. helm upgrade billing ./chart\n2. kubectl rollout status deploy/billing", "evidence_turn": 2});
+    let mut out = extraction(vec![], vec![]);
+    out["skills"] = json!([skill.clone()]);
+    let r = run_fixture(&c.brain, Fake::new(vec![out]));
+    assert_eq!(r["queued"][0]["action"], "SKILL");
+    let item = c.brain.iter_inbox().remove(0);
+    assert_eq!((item.meta["kind"].as_str(), item.meta["name"].as_str(), item.meta["skill_action"].as_str()),
+               (Some("skill"), Some("deploy-billing"), Some("create")));
+    assert_eq!(ops::approve(&c.brain, item.meta["inbox_id"].as_str().unwrap(), false).unwrap(), "skill deploy-billing");
+    let file = c.brain.root.join("skills/deploy-billing/SKILL.md");
+    let text = read(&file);
+    assert!(text.starts_with("---\nname: \"deploy-billing\"\ndescription: \"Deploying the billing service\""));
+    assert!(text.contains("helm upgrade billing"));
+    let snap = snapshot::build(&c.brain, &mut c.index, None, None).unwrap().text;
+    assert!(snap.contains("## Skills (procedures") && snap.contains("- deploy-billing — Deploying the billing service"));
+    let got = ops::get(&c.brain, &["skill:deploy-billing".to_string()], "s", "mcp").unwrap();
+    assert!(got[0]["body"].as_str().unwrap().contains("kubectl rollout"));
+    assert!(c.brain.iter_events().iter().any(|e| e["node"] == "skill:deploy-billing"));
+    // a later session appends instead of creating a second skill
+    let mut later = skill.clone();
+    later["name"] = json!("deploy-billing");
+    later["action"] = json!("append");
+    later["steps"] = json!("3. check the grafana dashboard");
+    let mut out = extraction(vec![], vec![]);
+    out["skills"] = json!([later]);
+    let mut con = Consolidator::new(&c.brain, Some(Fake::new(vec![out])), Box::new(|_| {})).unwrap();
+    con.run_file(&fix("rollout-2026-10-01T10-00-00-abc.jsonl"), None).unwrap();
+    let last = PROMPTS.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find(|p| p.contains("KNOWN SKILLS:\n- deploy-billing")).cloned();
+    assert!(last.is_some());
+    let item = c.brain.iter_inbox().remove(0);
+    assert_eq!(item.meta["skill_action"], "append");
+    ops::approve(&c.brain, item.meta["inbox_id"].as_str().unwrap(), false).unwrap();
+    let text = read(&file);
+    assert!(text.contains("## Update ") && text.contains("grafana"));
+    assert!(rewire::skills::stale(&c.brain, None).is_empty());
+    let later = chrono::Utc::now() + chrono::Duration::days(120);
+    assert_eq!(rewire::skills::stale(&c.brain, Some(later)).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), vec!["deploy-billing"]);
 }
 
 #[test]

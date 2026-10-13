@@ -39,7 +39,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "get",
-            "description": "Read memory notes in full by id (from `recall` or the session snapshot).",
+            "description": "Read memory notes in full by id (from `recall` or the session snapshot), or a skill as `skill:<name>`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"ids": {"type": "array", "items": {"type": "string"}, "maxItems": 10}},

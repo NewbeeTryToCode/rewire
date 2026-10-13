@@ -186,6 +186,8 @@ fn print_items(items: &[Value]) {
         } else if s("type") == "episode" {
             let excerpt: String = s("text").lines().collect::<Vec<_>>().join(" / ").chars().take(240).collect();
             println!("  ~ {} {}: {}", s("date"), s("session"), excerpt);
+        } else if s("type") == "skill" {
+            println!("[{}] {}\n{}", s("id"), s("description"), s("body"));
         } else if item.get("body").is_some() {
             println!("[{}] {} · {} · importance {}", crate::util::short_of(&s("id")), s("type"), s("scope"), s("importance"));
             println!("  {}\n  {}\n", s("title"), s("body"));
@@ -376,7 +378,7 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             for id in &ids {
                 let r = if action == "approve" {
-                    ops::approve(&brain, id, force).map(|node| println!("approved {id} → [{}] {}", crate::util::short_of(node.id()), node.title()))
+                    ops::approve(&brain, id, force).map(|what| println!("approved {id} → {what}"))
                 } else {
                     ops::reject(&brain, id).map(|_| println!("rejected {id}"))
                 };

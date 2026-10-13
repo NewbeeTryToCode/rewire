@@ -30,6 +30,8 @@ def _print(data, as_json: bool):
             elif item.get("type") == "episode":
                 excerpt = " / ".join(item["text"].splitlines())[:240]
                 print(f"  ~ {item['date']} {item['session']}: {excerpt}")
+            elif item.get("type") == "skill":
+                print(f"[{item['id']}] {item['description']}\n{item['body']}")
             elif "body" in item:
                 print(f"[{item['id'][-8:].lower()}] {item['type']} · {item['scope']} · importance {item['importance']}")
                 print(f"  {item['title']}\n  {item['body']}\n")
@@ -156,8 +158,7 @@ def cmd_review(args):
     for inbox_id in ids:
         try:
             if args.action == "approve":
-                node = ops.approve(brain, inbox_id, force=args.force)
-                print(f"approved {inbox_id} → [{node.id[-8:].lower()}] {node.meta['title']}")
+                print(f"approved {inbox_id} → {ops.approve(brain, inbox_id, force=args.force)}")
             else:
                 ops.reject(brain, inbox_id)
                 print(f"rejected {inbox_id}")
