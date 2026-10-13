@@ -5,13 +5,19 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
-from . import snapshot
+from . import project as project_mod
+from . import snapshot, text
 from . import sync as sync_mod
 from .brain import Brain, Locked
 from .index import Index
 
-HOOK_EVENTS = {"session-start": "SessionStart", "session-end": "SessionEnd", "pre-compact": "PreCompact"}
+HOOK_EVENTS = {"session-start": "SessionStart", "user-prompt": "UserPromptSubmit", "session-end": "SessionEnd",
+               "pre-compact": "PreCompact"}
+
+# Per-prompt recall: a small block, only when clearly relevant, never repeating what the session saw.
+PROMPT_HITS, PROMPT_CHARS, PROMPT_SESSIONS = 5, 1200, 50
 
 AGENTS_SNIPPET = """\
 ## Memory (rewire)
@@ -35,10 +41,64 @@ def spawn_consolidation(brain: Brain) -> None:
     )
 
 
+def _remember_shown(brain: Brain, session: str, ids) -> None:
+    """Ids this session has already seen (snapshot + earlier prompts), kept for the latest sessions."""
+    if not session:
+        return
+    state = brain.read_state("prompt_shown")
+    entry = state.get(session) or {"ids": []}
+    state[session] = {"t": time.time(), "ids": sorted(set(entry["ids"]) | set(ids))}
+    for old in sorted(state, key=lambda s: state[s]["t"])[:-PROMPT_SESSIONS]:
+        del state[old]
+    brain.write_state("prompt_shown", state)
+
+
+def prompt_context(brain: Brain, payload: dict) -> str:
+    """UserPromptSubmit: notes clearly related to this prompt that the session has not seen yet."""
+    prompt = str(payload.get("prompt") or "")[:2000]
+    words = text.content_words(prompt)
+    if len(prompt.strip()) < 8 or not words:
+        return ""
+    session = str(payload.get("session_id") or "")
+    index = Index(brain)
+    index.refresh()
+    scopes = project_mod.scopes_for(project_mod.detect(payload.get("cwd") or os.getcwd(), brain.config.projects))
+    hits = [h for h in index.search(prompt, scopes=scopes, k=PROMPT_HITS * 2)
+            if h["status"] == "active" and h["type"] != "project"]
+    if not hits:
+        return ""
+    seen = set((brain.read_state("prompt_shown").get(session) or {}).get("ids", []))
+    rows = {r["id"]: r for r in index.rows(f"id IN ({','.join('?' * len(hits))})", [h["id"] for h in hits])}
+    need = min(2, len(words))  # two distinct query words in common (one for a one-word prompt)
+    lines, used, shown = [], 0, []
+    for h in hits:
+        row, short = rows.get(h["id"]), h["id"][-8:].lower()
+        if row is None or short in seen:
+            continue
+        keywords = json.loads(row["meta"]).get("keywords") or []
+        doc = f"{row['title']} {row['body']} {' '.join(keywords) if isinstance(keywords, list) else ''}"
+        if text.overlap(prompt, doc) < need:
+            continue
+        line = snapshot._line(row)
+        if used + len(line) + 1 > PROMPT_CHARS:
+            continue
+        lines.append(line)
+        shown.append(short)
+        used += len(line) + 1
+        if len(lines) >= PROMPT_HITS:
+            break
+    if not lines:
+        return ""
+    _remember_shown(brain, session, shown)
+    return snapshot.fenced("# rewire memory (related to this prompt)\n" + "\n".join(lines))
+
+
 def hook(brain: Brain, event: str, payload: dict, harness: str = "claude-code") -> str:
-    """Run a lifecycle hook. Returns text for stdout (SessionStart context)."""
+    """Run a lifecycle hook. Returns text for stdout (SessionStart / UserPromptSubmit context)."""
     if internal():
         return ""
+    if event == "user-prompt":  # runs on every prompt: no clone, no sync, no consolidation
+        return prompt_context(brain, payload) if brain.exists else ""
     start = event == "session-start"
     if not brain.exists:
         # Ephemeral machines (cloud sessions, fresh Codespaces): fetch the brain
@@ -69,6 +129,7 @@ def hook(brain: Brain, event: str, payload: dict, harness: str = "claude-code") 
             print(f"rewire: snapshot failed: {exc}", file=sys.stderr)
             return snapshot.notice("the memory index could not be read (run `rewire doctor`)")
         out = "" if snap["empty"] else snap["text"]
+        _remember_shown(brain, str(payload.get("session_id") or ""), snap["ids"])
         if stale and out:
             out = out.replace(snapshot.HEADER, snapshot.HEADER + stale, 1)
     transcript = payload.get("transcript_path")
@@ -86,6 +147,7 @@ def claude_code_settings(command: str = "rewire") -> dict:
     def entry(evt, timeout):
         return [{"hooks": [{"type": "command", "command": f"{command} hook {evt}", "timeout": timeout}]}]
     return {"hooks": {"SessionStart": entry("session-start", 15),
+                      "UserPromptSubmit": entry("user-prompt", 5),
                       "SessionEnd": entry("session-end", 5),
                       "PreCompact": entry("pre-compact", 5)}}
 

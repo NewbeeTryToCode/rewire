@@ -138,7 +138,7 @@ pub enum Cmd {
     Mcp,
     /// harness lifecycle hook (reads hook JSON on stdin)
     Hook {
-        #[arg(value_parser = ["session-start", "session-end", "pre-compact"])]
+        #[arg(value_parser = ["session-start", "user-prompt", "session-end", "pre-compact"])]
         event: String,
         #[arg(long, default_value = "claude-code")]
         harness: String,

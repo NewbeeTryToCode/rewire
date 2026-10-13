@@ -101,6 +101,30 @@ pub fn match_expression(query: &str) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.join(" OR ")) }
 }
 
+pub fn content_words(query: &str) -> Vec<String> {
+    let lower = query.to_lowercase();
+    let words: Vec<&str> = words_re().find_iter(&lower).map(|m| m.as_str()).filter(|w| clen(w) > 1).collect();
+    let content: Vec<&str> = words.iter().copied().filter(|w| !is_stopword(w)).collect();
+    let content = if content.is_empty() { words } else { content };
+    let mut seen = std::collections::HashSet::new();
+    content.into_iter().filter(|w| seen.insert(*w)).map(String::from).collect()
+}
+
+/// How many distinct content words of the query a document contains (as itself or a stem; words and
+/// stems of 4+ letters match as prefixes). An absolute relevance signal: BM25 scores are only
+/// comparable within one query.
+pub fn overlap(query: &str, doc: &str) -> usize {
+    let lower = doc.to_lowercase();
+    let tokens: std::collections::HashSet<&str> = words_re().find_iter(&lower).map(|m| m.as_str()).collect();
+    content_words(query)
+        .iter()
+        .filter(|w| {
+            tokens.contains(w.as_str())
+                || stems(w).iter().chain(std::iter::once(*w)).any(|s| tokens.iter().any(|t| *t == s.as_str() || (clen(s) >= 4 && t.starts_with(s.as_str()))))
+        })
+        .count()
+}
+
 fn month_number(name: &str) -> Option<u32> {
     const FULL: [&str; 12] = [
         "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",

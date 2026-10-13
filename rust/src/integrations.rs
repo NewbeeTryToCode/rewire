@@ -9,7 +9,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-pub const HOOK_EVENTS: [&str; 3] = ["session-start", "session-end", "pre-compact"];
+pub const HOOK_EVENTS: [&str; 4] = ["session-start", "user-prompt", "session-end", "pre-compact"];
+
+/// Per-prompt recall: a small block, only when clearly relevant, never repeating what the session saw.
+pub const PROMPT_HITS: usize = 5;
+pub const PROMPT_CHARS: usize = 1200;
+pub const PROMPT_SESSIONS: usize = 50;
 pub const SKILL: &str = include_str!("../templates/SKILL.md");
 
 pub const AGENTS_SNIPPET: &str = "## Memory (rewire)
@@ -48,10 +53,103 @@ pub fn spawn_consolidation(brain: &Brain) {
     let _ = cmd.spawn();
 }
 
-/// Run a lifecycle hook. Returns text for stdout (SessionStart context).
+/// Ids this session has already seen (snapshot + earlier prompts), kept for the latest sessions.
+fn remember_shown(brain: &Brain, session: &str, ids: &[String]) -> Result<()> {
+    if session.is_empty() {
+        return Ok(());
+    }
+    let mut state = brain.read_state("prompt_shown");
+    let mut all: std::collections::BTreeSet<String> = state
+        .get(session)
+        .and_then(|e| e.get("ids"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    all.extend(ids.iter().cloned());
+    state.insert(session.into(), json!({"t": crate::util::now_ts(), "ids": all.into_iter().collect::<Vec<_>>()}));
+    let t = |v: &Value| v.get("t").and_then(Value::as_f64).unwrap_or(0.0);
+    let mut by_age: Vec<(String, f64)> = state.iter().map(|(k, v)| (k.clone(), t(v))).collect();
+    by_age.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (old, _) in by_age.iter().take(by_age.len().saturating_sub(PROMPT_SESSIONS)) {
+        state.remove(old);
+    }
+    brain.write_state("prompt_shown", &state)
+}
+
+/// UserPromptSubmit: notes clearly related to this prompt that the session has not seen yet.
+pub fn prompt_context(brain: &Brain, payload: &Value) -> Result<String> {
+    let prompt: String = payload.get("prompt").and_then(Value::as_str).unwrap_or("").chars().take(2000).collect();
+    let words = crate::text::content_words(&prompt);
+    if prompt.trim().chars().count() < 8 || words.is_empty() {
+        return Ok(String::new());
+    }
+    let session = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
+    let mut index = Index::new(brain);
+    index.refresh()?;
+    let cwd = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+    let scopes = crate::project::scopes_for(crate::project::detect(Some(&cwd), &brain.config.projects).as_deref());
+    let opts = crate::index::SearchOpts { scopes: Some(scopes), k: PROMPT_HITS * 2, ..Default::default() };
+    let hits: Vec<_> = index.search(&prompt, &opts)?.into_iter().filter(|h| h.status == "active" && h.type_ != "project").collect();
+    if hits.is_empty() {
+        return Ok(String::new());
+    }
+    let state = brain.read_state("prompt_shown");
+    let seen: std::collections::HashSet<String> = state
+        .get(session)
+        .and_then(|e| e.get("ids"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let ids: Vec<String> = hits.iter().map(|h| h.id.clone()).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let rows: std::collections::HashMap<String, crate::index::NodeRow> =
+        index.rows(&format!("id IN ({})", vec!["?"; ids.len()].join(",")), &params)?.into_iter().map(|r| (r.id.clone(), r)).collect();
+    let need = words.len().min(2); // two distinct query words in common (one for a one-word prompt)
+    let (mut lines, mut used, mut shown) = (Vec::new(), 0, Vec::new());
+    for h in &hits {
+        let short = crate::util::short_of(&h.id);
+        let Some(row) = rows.get(&h.id) else { continue };
+        if seen.contains(&short) {
+            continue;
+        }
+        let keywords = match row.meta.get("keywords") {
+            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+            _ => String::new(),
+        };
+        if crate::text::overlap(&prompt, &format!("{} {} {keywords}", row.title, row.body)) < need {
+            continue;
+        }
+        let l = snapshot::line(row);
+        let n = l.chars().count();
+        if used + n + 1 > PROMPT_CHARS {
+            continue;
+        }
+        used += n + 1;
+        lines.push(l);
+        shown.push(short);
+        if lines.len() >= PROMPT_HITS {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return Ok(String::new());
+    }
+    remember_shown(brain, session, &shown)?;
+    Ok(snapshot::fenced(&format!("# rewire memory (related to this prompt)\n{}", lines.join("\n"))))
+}
+
+/// Run a lifecycle hook. Returns text for stdout (SessionStart / UserPromptSubmit context).
 pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result<String> {
     if internal() {
         return Ok(String::new());
+    }
+    if event == "user-prompt" {
+        // runs on every prompt: no clone, no sync, no consolidation
+        return if brain.exists() { prompt_context(&brain, payload) } else { Ok(String::new()) };
     }
     let start = event == "session-start";
     let only_at_start = |text: String| Ok(if start { text } else { String::new() });
@@ -95,6 +193,7 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
         // never break session start; tell the agent memory is missing instead
         match index.refresh().and_then(|_| snapshot::build(&brain, &mut index, Some(&cwd), None)) {
             Ok(snap) if !snap.empty => {
+                remember_shown(&brain, payload.get("session_id").and_then(Value::as_str).unwrap_or(""), &snap.ids)?;
                 out = snap.text;
                 if stale {
                     let note = "Sync was skipped this session, so notes from other devices may be missing.\n";
@@ -123,7 +222,7 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
 
 pub fn claude_code_settings(command: &str) -> Value {
     let entry = |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
-    json!({"hooks": {"SessionStart": entry("session-start", 15), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)}})
+    json!({"hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)}})
 }
 
 pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<String> {
