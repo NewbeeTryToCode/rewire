@@ -27,6 +27,12 @@ sha2 = "0.10"
 shlex = "1"
 toml = "0.8"
 ureq = { version = "2", features = ["json"] }
+# Optional semantic search (WordLlama static embeddings; model files installed with `rewire semantic install`).
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+
+[features]
+default = ["semantic"]
+semantic = ["dep:tokenizers"]
 
 [dev-dependencies]
 tempfile = "3"

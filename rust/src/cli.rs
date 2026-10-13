@@ -119,6 +119,14 @@ pub enum Cmd {
     Rebuild,
     /// health check
     Doctor,
+    /// optional semantic search: install the model files, or show whether it is on
+    Semantic {
+        #[arg(value_parser = ["status", "install"], default_value = "status")]
+        action: String,
+        /// directory holding the model files (default: the local `wordllama` Python package)
+        #[arg(long)]
+        from: Option<String>,
+    },
     /// rewrite all nodes in the current file format
     Upgrade,
     /// revert a session's consolidation
@@ -395,6 +403,20 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("indexed {} nodes", Index::new(&brain).rebuild()?);
         }
         Cmd::Doctor => println!("{}", ops::doctor(&open_brain(bp)).join("\n")),
+        Cmd::Semantic { action, from } => {
+            if action == "install" {
+                match crate::semantic::install(from.as_deref()) {
+                    Err(Error::Op(e)) => fail(&e),
+                    other => println!("{}", other?),
+                }
+            } else if crate::semantic::available() {
+                println!("semantic search: on ({})", crate::semantic::model_dir().display());
+            } else if cfg!(feature = "semantic") {
+                println!("semantic search: off (no model in {}; run `rewire semantic install`)", crate::semantic::model_dir().display());
+            } else {
+                println!("semantic search: not built in (build with the `semantic` feature)");
+            }
+        }
         Cmd::Upgrade => {
             let brain = open_brain(bp);
             let mut count = 0;

@@ -8,7 +8,7 @@
 use crate::activation::{self, FLOOR, MIN_AGE_H};
 use crate::brain::Brain;
 use crate::util::{now_ts, parse_iso, relpath, round_to, short_of, slugify};
-use crate::{nodefmt, text, Error, Meta, Result};
+use crate::{nodefmt, semantic, text, Error, Meta, Result};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
@@ -57,7 +57,28 @@ CREATE TABLE epfiles(path TEXT PRIMARY KEY, mtime_ns INT, size INT);
 CREATE TABLE episodes(path TEXT, date TEXT, text TEXT, first INT, last INT);
 CREATE INDEX episodes_path ON episodes(path);
 CREATE VIRTUAL TABLE fts_ep USING fts5(text, tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE vec(id TEXT PRIMARY KEY, v BLOB);
+CREATE TABLE epvec(rid INTEGER PRIMARY KEY, v BLOB);
 ";
+
+/// The bundled static embeddings are much weaker than BM25 + keywords on their own (R@5 57% vs 90%),
+/// so they only add a small bonus; tuned in experiments/retrieval, validated on LoCoMo.
+pub const SEM_WEIGHT: f64 = 0.15;
+pub const SEM_TOP: usize = 10;
+
+fn sem_flag() -> &'static str {
+    if semantic::available() { "1" } else { "0" }
+}
+
+/// (ids, scopes, vectors) of every node with a vector.
+type NodeVectors = (Vec<String>, Vec<String>, Vec<Vec<f32>>);
+
+/// Indices of `sims` from the most to the least similar.
+fn by_similarity(sims: &[f32]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..sims.len()).collect();
+    order.sort_by(|a, b| sims[*b].partial_cmp(&sims[*a]).unwrap_or(std::cmp::Ordering::Equal));
+    order
+}
 
 /// One row of the `nodes` table plus its activation.
 #[derive(Debug, Clone)]
@@ -184,6 +205,9 @@ pub struct Index {
     recall_beta: f64,
     db: Option<Connection>,
     pub seed_weight: f64,
+    /// cached (ids, scopes, vectors) of nodes and (rowids, vectors) of episodes for semantic search
+    mat: Option<NodeVectors>,
+    epmat: Option<(Vec<i64>, Vec<Vec<f32>>)>,
 }
 
 fn mtime_ns(md: &fs::Metadata) -> i64 {
@@ -214,6 +238,8 @@ impl Index {
             // source-excerpt bonus for the top memory hit, as a share of the best excerpt score
             // (tuned: experiments/locomo/evidence.py)
             seed_weight: 0.35,
+            mat: None,
+            epmat: None,
         }
     }
 
@@ -231,17 +257,17 @@ impl Index {
         if ok.as_deref() == Some(SCHEMA) {
             let sem: Option<String> =
                 db.query_row("SELECT v FROM meta WHERE k='semantic'", [], |r| r.get(0)).optional().unwrap_or(None);
-            if sem.as_deref() == Some("0") {
+            if sem.as_deref() == Some(sem_flag()) {
                 return Ok(db);
             }
         }
-        // missing, older schema, or built with semantic vectors: rebuild from the files
+        // missing, older schema, or semantic model installed/removed since the build: rebuild from the files
         drop(db);
         self.remove_files();
         let db = open(&self.path)?;
         db.execute_batch(DDL)?;
         db.execute("INSERT INTO meta VALUES ('schema', ?)", [SCHEMA])?;
-        db.execute("INSERT INTO meta VALUES ('semantic', '0')", [])?;
+        db.execute("INSERT INTO meta VALUES ('semantic', ?)", [sem_flag()])?;
         Ok(db)
     }
 
@@ -282,9 +308,9 @@ impl Index {
             let db = self.db.as_ref().unwrap();
             db.execute_batch("BEGIN IMMEDIATE")?;
             match self.sync_all(db, max_age) {
-                Ok(Ok(())) => {
+                Ok(Ok(changed)) => {
                     db.execute_batch("COMMIT")?;
-                    Ok(())
+                    Ok(changed)
                 }
                 Ok(Err(Stale)) => {
                     db.execute_batch("ROLLBACK")?;
@@ -296,19 +322,30 @@ impl Index {
                 }
             }
         };
-        if outcome.is_err() {
-            self.rebuild()?;
+        match outcome {
+            Err(Stale) => {
+                self.rebuild()?;
+            }
+            Ok(true) => {
+                self.mat = None;
+                self.epmat = None;
+            }
+            Ok(false) => {}
         }
         Ok(())
     }
 
-    fn sync_all(&self, db: &Connection, max_age: f64) -> Result<std::result::Result<(), Stale>> {
+    fn sync_all(&self, db: &Connection, max_age: f64) -> Result<std::result::Result<bool, Stale>> {
         let changed = self.sync_nodes(db)?;
         let touched = match self.sync_events(db)? {
             Ok(t) => t,
             Err(Stale) => return Ok(Err(Stale)),
         };
-        self.sync_episodes(db)?;
+        let ep_changed = self.sync_episodes(db)?;
+        let any = !changed.is_empty() || ep_changed;
+        if any {
+            Self::embed_pending(db)?;
+        }
         let row: Option<String> = db.query_row("SELECT v FROM meta WHERE k='act_at'", [], |r| r.get(0)).optional()?;
         let stale = match row.and_then(|v| v.parse::<f64>().ok()) {
             Some(at) => now_ts() - at > max_age,
@@ -321,10 +358,108 @@ impl Index {
             let ids: Vec<String> = changed.union(&touched).cloned().collect();
             self.compute_act(db, Some(ids))?;
         }
-        Ok(Ok(()))
+        Ok(Ok(any))
     }
 
     // ---- incremental sync ------------------------------------------------
+
+    /// Vectors for nodes/episodes that have none yet (derived data, like everything here).
+    fn embed_pending(db: &Connection) -> Result<()> {
+        if !semantic::available() {
+            return Ok(());
+        }
+        let rows: Vec<(String, String, String, String)> = {
+            let mut st = db.prepare("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec)")?;
+            let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            it.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|(_, title, body, meta)| {
+                let kw = serde_json::from_str::<Value>(meta)
+                    .ok()
+                    .and_then(|m| m.get("keywords").and_then(Value::as_array).cloned())
+                    .map(|a| a.iter().map(crate::cli::py_str).collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                format!("{title}. {body} {kw}")
+            })
+            .collect();
+        if let Some(vecs) = semantic::embed(&texts) {
+            for ((id, ..), v) in rows.iter().zip(vecs) {
+                db.execute("INSERT OR REPLACE INTO vec VALUES (?,?)", params![id, semantic::to_blob(&v)])?;
+            }
+        }
+        let eps: Vec<(i64, String)> = {
+            let mut st = db.prepare("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec)")?;
+            let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            it.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let texts: Vec<String> = eps.iter().map(|(_, t)| t.clone()).collect();
+        if let Some(vecs) = semantic::embed(&texts) {
+            for ((rid, _), v) in eps.iter().zip(vecs) {
+                db.execute("INSERT OR REPLACE INTO epvec VALUES (?,?)", params![rid, semantic::to_blob(&v)])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Node ids most similar to the query (in scope), best first.
+    fn semantic_ranks(&mut self, query: &str, scopes: Option<&Vec<String>>, limit: usize) -> Result<Vec<String>> {
+        if !semantic::available() {
+            return Ok(Vec::new());
+        }
+        if self.mat.is_none() {
+            let loaded = {
+                let db = self.db()?;
+                let mut st = db.prepare("SELECT nodes.id, nodes.scope, vec.v FROM vec JOIN nodes USING(id)")?;
+                let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Vec<u8>>(2)?)))?;
+                let (mut ids, mut sc, mut vs) = (Vec::new(), Vec::new(), Vec::new());
+                for r in rows {
+                    let (i, s, v) = r?;
+                    ids.push(i);
+                    sc.push(s);
+                    vs.push(semantic::from_blob(&v));
+                }
+                (ids, sc, vs)
+            };
+            self.mat = Some(loaded);
+        }
+        let Some(qv) = semantic::embed(&[query.to_string()]).and_then(|mut v| v.pop()) else { return Ok(Vec::new()) };
+        let (ids, node_scopes, vs) = self.mat.as_ref().unwrap();
+        let sims: Vec<f32> = vs.iter().map(|v| semantic::dot(v, &qv)).collect();
+        Ok(by_similarity(&sims)
+            .into_iter()
+            .filter(|&i| scopes.is_none_or(|s| s.contains(&node_scopes[i])))
+            .take(limit)
+            .map(|i| ids[i].clone())
+            .collect())
+    }
+
+    /// Episode rowids most similar to the query, best first.
+    fn semantic_episode_ranks(&mut self, query: &str, limit: usize) -> Result<Vec<i64>> {
+        if !semantic::available() {
+            return Ok(Vec::new());
+        }
+        if self.epmat.is_none() {
+            let loaded = {
+                let db = self.db()?;
+                let mut st = db.prepare("SELECT rid, v FROM epvec")?;
+                let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+                let (mut ids, mut vs) = (Vec::new(), Vec::new());
+                for r in rows {
+                    let (i, v) = r?;
+                    ids.push(i);
+                    vs.push(semantic::from_blob(&v));
+                }
+                (ids, vs)
+            };
+            self.epmat = Some(loaded);
+        }
+        let Some(qv) = semantic::embed(&[query.to_string()]).and_then(|mut v| v.pop()) else { return Ok(Vec::new()) };
+        let (ids, vs) = self.epmat.as_ref().unwrap();
+        let sims: Vec<f32> = vs.iter().map(|v| semantic::dot(v, &qv)).collect();
+        Ok(by_similarity(&sims).into_iter().take(limit).map(|i| ids[i]).collect())
+    }
 
     fn delete_node(db: &Connection, node_id: &str) -> Result<()> {
         let rowid: Option<i64> = db.query_row("SELECT rowid FROM nodes WHERE id=?", [node_id], |r| r.get(0)).optional()?;
@@ -334,6 +469,7 @@ impl Index {
         db.execute("DELETE FROM nodes WHERE id=?", [node_id])?;
         db.execute("DELETE FROM edges WHERE src=?", [node_id])?;
         db.execute("DELETE FROM act WHERE id=?", [node_id])?;
+        db.execute("DELETE FROM vec WHERE id=?", [node_id])?;
         Ok(())
     }
 
@@ -535,6 +671,7 @@ impl Index {
 
     fn delete_episodes(db: &Connection, path: &str) -> Result<()> {
         db.execute("DELETE FROM fts_ep WHERE rowid IN (SELECT rowid FROM episodes WHERE path=?)", [path])?;
+        db.execute("DELETE FROM epvec WHERE rid IN (SELECT rowid FROM episodes WHERE path=?)", [path])?;
         db.execute("DELETE FROM episodes WHERE path=?", [path])?;
         db.execute("DELETE FROM epfiles WHERE path=?", [path])?;
         Ok(())
@@ -753,7 +890,8 @@ impl Index {
                 info.insert(row.id.clone(), row);
             }
         }
-        let mut fused: IndexSet<String> = fts_ids.iter().cloned().collect();
+        let sem_ids = if SEM_WEIGHT > 0.0 { self.semantic_ranks(query, scopes.as_ref(), SEM_TOP)? } else { Vec::new() };
+        let mut fused: IndexSet<String> = fts_ids.iter().chain(sem_ids.iter()).cloned().collect();
         let window = opts.window.clone().or_else(|| text::time_window(query)); // an explicit window comes from the calling model
         if let Some((start, end)) = &window {
             // dated memories inside the asked window join the candidates
@@ -782,6 +920,12 @@ impl Index {
         let span = if worst - best != 0.0 { worst - best } else { 1.0 };
         let mut rel: IndexMap<String, f64> =
             fused.iter().map(|i| (i.clone(), ranks.get(i).map_or(0.0, |r| 1.0 - (r - best) / span * 0.9))).collect();
+        // the semantic ranker adds a bonus that decays with its rank (plain RRF flattened BM25 and hurt MRR)
+        for (pos, i) in sem_ids.iter().enumerate() {
+            if let Some(v) = rel.get_mut(i) {
+                *v += SEM_WEIGHT * (1.0 - pos as f64 / sem_ids.len().max(1) as f64);
+            }
+        }
         let top = rel.values().cloned().fold(f64::NEG_INFINITY, f64::max);
         let top = if top != 0.0 { top } else { 1.0 };
         for v in rel.values_mut() {
@@ -894,6 +1038,9 @@ impl Index {
             for (rank, rid) in ids.into_iter().enumerate() {
                 *fused.entry(rid).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
             }
+        }
+        for (rank, rid) in self.semantic_episode_ranks(query, limit)?.into_iter().enumerate() {
+            *fused.entry(rid).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
         }
         let scale = fused.values().cloned().fold(f64::NEG_INFINITY, f64::max);
         let scale = if scale.is_finite() { scale } else { 1.0 / (RRF_K + 1.0) }; // bonus relative to the best match
