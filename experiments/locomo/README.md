@@ -27,7 +27,7 @@ Per percakapan (hybrid): 88.8% (conv-43) sampai 97.4% (conv-26, conv-41).
 
 ## Iterasi 7: dari analisis kegagalan ke perbaikan retrieval
 
-LoCoMo menandai giliran bukti () untuk setiap pertanyaan. [](evidence.py) mengukur apakah giliran itu masuk ke konteks yang diambil rewire: **tanpa LLM, ~20 detik** untuk 1.540 pertanyaan. Ini sekarang loop iterasi utama; skor J berubah ±3 poin antar-run (46 pertanyaan berganti benar/salah dengan konteks 87% sama), terlalu berisik untuk perubahan kecil.
+LoCoMo menandai giliran bukti (`evidence`) untuk setiap pertanyaan. [`evidence.py`](evidence.py) mengukur apakah giliran itu masuk ke konteks yang diambil rewire: **tanpa LLM, ~20 detik** untuk 1.540 pertanyaan. Ini sekarang loop iterasi utama; skor J berubah ±3 poin antar-run (46 pertanyaan berganti benar/salah dengan konteks 87% sama), terlalu berisik untuk perubahan kecil.
 
 **Diagnosis 90 jawaban salah (run hybrid):** 57% sudah punya *semua* bukti di konteks (salah di penjawab), 21% punya sebagian (hampir semua multi-hop), 22% bukti tidak terambil.
 
@@ -39,7 +39,7 @@ LoCoMo menandai giliran bukti () untuk setiap pertanyaan. [](evidence.py) menguk
 | Maksimal N potongan per sesi (diversitas) | turun (single-hop 94 → 84% di N=1) | – | **Dibuang** |
 | Aturan timeline di ekstraksi (tanggal mulai untuk durasi) | butuh ingest ulang | belum diukur | Dipertahankan (berlaku untuk konsolidasi baru) |
 
-Bug yang ditemukan: sumber klaim menyimpan id sesi terpotong 8 karakter (), jadi tautan fakta → transcript putus. Sekarang id penuh disimpan; brain eval diperbaiki dari riwayat git ().
+Bug yang ditemukan: sumber klaim menyimpan id sesi terpotong 8 karakter (`conv-26-`), jadi tautan fakta → transcript putus. Sekarang id penuh disimpan; brain eval diperbaiki dari riwayat git (`link_sources`).
 
 **Kesimpulan:** di LoCoMo retrieval sudah bukan bottleneck. Bukti yang lebih lengkap tidak menaikkan J karena sisa kesalahan ada di penjawab (salah pilih orang/peristiwa, salah hitung) dan di pertanyaan spekulatif. LoCoMo jenuh di ~94% untuk setup ini; perbaikan berikutnya perlu benchmark yang menguji hal lain (LongMemEval: *knowledge update*, *abstention*).
 
