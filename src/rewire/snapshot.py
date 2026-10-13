@@ -5,7 +5,13 @@ budgets and never decay; working memory is ranked by activation and scoped
 to the active project.
 """
 
+import json
+
 from . import project as project_mod
+
+# Everything rewire injects is fenced, so transcripts can drop it before consolidation
+# (memory must never come back as something the user "said": transcripts.strip_injected).
+FENCE_OPEN, FENCE_CLOSE = "<rewire-memory>", "</rewire-memory>"
 
 HEADER = (
     "# rewire memory\n"
@@ -19,7 +25,10 @@ def _line(row) -> str:
     text = row["title"] if not body or body == row["title"] else f"{row['title']} — {body}"
     if len(text) > 380:
         text = text[:377] + "..."
-    return f"- {text} [{row['id'][-8:].lower()}]"
+    # Dated notes let the model prefer the current value when facts changed over time.
+    meta = json.loads(row["meta"]) if row["meta"] else {}
+    date = (meta.get("valid_from") or row["recorded_at"] or "")[:10]
+    return f"- {date + ' · ' if date else ''}{text} [{row['id'][-8:].lower()}]"
 
 
 def _fill(rows, budget: int) -> list[str]:
@@ -62,5 +71,6 @@ def build(brain, index, cwd: str | None = None, project: str | None = None) -> d
         if lines:
             parts.append(titles[key] + "\n" + "\n".join(lines) + "\n")
     ids = [line.rsplit("[", 1)[1].rstrip("]") for lines in sections.values() for line in lines]
-    return {"project": project, "text": "\n".join(parts), "ids": ids,
+    text = f"{FENCE_OPEN}\n" + "\n".join(parts) + f"{FENCE_CLOSE}\n"
+    return {"project": project, "text": text, "ids": ids,
             "empty": not any(sections.values())}

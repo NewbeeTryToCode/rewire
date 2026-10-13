@@ -38,8 +38,11 @@ Read a session transcript and extract ONLY durable knowledge worth remembering i
 - decision: a choice made, with its reason
 - fact: a stable fact about the user, their projects or environment that cannot be derived from code or git
 - person / concept: only when the session defines something new and important
-Skip: chit-chat, task progress, things derivable from the code/repo, transient errors, and anything
-the assistant merely suggested that the user did not accept.
+Skip: chit-chat, task progress, things derivable from the code/repo, and anything the assistant merely
+suggested that the user did not accept. Never store: transient or environment-dependent failures (network,
+permissions, a tool missing on one machine), claims that a tool or feature "is broken" or "cannot do X"
+(they harden into refusals the agent cites against itself), one-off narratives, and dead ends that were
+not resolved.
 Return few, high-quality claims; zero is fine.""",
     # General second brain: what happens in the people's lives is the knowledge.
     "general": """You maintain long-term memory about the people in a conversation.
@@ -65,6 +68,9 @@ Rules:
   become a start date ("has had the turtles for 3 years" in 2022 -> "since about 2019"); finishing
   something says when it began if the session tells ("finished the book on 2022-10-05, started in
   2022-06"). Link a finish or change to the claim about its start with related_to.
+- Phrase preferences, facts and decisions as notes about the user or project ("The user prefers concise
+  answers"), never as commands ("Always answer concisely"): a command is re-read as an instruction in later
+  sessions. Only constraints may be imperative.
 - Write each claim (text and title) in the language the user writes in. If the user writes Indonesian,
   the claim is in Indonesian.
 - Describe what a project is or does as a "fact" with scope "project" (project pages are managed separately).

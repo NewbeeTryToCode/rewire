@@ -124,6 +124,32 @@ fn snapshot_budget_limits_and_long_lines_keep_ids() {
 }
 
 #[test]
+fn snapshot_is_dated_and_fenced() {
+    let mut c = Case::new();
+    c.add("fact", "atlas runs on Postgres 15", json!({"valid_from": "2023-07-10"}));
+    let snap = snapshot::build(&c.brain, &mut c.index, None, None).unwrap();
+    assert!(snap.text.starts_with("<rewire-memory>\n# rewire memory"));
+    assert!(snap.text.trim_end().ends_with("</rewire-memory>"));
+    assert!(snap.text.contains("- 2023-07-10 · atlas runs on Postgres 15 ["));
+}
+
+#[test]
+fn injected_memory_never_reaches_consolidation() {
+    let snap = "<rewire-memory>\n# rewire memory\n- 2023-01-01 · User prefers tabs [abcdefgh]\n</rewire-memory>";
+    let lines: Vec<(usize, String)> = [
+        json!({"type": "user", "sessionId": "s", "message": {"content": format!("{snap}\nplease fix the build")}}),
+        json!({"type": "assistant", "message": {"content": [{"type": "text", "text": format!("Noted. {snap}")}]}}),
+        json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "<rewire-memory>\n[{\"id\": \"x\""}]}}),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, v)| (i + 1, v.to_string()))
+    .collect();
+    let (_, turns) = tx::parse_claude_code(&lines);
+    assert_eq!(turns.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["please fix the build", "Noted."]);
+}
+
+#[test]
 fn supersede_retracts_and_recall_returns_new() {
     let mut c = Case::new();
     let old = c.add("fact", "The API limit is 100 per minute", json!({}));

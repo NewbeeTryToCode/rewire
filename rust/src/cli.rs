@@ -170,6 +170,7 @@ fn cwd() -> String {
 }
 
 fn print_items(items: &[Value]) {
+    println!("{}", crate::snapshot::FENCE_OPEN);
     for item in items {
         let s = |k: &str| item.get(k).map(py_str).unwrap_or_default();
         if item.get("error").is_some() {
@@ -182,9 +183,15 @@ fn print_items(items: &[Value]) {
             println!("  {}\n  {}\n", s("title"), s("body"));
         } else {
             let score = item.get("score").and_then(Value::as_f64).unwrap_or(0.0);
-            println!("[{}] {:.2} {:<10} {}", crate::util::short_of(&s("id")), score, s("type"), s("title"));
+            let date = if s("date").is_empty() { "----------".to_string() } else { s("date") };
+            let status = match item.get("status").and_then(Value::as_str) {
+                Some(st) if st != "active" => format!(" ({st})"),
+                _ => String::new(),
+            };
+            println!("[{}] {:.2} {:<10} {date} {}{status}", crate::util::short_of(&s("id")), score, s("type"), s("title"));
         }
     }
+    println!("{}", crate::snapshot::FENCE_CLOSE);
 }
 
 pub fn run(cli: Cli) -> Result<()> {
