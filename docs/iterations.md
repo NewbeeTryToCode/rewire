@@ -60,7 +60,13 @@ Benchmark publik end-to-end ([experiments/locomo](../experiments/locomo/README.m
 
 Diimplementasikan dari analisis Mem0/Zep: semantic search opsional (WordLlama, offline, fusi aditif dengan BM25), bonus jendela waktu ("in July 2023"), dan pertanyaan sejarah mengembalikan fakta `superseded` berlabel. LoCoMo **penuh** (10 percakapan, 1.540 pertanyaan, judge resmi Mem0): **94.2%** hybrid, **94.9%** kata kunci saja, vs 92.5% Mem0 platform. Ablasi: semantik tidak membantu di LoCoMo (17 vs 29 pertanyaan berbeda, tidak signifikan) karena episode + kata kunci sudah menutupinya, jadi tetap opsional. Sisa kelemahan: open-domain 75% — kebanyakan pertanyaan spekulatif yang butuh pengetahuan dunia, bukan memory. Bug ditemukan run penuh: `time_window` crash pada "2022-23".
 
-## Berikutnya (iterasi 7)
+## Iterasi 7 — 2026-10-13: analisis kegagalan LoCoMo
+
+Metrik baru tanpa LLM ([evidence.py](../experiments/locomo/evidence.py)): apakah giliran bukti LoCoMo masuk ke konteks. Diagnosis: 57% jawaban salah sudah punya semua bukti, jadi salahnya di penjawab. Diimplementasikan: fakta menarik potongan transcript asalnya (perlu perbaikan bug: id sesi di sumber klaim terpotong 8 karakter). Semua-bukti-di-konteks 75.5 → 79.5%, temporal 81 → 90%, tapi J penuh tetap 94.0% (noise ±3). Dicoba dan dibuang: 2× potongan untuk pertanyaan hitungan (membuat salah hitung) dan batas potongan per sesi (menurunkan recall). Aturan timeline ditambahkan ke ekstraksi, belum diukur. Kesimpulan: LoCoMo jenuh; berikutnya LongMemEval.
+
+## Berikutnya (iterasi 8)
+
+0. **LongMemEval** (knowledge update, abstention, multi-session) — menguji supersede dan intent sejarah yang tidak diuji LoCoMo.
 
 1. **E1 penuh:** konsolidasi 20 transcript nyata (Claude Code + Codex) milik user, label manual, ukur presisi & duplikat.
 2. **Verifikasi parser Codex** dengan file `~/.codex/sessions/**/rollout-*.jsonl` asli (fixture saat ini dibuat dari dokumentasi pihak ketiga).

@@ -25,6 +25,24 @@ Per percakapan (hybrid): 88.8% (conv-43) sampai 97.4% (conv-26, conv-41).
 
 **Open-domain (75%) adalah sisa kelemahan terbesar — dan sebagian besar bukan masalah memory.** Dari 24 jawaban salah, mayoritas pertanyaan spekulatif yang jawaban emasnya butuh pengetahuan dunia atau tebakan spesifik ("brand outdoor mana yang mungkin meng-endorse John?" → *Under Armour*; "taman nasional mana?" → *Voyageurs*; "kartu permainan apa?" → *Exploding Kittens*). Memory-nya memberi petunjuk yang benar; jawabannya ditentukan penalaran penjawab. Mem0 juga paling rendah di kategori ini (72.7%).
 
+## Iterasi 7: dari analisis kegagalan ke perbaikan retrieval
+
+LoCoMo menandai giliran bukti () untuk setiap pertanyaan. [](evidence.py) mengukur apakah giliran itu masuk ke konteks yang diambil rewire: **tanpa LLM, ~20 detik** untuk 1.540 pertanyaan. Ini sekarang loop iterasi utama; skor J berubah ±3 poin antar-run (46 pertanyaan berganti benar/salah dengan konteks 87% sama), terlalu berisik untuk perubahan kecil.
+
+**Diagnosis 90 jawaban salah (run hybrid):** 57% sudah punya *semua* bukti di konteks (salah di penjawab), 21% punya sebagian (hampir semua multi-hop), 22% bukti tidak terambil.
+
+| Perubahan | Semua bukti di konteks (hybrid / kata kunci) | J LoCoMo penuh | Keputusan |
+|---|---|---|---|
+| Sebelum | 75.5% / 78.0% | 94.2% / 94.9% | – |
+| **Fakta menarik potongan transcript asalnya** (sumber klaim → sesi + giliran) | **79.5% / 79.2%** (temporal 81 → 90%) | **94.0%** (23 diperbaiki, 25 rusak vs hybrid) | Dipertahankan: retrieval lebih baik, J tidak berubah |
+| Pertanyaan hitungan ("how many") dapat 2× potongan | multi-hop +0.8 poin | 28/35 vs 29–31/35 | **Dibuang**: kejadian yang sama di beberapa sesi dihitung dua kali |
+| Maksimal N potongan per sesi (diversitas) | turun (single-hop 94 → 84% di N=1) | – | **Dibuang** |
+| Aturan timeline di ekstraksi (tanggal mulai untuk durasi) | butuh ingest ulang | belum diukur | Dipertahankan (berlaku untuk konsolidasi baru) |
+
+Bug yang ditemukan: sumber klaim menyimpan id sesi terpotong 8 karakter (), jadi tautan fakta → transcript putus. Sekarang id penuh disimpan; brain eval diperbaiki dari riwayat git ().
+
+**Kesimpulan:** di LoCoMo retrieval sudah bukan bottleneck. Bukti yang lebih lengkap tidak menaikkan J karena sisa kesalahan ada di penjawab (salah pilih orang/peristiwa, salah hitung) dan di pertanyaan spekulatif. LoCoMo jenuh di ~94% untuk setup ini; perbaikan berikutnya perlu benchmark yang menguji hal lain (LongMemEval: *knowledge update*, *abstention*).
+
 ## Iterasi pada subset 3 percakapan
 
 | Konfigurasi | single-hop | multi-hop | temporal | open-domain | **J keseluruhan** | F1 | konteks/pertanyaan |
