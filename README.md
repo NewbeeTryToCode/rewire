@@ -12,11 +12,13 @@ Arsitektur (L0/L1/L2): [`docs/design/architecture.md`](docs/design/architecture.
 ## Instalasi
 
 ```bash
-pipx install git+https://github.com/NewbeeTryToCode/rewire     # atau: uv tool install ...
+cargo install --git https://github.com/NewbeeTryToCode/rewire rewire   # satu binary Rust, SQLite sudah di dalamnya
 rewire init                     # membuat ~/brain (atau set REWIRE_BRAIN)
 ```
 
-Python ≥ 3.11, tanpa dependensi. Konsolidasi default memakai `claude -p` (login Claude Code yang sudah ada). Untuk memakai API langsung: `pip install 'rewire[anthropic]'` lalu set `provider = "anthropic"` di `brain.toml`.
+Implementasi utama adalah binary Rust di [`rust/`](rust/) (~7,5 MB, tanpa runtime; `prime` ~11 ms, kira-kira 9× lebih cepat dari versi Python). Konsolidasi default memakai `claude -p` (login Claude Code yang sudah ada); untuk memakai API langsung set `provider = "anthropic"` di `brain.toml` dan `ANTHROPIC_API_KEY`.
+
+Implementasi Python di [`src/rewire`](src/rewire) tetap ada sebagai **referensi** (dan untuk eksperimen/benchmark). Keduanya membaca dan menulis format file yang sama persis ([format.md](docs/design/format.md)); kesetaraannya diuji: file node identik byte demi byte dan hasil recall identik ([experiments/conformance](experiments/conformance/recall_parity.py)). Versi Python: `pipx install git+https://github.com/NewbeeTryToCode/rewire`.
 
 ## Pasang ke harness
 
@@ -70,6 +72,7 @@ rewire sync                       # pull + push manual
 ## Pengembangan
 
 ```bash
-python -m unittest discover -s tests
-python experiments/phase0/sim.py
+cd rust && cargo test && cargo clippy --all-targets   # implementasi utama
+python -m unittest discover -s tests                  # referensi Python
+python experiments/conformance/recall_parity.py --help # Rust vs Python pada brain yang sama
 ```

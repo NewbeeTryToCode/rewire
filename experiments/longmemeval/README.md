@@ -62,6 +62,21 @@ The largest group is multi-session counting ("how many X have I…"): with only 
 retrieved the answer **undercounts**. (The opposite of LoCoMo, where extra excerpts made answers overcount the
 same event mentioned in several sessions.)
 
+### 20 excerpts for multi-session and temporal questions
+
+Retrieval first (no LLM): with more excerpts the share of questions whose evidence sessions are *all* in
+context rises from 82.6% → 91.7% (multi-session) and 79.5% → 90.6% (temporal) at 20 excerpts
+(~22k tokens, still ~1/5 of the full history); 30 excerpts reach 93–95% at ~33k tokens.
+
+| Type (248 questions) | 10 excerpts | **20 excerpts** | fixed / broken |
+|---|---|---|---|
+| multi-session | 73.6% | **83.5%** | 16 / 4 |
+| temporal-reasoning | 82.7% | **90.6%** | 11 / 1 |
+
+Combined with the other types at 10 excerpts: **≈89.8% overall (449/500)**. In the product this is a choice
+for the agent: the MCP `recall` tool allows up to 30 excerpts and tells the agent to ask for ~20 on counting,
+totals, timeline and "how long between" questions.
+
 ### Published numbers (not re-run here; setups differ)
 
 | System | LongMemEval_S | Notes |
