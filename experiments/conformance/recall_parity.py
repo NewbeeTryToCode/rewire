@@ -5,7 +5,7 @@ from Python (REWIRE_SEMANTIC=0) with `rewire recall --json` from Rust, on two id
 same brain (each implementation builds its own index). No LLM involved.
 
 Usage: python experiments/conformance/recall_parity.py --data locomo10.json --brains DIR --convs conv-26
-       --rust rust/target/release/rewire        (DIR holds py-<conv>/ and rs-<conv>/ copies)
+       --rust rust/target/release/rewire [--semantic]   (DIR holds py-<conv>/ and rs-<conv>/ copies)
 """
 
 import argparse
@@ -14,7 +14,8 @@ import os
 import subprocess
 import sys
 
-os.environ["REWIRE_SEMANTIC"] = "0"
+# --semantic compares hybrid ranking (Python with wordllama, Rust with the model from `rewire semantic install`)
+os.environ["REWIRE_SEMANTIC"] = "1" if "--semantic" in sys.argv else "0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "src"))
 
@@ -37,6 +38,7 @@ def main():
     ap.add_argument("--rust", required=True)
     ap.add_argument("--k", type=int, default=50)
     ap.add_argument("--episodes", type=int, default=10)
+    ap.add_argument("--semantic", action="store_true")
     args = ap.parse_args()
     data = {c["sample_id"]: c for c in json.load(open(args.data))}
     total = same_order = same_set = facts_equal = 0

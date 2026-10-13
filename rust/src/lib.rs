@@ -20,6 +20,7 @@ pub mod project;
 pub mod pyjson;
 pub mod schema;
 pub mod security;
+pub mod semantic;
 pub mod skills;
 pub mod snapshot;
 pub mod sync;

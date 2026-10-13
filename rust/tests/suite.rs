@@ -32,6 +32,7 @@ struct Case {
 
 impl Case {
     fn new() -> Case {
+        std::env::set_var("REWIRE_SEMANTIC", "0"); // keyword ranking only: tests must not depend on a local model
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         let brain = Brain::init(Some(&dir.join("brain")), Some("test")).unwrap();
