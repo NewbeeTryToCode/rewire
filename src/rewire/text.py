@@ -66,6 +66,24 @@ def match_expression(query: str) -> str | None:
     return " OR ".join(parts) if parts else None
 
 
+def content_words(query: str) -> list[str]:
+    words = [w for w in re.findall(r"\w+", query.lower()) if len(w) > 1]
+    return list(dict.fromkeys([w for w in words if w not in STOPWORDS] or words))
+
+
+def overlap(query: str, doc: str) -> int:
+    """How many distinct content words of the query a document contains (as itself or a stem;
+    words and stems of 4+ letters match as prefixes). An absolute relevance signal: BM25 scores
+    are only comparable within one query."""
+    tokens = set(re.findall(r"\w+", doc.lower()))
+    n = 0
+    for w in content_words(query):
+        alts = stems(w) | {w}
+        if w in tokens or any(t == s or (len(s) >= 4 and t.startswith(s)) for s in alts for t in tokens):
+            n += 1
+    return n
+
+
 _MONTHS = {m: i for i, m in enumerate(
     "january february march april may june july august september october november december".split(), 1)}
 _MONTHS.update({m[:3]: i for m, i in list(_MONTHS.items())})

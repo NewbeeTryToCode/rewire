@@ -530,6 +530,27 @@ fn hooks_internal_flag_snapshot_and_pending() {
 }
 
 #[test]
+fn prompt_hook_adds_only_new_relevant_notes() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    integrations::SPAWN_BACKGROUND.store(false, std::sync::atomic::Ordering::Relaxed);
+    let mut c = Case::new();
+    c.add("decision", "Billing service deploys with Helm charts on Kubernetes", json!({}));
+    c.add("fact", "The office coffee machine is on floor 3", json!({}));
+    let prompt = json!({"session_id": "s1", "cwd": c.dir, "prompt": "how do we deploy the billing service?"});
+    let out = integrations::hook(c.reopen(), "user-prompt", &prompt, "claude-code").unwrap();
+    assert!(out.starts_with("<rewire-memory>\n# rewire memory (related to this prompt)"));
+    assert!(out.contains("Helm charts") && !out.contains("coffee"));
+    assert_eq!(integrations::hook(c.reopen(), "user-prompt", &prompt, "claude-code").unwrap(), ""); // already seen
+    // what the session-start snapshot showed is not repeated either
+    integrations::hook(c.reopen(), "session-start", &json!({"session_id": "s2", "cwd": c.dir}), "claude-code").unwrap();
+    let mut p2 = prompt.clone();
+    p2["session_id"] = json!("s2");
+    assert_eq!(integrations::hook(c.reopen(), "user-prompt", &p2, "claude-code").unwrap(), "");
+    assert!(integrations::claude_code_settings("rewire")["hooks"].get("UserPromptSubmit").is_some());
+    assert_eq!(text::overlap("deploy billing", "Billing deploys with Helm"), 2);
+}
+
+#[test]
 fn install_claude_code_merges_settings() {
     let c = Case::new();
     let path = c.dir.join("settings.json");

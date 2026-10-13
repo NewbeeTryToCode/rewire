@@ -467,6 +467,26 @@ class TestMCPAndHooks(BrainCase):
         finally:
             del os.environ["REWIRE_INTERNAL"]
 
+    def test_prompt_hook_adds_only_new_relevant_notes(self):
+        self.add("decision", "Billing service deploys with Helm charts on Kubernetes")
+        self.add("fact", "The office coffee machine is on floor 3")
+        orig = integrations.spawn_consolidation
+        integrations.spawn_consolidation = lambda b: None
+        try:
+            prompt = {"session_id": "s1", "cwd": self.tmp, "prompt": "how do we deploy the billing service?"}
+            out = integrations.hook(self.brain, "user-prompt", prompt)
+            self.assertTrue(out.startswith("<rewire-memory>\n# rewire memory (related to this prompt)"))
+            self.assertIn("Helm charts", out)
+            self.assertNotIn("coffee", out)
+            self.assertEqual(integrations.hook(self.brain, "user-prompt", prompt), "")  # already seen
+            self.assertEqual(integrations.hook(self.brain, "user-prompt", {**prompt, "prompt": "billing weather?"}), "")
+            # what the session-start snapshot showed is not repeated either
+            integrations.hook(self.brain, "session-start", {"session_id": "s2", "cwd": self.tmp})
+            self.assertEqual(integrations.hook(self.brain, "user-prompt", {**prompt, "session_id": "s2"}), "")
+        finally:
+            integrations.spawn_consolidation = orig
+        self.assertIn("UserPromptSubmit", integrations.claude_code_settings()["hooks"])
+
     def test_session_start_says_when_memory_is_unavailable(self):
         missing = Brain(os.path.join(self.tmp, "nowhere"))
         out = integrations.hook(missing, "session-start", {})

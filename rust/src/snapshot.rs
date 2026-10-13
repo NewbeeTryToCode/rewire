@@ -38,7 +38,7 @@ pub struct Snapshot {
     pub empty: bool,
 }
 
-fn line(row: &NodeRow) -> String {
+pub fn line(row: &NodeRow) -> String {
     let body = row.body.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut text = if body.is_empty() || body == row.title { row.title.clone() } else { format!("{} — {}", row.title, body) };
     let why = crate::security::blocked(&text);
