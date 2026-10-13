@@ -41,4 +41,35 @@ Deviation from the official setup: several questions per answer/judge call (as i
 
 ## Results
 
-Not run yet: `huggingface.co` is blocked in this environment.
+### Episodes mode: all 500 questions, no LLM extraction
+
+Transcripts only (what consolidation stores in `sessions/`), hybrid recall (BM25 + WordLlama), 10 excerpts ≈ 11k tokens of
+context per question instead of the full ~115k-token history. Answers and judge: Claude, official prompts.
+
+| Type | n | Evidence session found | All evidence sessions | **Accuracy** |
+|---|---|---|---|---|
+| single-session-user | 64 | 96.9% | 96.9% | **96.9%** |
+| single-session-assistant | 56 | 100% | 100% | **92.9%** |
+| single-session-preference | 30 | 86.7% | 86.7% | **83.3%** |
+| multi-session | 121 | 99.2% | 82.6% | **73.6%** |
+| knowledge-update | 72 | 100% | 94.4% | **90.3%** |
+| temporal-reasoning | 127 | 94.5% | 79.5% | **82.7%** |
+| abstention | 30 | – | – | **96.7%** |
+| **overall** | 500 | 97.0% | 87.9% | **85.4%** (task-averaged 86.6%) |
+
+Of the 73 wrong answers: 29 had all evidence sessions in context, 31 only some, 12 none (abstention excluded).
+The largest group is multi-session counting ("how many X have I…"): with only some of the evidence sessions
+retrieved the answer **undercounts**. (The opposite of LoCoMo, where extra excerpts made answers overcount the
+same event mentioned in several sessions.)
+
+### Published numbers (not re-run here; setups differ)
+
+| System | LongMemEval_S | Notes |
+|---|---|---|
+| Zep | 71.2% | GPT-4o; the most repeated third-party figure |
+| Emergence (RAG) | 86% | self-reported |
+| Mem0 | 93.4% | self-reported |
+| Mastra Observational Memory | ~95% | self-reported |
+| Supermemory | 97% | Recall@20 retrieval metric, not QA accuracy |
+
+Judge prompts alone move scores by ~10% (Mastra); our answer and judge model is Claude, not GPT-4o.
