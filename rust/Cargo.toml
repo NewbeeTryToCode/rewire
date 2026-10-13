@@ -1,0 +1,37 @@
+[package]
+name = "rewire"
+version = "0.2.0"
+edition = "2021"
+description = "Own your brain, transfer it anywhere: portable synaptic memory for agent harnesses"
+license = "MIT"
+repository = "https://github.com/NewbeeTryToCode/rewire"
+
+[[bin]]
+name = "rewire"
+path = "src/main.rs"
+
+[lib]
+name = "rewire"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
+fs4 = "0.13"
+indexmap = "2"
+rand = "0.8"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+shlex = "1"
+toml = "0.8"
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

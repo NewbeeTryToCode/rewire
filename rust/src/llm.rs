@@ -1,0 +1,183 @@
+//! LLM providers for consolidation (the only place rewire spends tokens). Each returns a JSON object.
+//!
+//! - command: any CLI that reads a prompt on stdin and prints text (e.g. `claude -p`). Runs with
+//!   REWIRE_INTERNAL=1 inside the brain's .state/ dir so hooks skip it and its own transcript is
+//!   never consolidated (no recursion).
+//! - anthropic: the Anthropic Messages API with structured outputs (ANTHROPIC_API_KEY).
+
+use crate::config::Config;
+use crate::transcripts::INTERNAL_MARKER;
+use crate::{Error, Meta, Result};
+use serde_json::{json, Value};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+pub trait Provider {
+    fn complete_json(&self, system: &str, prompt: &str, schema: &Value) -> Result<Meta>;
+}
+
+fn llm<T>(msg: impl Into<String>) -> Result<T> {
+    Err(Error::Llm(msg.into()))
+}
+
+pub fn extract_json(text: &str) -> Result<Meta> {
+    let mut text = text.trim().to_string();
+    if text.starts_with("```") {
+        text = text.trim_matches('`').to_string();
+        if let Some(i) = text.find('\n') {
+            text = text[i + 1..].to_string();
+        }
+    }
+    let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) else {
+        return llm(format!("no JSON object in model output: {:?}", text.chars().take(200).collect::<String>()));
+    };
+    if end <= start {
+        return llm(format!("no JSON object in model output: {:?}", text.chars().take(200).collect::<String>()));
+    }
+    match serde_json::from_str::<Meta>(&text[start..=end]) {
+        Ok(m) => Ok(m),
+        Err(e) => {
+            // an object followed by more text (or a second object): keep the first complete one
+            let mut stream = serde_json::Deserializer::from_str(&text[start..]).into_iter::<Meta>();
+            match stream.next() {
+                Some(Ok(m)) => Ok(m),
+                _ => llm(format!("invalid JSON from model: {e}")),
+            }
+        }
+    }
+}
+
+pub struct CommandProvider {
+    pub argv: Vec<String>,
+    pub workdir: PathBuf,
+    pub timeout: Duration,
+}
+
+impl CommandProvider {
+    pub fn new(command: &str, workdir: &Path) -> CommandProvider {
+        CommandProvider {
+            argv: shlex::split(command).unwrap_or_else(|| command.split_whitespace().map(String::from).collect()),
+            workdir: workdir.to_path_buf(),
+            timeout: Duration::from_secs(900),
+        }
+    }
+}
+
+impl Provider for CommandProvider {
+    fn complete_json(&self, system: &str, prompt: &str, schema: &Value) -> Result<Meta> {
+        std::fs::create_dir_all(&self.workdir)?;
+        let full = format!(
+            "{INTERNAL_MARKER}\n{system}\n\nRespond with ONLY a JSON object matching this JSON schema, no prose, no code fences:\n{}\n\n{prompt}",
+            crate::pyjson::dumps(schema, crate::pyjson::Opts { ensure_ascii: true, sort_keys: false })
+        );
+        let Some((prog, args)) = self.argv.split_first() else { return llm("empty command") };
+        let mut child = Command::new(prog)
+            .args(args)
+            .current_dir(&self.workdir)
+            .env("REWIRE_INTERNAL", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Llm(format!("command provider failed: {e}")))?;
+        let mut stdin = child.stdin.take().unwrap();
+        let writer = std::thread::spawn(move || {
+            let _ = stdin.write_all(full.as_bytes());
+        });
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                return llm(format!("command provider failed: timed out after {}s", self.timeout.as_secs()));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = writer.join();
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect::<String>();
+            return llm(format!("command exited {}: {err}", out.status.code().unwrap_or(-1)));
+        }
+        extract_json(&String::from_utf8_lossy(&out.stdout))
+    }
+}
+
+pub struct AnthropicProvider {
+    pub model: String,
+    pub effort: String,
+    key: String,
+}
+
+impl AnthropicProvider {
+    pub fn new(model: &str, effort: &str) -> Result<AnthropicProvider> {
+        let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| Error::Llm("set ANTHROPIC_API_KEY to use the anthropic provider".into()))?;
+        Ok(AnthropicProvider { model: model.into(), effort: effort.into(), key })
+    }
+}
+
+impl Provider for AnthropicProvider {
+    fn complete_json(&self, system: &str, prompt: &str, schema: &Value) -> Result<Meta> {
+        let base = std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into());
+        let body = json!({
+            "model": self.model,
+            "max_tokens": 16000,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+            "output_config": {"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
+            "fallbacks": "default",
+        });
+        let resp = ureq::post(&format!("{}/v1/messages", base.trim_end_matches('/')))
+            .set("x-api-key", &self.key)
+            .set("anthropic-version", "2023-06-01")
+            .set("anthropic-beta", "server-side-fallback-2026-07-01")
+            .set("content-type", "application/json")
+            .timeout(Duration::from_secs(900))
+            .send_json(body);
+        let value: Value = match resp {
+            Ok(r) => r.into_json().map_err(|e| Error::Llm(format!("connection error: {e}")))?,
+            Err(ureq::Error::Status(code, r)) => {
+                let msg = r.into_string().unwrap_or_default();
+                return llm(format!("API error {code}: {}", msg.chars().take(300).collect::<String>()));
+            }
+            Err(e) => return llm(format!("connection error: {e}")),
+        };
+        match value.get("stop_reason").and_then(Value::as_str) {
+            Some("refusal") => return llm("model declined the request"),
+            Some("max_tokens") => return llm("output truncated (max_tokens)"),
+            _ => {}
+        }
+        let text = value
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|blocks| blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("text")))
+            .and_then(|b| b.get("text").and_then(Value::as_str))
+            .unwrap_or("");
+        extract_json(text)
+    }
+}
+
+pub fn make(config: &Config, brain_root: &Path) -> Result<Box<dyn Provider>> {
+    match config.provider.as_str() {
+        "command" => Ok(Box::new(CommandProvider::new(&config.command, &brain_root.join(".state").join("llm")))),
+        "anthropic" => Ok(Box::new(AnthropicProvider::new(&config.model, &config.effort)?)),
+        other => llm(format!("unknown provider {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts() {
+        assert_eq!(extract_json("```json\n{\"a\": 1}\n```").unwrap()["a"], 1);
+        assert_eq!(extract_json("{\"a\": 1}\n\n{\"b\": 2}").unwrap()["a"], 1);
+        assert_eq!(extract_json("sure: {\"a\": {\"x\": 1}} done").unwrap()["a"]["x"], 1);
+        assert!(extract_json("nothing").is_err());
+    }
+}
