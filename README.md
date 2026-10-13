@@ -7,7 +7,7 @@
 - **Belajar setelah sesi.** Transcript dikonsolidasi oleh LLM menjadi klaim atomik; yang eksplisit dari user langsung disimpan, sisanya masuk inbox untuk direview.
 - **Aman secara default.** Provenance diambil dari transcript (bukan dari klaim model), output tool tidak pernah otomatis jadi aturan, secret ditolak, setiap konsolidasi bisa di-`undo`.
 
-Desain: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Konsep: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Bukti simulasi: [`experiments/phase0`](experiments/phase0/README.md) · Log iterasi: [`docs/iterations.md`](docs/iterations.md)
+Arsitektur (L0/L1/L2): [`docs/design/architecture.md`](docs/design/architecture.md) · Format file: [`docs/design/format.md`](docs/design/format.md) · Desain: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Konsep: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Bukti simulasi: [`experiments/phase0`](experiments/phase0/README.md) · Log iterasi: [`docs/iterations.md`](docs/iterations.md)
 
 ## Instalasi
 
