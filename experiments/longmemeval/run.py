@@ -200,6 +200,17 @@ def select(data: list[dict], per_type: int, seed: int, ids: str | None) -> list[
     return out
 
 
+def safe(fn):
+    """A batch that keeps failing (usage limit) is skipped, not fatal: a rerun resumes it from the cache."""
+    def run(batch):
+        try:
+            return fn(batch)
+        except Exception as exc:
+            print(f"batch of {len(batch)} FAILED: {exc}", flush=True)
+            return {}
+    return run
+
+
 def cached(path: str) -> dict:
     return json.load(open(path)) if os.path.exists(path) else {}
 
@@ -245,7 +256,7 @@ def main():
     answers = cached(acache)
     todo = [q for q in qs if q["question_id"] not in answers]
     with ThreadPoolExecutor(args.parallel) as pool:
-        for res in pool.map(answer_batch, [todo[i:i + 4] for i in range(0, len(todo), 4)]):
+        for res in pool.map(safe(answer_batch), [todo[i:i + 4] for i in range(0, len(todo), 4)]):
             answers.update(res)
             with open(acache, "w") as fh:
                 json.dump(answers, fh, indent=1)
@@ -255,7 +266,7 @@ def main():
     judged = cached(jcache)
     todo = [q for q in qs if q["question_id"] not in judged]
     with ThreadPoolExecutor(args.parallel) as pool:
-        for res in pool.map(judge_batch, [todo[i:i + 20] for i in range(0, len(todo), 20)]):
+        for res in pool.map(safe(judge_batch), [todo[i:i + 20] for i in range(0, len(todo), 20)]):
             judged.update(res)
             with open(jcache, "w") as fh:
                 json.dump(judged, fh, indent=1)
