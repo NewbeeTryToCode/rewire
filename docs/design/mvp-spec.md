@@ -1,5 +1,7 @@
 # Spesifikasi MVP rewire v0.1
 
+> Architecture overview (L0/L1/L2): [architecture.md](architecture.md) · frozen on-disk format: [format.md](format.md).
+>
 > Status: **draf untuk review**. Menutup celah dari [design-review.md](design-review.md).
 > Dasar: [synaptic-memory.md](synaptic-memory.md) (konsep), [Fase 0](../../experiments/phase0/README.md) (bukti simulasi).
 >
