@@ -23,10 +23,18 @@ pub struct SessionMeta {
     pub date: Option<String>,
 }
 
+/// Drop memory rewire itself injected (snapshot, recall results), wherever it shows up in a transcript:
+/// it must never be re-extracted as something the user said. An unclosed fence (cut tool output) runs to the end.
+pub fn strip_injected(text: &str) -> String {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    R.get_or_init(|| regex::Regex::new(r"(?s)<rewire-memory>.*?(?:</rewire-memory>|\z)").unwrap()).replace_all(text, "").into_owned()
+}
+
 /// Remove <system-reminder>…</system-reminder>, <command-*>…</command-*> and <local-command-*>…</…> blocks.
 fn clean(text: &str) -> String {
+    let stripped = strip_injected(text);
     let mut out = String::new();
-    let mut rest = text;
+    let mut rest = stripped.as_str();
     loop {
         let Some(open) = rest.find('<') else {
             out.push_str(rest);
@@ -85,7 +93,7 @@ fn tool_text(content: Option<&Value>) -> String {
             }
         }
     }
-    cut(&out.join("\n"))
+    cut(strip_injected(&out.join("\n")).trim())
 }
 
 fn s(v: Option<&Value>) -> Option<String> {
@@ -115,7 +123,7 @@ pub fn parse_claude_code(lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) 
                     .is_some_and(|a| a.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")));
                 if is_tool { (tool_text(content), "tool") } else { (clean(&blocks_text(content, &["text"])), "user") }
             }
-            Some("assistant") => (blocks_text(content, &["text"]).trim().to_string(), "assistant"),
+            Some("assistant") => (strip_injected(&blocks_text(content, &["text"])).trim().to_string(), "assistant"),
             _ => continue,
         };
         if !text.is_empty() {
@@ -157,7 +165,7 @@ pub fn parse_codex(lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) {
                 Some(other) => crate::pyjson::dumps(other, crate::pyjson::Opts { ensure_ascii: true, sort_keys: false }),
                 None => "null".into(),
             };
-            (text.chars().take(TOOL_CHARS).collect(), "tool")
+            (strip_injected(&text).trim().chars().take(TOOL_CHARS).collect(), "tool")
         } else {
             continue;
         };

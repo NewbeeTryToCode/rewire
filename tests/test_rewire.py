@@ -139,6 +139,13 @@ class TestSnapshotAndRecall(BrainCase):
         self.assertTrue(old_now.meta["retracted_at"])
         self.assertTrue(old_now.meta["valid_to"])
 
+    def test_snapshot_is_dated_and_fenced(self):
+        self.add("fact", "atlas runs on Postgres 15", valid_from="2023-07-10")
+        snap = snapshot.build(self.brain, self.index, project=None)
+        self.assertTrue(snap["text"].startswith("<rewire-memory>\n# rewire memory"))
+        self.assertTrue(snap["text"].rstrip().endswith("</rewire-memory>"))
+        self.assertIn("- 2023-07-10 · atlas runs on Postgres 15 [", snap["text"])
+
     def test_long_lines_keep_ids(self):
         n = self.add("fact", "x" * 590)
         snap = snapshot.build(self.brain, self.index, project=None)
@@ -231,6 +238,17 @@ class TestTranscripts(unittest.TestCase):
         self.assertEqual(harness, "codex")
         self.assertEqual(meta["cwd"], "/work/app")
         self.assertEqual([t["role"] for t in turns], ["user", "assistant", "tool"])
+
+    def test_injected_memory_never_reaches_consolidation(self):
+        snap = "<rewire-memory>\n# rewire memory\n- 2023-01-01 · User prefers tabs [abcdefgh]\n</rewire-memory>"
+        lines = [
+            json.dumps({"type": "user", "sessionId": "s", "message": {"content": snap + "\nplease fix the build"}}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Noted. " + snap}]}}),
+            json.dumps({"type": "user", "message": {"content": [{"type": "tool_result",
+                                                                   "content": "<rewire-memory>\n[{\"id\": \"x\""}]}}),
+        ]
+        _, turns = tx.parse_claude_code(list(enumerate(lines, 1)))
+        self.assertEqual([t["text"] for t in turns], ["please fix the build", "Noted."])  # truncated fence dropped too
 
     def test_internal_detection(self):
         self.assertTrue(tx.is_internal({"cwd": "/b/.state/llm"}, [], "/b"))

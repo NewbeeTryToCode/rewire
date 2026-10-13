@@ -140,7 +140,14 @@ impl<'a> Server<'a> {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().filter(|a| a.is_object()).unwrap_or_else(|| json!({}));
                 match self.call(name, &args) {
-                    Ok(data) => json!({"content": [{"type": "text", "text": pyjson::dumps_utf8(&data)}]}),
+                    Ok(data) => {
+                        let mut text = pyjson::dumps_utf8(&data);
+                        if name == "recall" || name == "get" {
+                            // memory as data, dropped again from transcripts
+                            text = format!("{}\n{text}\n{}", crate::snapshot::FENCE_OPEN, crate::snapshot::FENCE_CLOSE);
+                        }
+                        json!({"content": [{"type": "text", "text": text}]})
+                    }
                     Err(Error::Op(e)) | Err(Error::Schema(e)) => {
                         json!({"content": [{"type": "text", "text": format!("error: {e}")}], "isError": true})
                     }

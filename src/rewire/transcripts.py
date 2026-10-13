@@ -12,10 +12,17 @@ import re
 INTERNAL_MARKER = "[rewire-internal]"
 TOOL_CHARS = 300
 _TAGS = re.compile(r"<(system-reminder|command-[a-z-]+|local-command-[a-z-]+)>.*?</\1>", re.S)
+_INJECTED = re.compile(r"<rewire-memory>.*?(?:</rewire-memory>|\Z)", re.S)
+
+
+def strip_injected(text: str) -> str:
+    """Drop memory rewire itself injected (snapshot, recall results), wherever it shows up in a
+    transcript: it must never be re-extracted as something the user said."""
+    return _INJECTED.sub("", text)
 
 
 def _clean(text: str) -> str:
-    return _TAGS.sub("", text).strip()
+    return _TAGS.sub("", strip_injected(text)).strip()
 
 
 def _blocks_text(content, kinds=("text",)) -> str:
@@ -34,7 +41,7 @@ def _tool_text(content) -> str:
         if isinstance(block, dict) and block.get("type") == "tool_result":
             inner = block.get("content")
             out.append(inner if isinstance(inner, str) else _blocks_text(inner))
-    text = "\n".join(out)
+    text = strip_injected("\n".join(out)).strip()
     return text[:TOOL_CHARS] + (" …" if len(text) > TOOL_CHARS else "")
 
 
@@ -59,7 +66,7 @@ def parse_claude_code(lines) -> tuple[dict, list[dict]]:
             else:
                 text, role = _clean(_blocks_text(content)), "user"
         elif kind == "assistant":
-            text, role = _blocks_text(content).strip(), "assistant"
+            text, role = strip_injected(_blocks_text(content)).strip(), "assistant"
         else:
             continue
         if text:
@@ -94,8 +101,8 @@ def parse_codex(lines) -> tuple[dict, list[dict]]:
             role = p["role"]
         elif p.get("type") in ("function_call_output", "custom_tool_call_output"):
             out = p.get("output")
-            text = out if isinstance(out, str) else json.dumps(out)[:TOOL_CHARS]
-            text, role = text[:TOOL_CHARS], "tool"
+            text = out if isinstance(out, str) else json.dumps(out)
+            text, role = strip_injected(text).strip()[:TOOL_CHARS], "tool"
         else:
             continue
         if text:

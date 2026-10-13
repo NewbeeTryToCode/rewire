@@ -23,6 +23,7 @@ def _print(data, as_json: bool):
         print(json.dumps(data, ensure_ascii=False, indent=1))
         return
     if isinstance(data, list):
+        print(snapshot.FENCE_OPEN)
         for item in data:
             if "error" in item:
                 print(f"! {item['ref']}: {item['error']}")
@@ -33,7 +34,10 @@ def _print(data, as_json: bool):
                 print(f"[{item['id'][-8:].lower()}] {item['type']} · {item['scope']} · importance {item['importance']}")
                 print(f"  {item['title']}\n  {item['body']}\n")
             else:
-                print(f"[{item['id'][-8:].lower()}] {item['score']:.2f} {item['type']:<10} {item['title']}")
+                status = "" if item.get("status", "active") == "active" else f" ({item['status']})"
+                print(f"[{item['id'][-8:].lower()}] {item['score']:.2f} {item['type']:<10} "
+                      f"{item.get('date') or '----------'} {item['title']}{status}")
+        print(snapshot.FENCE_CLOSE)
     else:
         print(data)
 

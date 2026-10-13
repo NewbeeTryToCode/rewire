@@ -11,6 +11,7 @@ import sys
 from . import __version__, ops
 from .brain import Brain
 from .index import Index
+from .snapshot import FENCE_CLOSE, FENCE_OPEN
 from .util import ulid
 
 PROTOCOL = "2025-06-18"
@@ -115,7 +116,10 @@ class Server:
                 params = msg.get("params") or {}
                 try:
                     data = self.call(params.get("name"), params.get("arguments") or {})
-                    result = {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}]}
+                    text = json.dumps(data, ensure_ascii=False)
+                    if params.get("name") in ("recall", "get"):  # memory as data, dropped again from transcripts
+                        text = f"{FENCE_OPEN}\n{text}\n{FENCE_CLOSE}"
+                    result = {"content": [{"type": "text", "text": text}]}
                 except (ops.OpError, KeyError, ValueError) as exc:
                     result = {"content": [{"type": "text", "text": f"error: {exc}"}], "isError": True}
             else:
