@@ -285,8 +285,9 @@ class Index:
         match = text.match_expression(query)
         fts = []
         if match:
-            fts = [r[0] for r in self.db.execute(
-                "SELECT rowid FROM fts_ep WHERE fts_ep MATCH ? ORDER BY bm25(fts_ep) LIMIT ?", (match, limit))]
+            fts = [r[0] for r in self.db.execute(  # ties broken by file and turn: identical in every implementation
+                "SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ? "
+                "ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?", (match, limit))]
         sem = []
         if semantic.available():
             if self._epmat is None:
@@ -309,13 +310,13 @@ class Index:
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
         window = text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
-            f"SELECT rowid AS rid, path, date, text FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
+            f"SELECT rowid AS rid, path, date, text, first FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
             list(fused))} if fused else {}
         if window:
             for rid, r in rows.items():
                 if window[0] <= (r["date"] or "")[:10] <= window[1]:
                     fused[rid] += 1.0 / self.RRF_K
-        best = sorted(fused, key=lambda x: -fused[x])[:k]
+        best = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))[:k]
         return [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
                  "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
                 for rid in best if rid in rows]
@@ -491,7 +492,7 @@ class Index:
             if scopes:
                 sql += f" AND nodes.scope IN ({','.join('?' * len(scopes))})"
                 params += scopes
-            sql += " ORDER BY bm25(fts, 3.0, 1.0, 2.0) LIMIT ?"
+            sql += " ORDER BY bm25(fts, 3.0, 1.0, 2.0), nodes.id LIMIT ?"
             params.append(limit)
             for r in self.db.execute(sql, params):
                 fts_ids.append(r["id"])
@@ -531,7 +532,7 @@ class Index:
         energy = dict(rel)
         via: dict[str, str] = {}
         if spread:
-            frontier = sorted(rel.items(), key=lambda x: -x[1])[:10]
+            frontier = sorted(rel.items(), key=lambda x: (-x[1], x[0]))[:10]
             for hop in (1, 2):
                 nxt: dict[str, float] = {}
                 for src, amount in frontier:
@@ -553,7 +554,7 @@ class Index:
                                         f"{relation} ↔ {info[src]['title'] if src in info else src[-8:].lower()}")
                 for dst, gain in nxt.items():
                     energy[dst] = energy.get(dst, 0.0) + gain
-                frontier = sorted(nxt.items(), key=lambda x: -x[1])[:10]
+                frontier = sorted(nxt.items(), key=lambda x: (-x[1], x[0]))[:10]
             self._fetch(info, [i for i in energy if i not in info], scopes)
         out = []
         for node_id, e in energy.items():
@@ -571,7 +572,7 @@ class Index:
             if node_id in via:
                 item["via"] = via[node_id]
             out.append(item)
-        out.sort(key=lambda x: x["score"], reverse=True)
+        out.sort(key=lambda x: (-x["score"], x["id"]))  # ties by id: deterministic across implementations
         return out[:k]
 
     def _fetch(self, info: dict, ids: list[str], scopes=None) -> None:
