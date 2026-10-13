@@ -64,7 +64,17 @@ Diimplementasikan dari analisis Mem0/Zep: semantic search opsional (WordLlama, o
 
 Metrik baru tanpa LLM ([evidence.py](../experiments/locomo/evidence.py)): apakah giliran bukti LoCoMo masuk ke konteks. Diagnosis: 57% jawaban salah sudah punya semua bukti, jadi salahnya di penjawab. Diimplementasikan: fakta menarik potongan transcript asalnya (perlu perbaikan bug: id sesi di sumber klaim terpotong 8 karakter). Semua-bukti-di-konteks 75.5 → 79.5%, temporal 81 → 90%, tapi J penuh tetap 94.0% (noise ±3). Dicoba dan dibuang: 2× potongan untuk pertanyaan hitungan (membuat salah hitung) dan batas potongan per sesi (menurunkan recall). Aturan timeline ditambahkan ke ekstraksi, belum diukur. Kesimpulan: LoCoMo jenuh; berikutnya LongMemEval.
 
-## Berikutnya (iterasi 8)
+## Iterasi 8 — 2026-10-13: LongMemEval
+
+LongMemEval_S (500 pertanyaan, prompt jawaban dan judge resmi) dalam mode *episodes* (hanya transcript, tanpa ekstraksi LLM): **85.4%**; retrieval tanpa LLM menemukan sesi bukti untuk 97% pertanyaan dengan ~11k token konteks dari ~115k. Kelemahan: pertanyaan hitungan multi-sesi *kurang* menghitung karena tidak semua sesi bukti terambil (kebalikan LoCoMo). Dengan 20 potongan: multi-session 73.6 → 83.5%, temporal 82.7 → 90.6%, gabungan ≈89.8%. MCP `recall` sekarang mengizinkan hingga 30 potongan dan memberi tahu agent kapan meminta ~20.
+
+## Iterasi 9 — 2026-10-13: arsitektur L0/L1/L2, format dibekukan, port ke Rust
+
+- [architecture.md](design/architecture.md): L0 working memory (milik harness), L1 episodic (`sessions/`), L2 semantic (`nodes/` + `events/`), dan di mana token dipakai (hanya konsolidasi).
+- [format.md](design/format.md): kontrak file yang dibekukan.
+- [`rust/`](../rust): port modul-per-modul, menjadi implementasi utama. Konformans: 32 tes porting lulus; `upgrade` menulis file node dan beranda identik byte demi byte dengan Python (509 node); recall identik untuk 304/304 pertanyaan LoCoMo (50 fakta + 10 potongan, urutan sama) setelah tie-break dibuat deterministik di kedua implementasi. `prime` 11 ms vs 97 ms, `recall` 10 ms vs 84 ms. Semantic vector (WordLlama) tidak di-port: di LoCoMo kata kunci saja sama bagusnya.
+
+## Berikutnya (iterasi 10)
 
 0. **LongMemEval** (knowledge update, abstention, multi-session) — menguji supersede dan intent sejarah yang tidak diuji LoCoMo.
 
