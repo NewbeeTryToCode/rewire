@@ -12,6 +12,7 @@ the contract: it is derived and rebuilt from the files below.
   nodes/<type>/<slug>-<id8>.md     L2 claims and hubs
   events/<device>/<YYYY-MM>.jsonl  usage log, append-only
   sessions/<YYYY-MM-DD>/<harness>-<session-slug>.md   L1 episodes
+  skills/<name>/SKILL.md           procedures (Agent Skills), added through review
   inbox/<ulid>.md       proposals waiting for review
   .index/brain.db       derived (not synced)
   .state/*.json         device-local state (not synced)
@@ -125,18 +126,34 @@ Node creation (`recorded_at`) counts as the first use. Activation: `B = ln Σ w�
 
 A file may hold several consolidation runs of the same session, separated by `\n\n---\n\n`. Transcript
 lines are secret-redacted; assistant turns longer than 1,500 characters are cut and end with ` …[condensed]`.
-For search, transcript lines are cut into excerpts of 6 lines with a stride of 4.
+For search, transcript lines are cut into excerpts of 6 lines with a stride of 4, and each run's summary
+is one more searchable excerpt (`Summary: <text>`, whitespace collapsed, at most 600 characters).
 
 ## Inbox item
 
 Frontmatter (same JSON rules) + the claim text as body. Keys: `inbox_id`, `action` (`NEW` · `UPDATE` ·
 `SUPERSEDE` · `CONTRADICT`), `target` (node id, for non-NEW), `type`, `title`, `scope`, `importance`,
 `confidence`, `provenance`, `keywords`, `edges`, `reason`, `flags` (`secret` · `injection`), `source`,
-`created`.
+`created`, and `target_hash` when the change targets an existing note: the first 16 hex characters of
+`sha256(title + "\n" + body)` of that note when the item was written (body as read: stripped, one
+trailing newline). Approving refuses while the note's current hash differs (`--force` overrides).
+
+A skill proposal has `kind: "skill"`, `action: "SKILL"`, `type: "skill"`, `title: "skill <name>"`,
+`scope: "global"`, `name` (kebab-case, at most 40 characters), `description`, `skill_action`
+(`create` · `append`), `confidence`, `provenance`, `reason`, `flags`, `source`, `created`; the body is
+the steps. Skills are never applied without review.
+
+## Skill file
+
+`skills/<name>/SKILL.md`: frontmatter (same JSON rules, which are also valid Agent Skills YAML) with
+`name`, `description`, `updated` (timestamp), `sources` (list of `harness · session · turn N`), then the
+steps. An approved `append` adds `\n\n## Update <YYYY-MM-DD>\n\n<steps>` to the body. Reading one
+(`get skill:<name>`) logs a `use` event with `node: "skill:<name>"`.
 
 ## brain.toml
 
-Sections `[activation]` (`d`, `recall_beta`), `[budgets]` (`constraints`, `preferences`, `working`; characters),
+Sections `[activation]` (`d`, `recall_beta`), `[budgets]` (`profile`, `constraints`, `preferences`,
+`skills`, `working`; characters),
 `[consolidation]` (`profile`, `transcripts`, `provider`, `command`, `model`, `effort`, `max_chunk_chars`),
 `[sync]` (`auto`), `[projects.<slug>]` (`match = [...]`). Unknown keys are ignored.
 
@@ -144,4 +161,13 @@ Sections `[activation]` (`d`, `recall_beta`), `[budgets]` (`constraints`, `prefe
 
 JSON files (indent 1, keys sorted): `device.json` (`name`), `scan.json` (`since`, `since_ts`),
 `pending.json` (transcript path → harness), `watermarks.json` (path → last consolidated line),
-`processed.json`, `failed.json`; plus `brain.lock` and `consolidate.log`.
+`processed.json`, `failed.json`, `prompt_shown.json` (session id → `{t, ids}`: short ids the session has
+seen, for the per-prompt hook; latest 50 sessions); plus `brain.lock` and `consolidate.log`.
+
+## Injected text
+
+Everything rewire puts in an agent's context (snapshot, per-prompt block, MCP `recall`/`get`, CLI lists)
+is wrapped in `<rewire-memory>` … `</rewire-memory>`; the tags inside note content are escaped as
+`&lt;rewire-memory` / `&lt;/rewire-memory`. Transcript parsing drops fenced blocks before consolidation.
+Notes are re-scanned when shown; one holding a secret or an injection pattern is replaced by
+`[BLOCKED: <why>; check this note with \`rewire doctor\`]`.

@@ -24,6 +24,8 @@ rewire recall "<keywords>"   # key terms + synonyms, in both English and Indones
 rewire get <id>          # full text of a note from recall or the snapshot
 ```
 
+If the snapshot lists a skill for the task at hand, read it before starting: `rewire get skill:<name>`.
+
 ## When the user states something durable
 For a rule, preference, decision or stable fact worth keeping, propose it (one self-contained claim):
 

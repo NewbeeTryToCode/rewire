@@ -74,9 +74,14 @@ LongMemEval_S (500 pertanyaan, prompt jawaban dan judge resmi) dalam mode *episo
 - [format.md](design/format.md): kontrak file yang dibekukan.
 - [`rust/`](../rust): port modul-per-modul, menjadi implementasi utama. Konformans: 32 tes porting lulus; `upgrade` menulis file node dan beranda identik byte demi byte dengan Python (509 node); recall identik untuk 304/304 pertanyaan LoCoMo (50 fakta + 10 potongan, urutan sama) setelah tie-break dibuat deterministik di kedua implementasi. `prime` 11 ms vs 97 ms, `recall` 10 ms vs 84 ms. Semantic vector (WordLlama) tidak di-port: di LoCoMo kata kunci saja sama bagusnya.
 
-## Berikutnya (iterasi 10)
+## Iterasi 10 — 2026-10-13: insight OpenHuman & Hermes
 
-0. **LongMemEval** (knowledge update, abstention, multi-session) — menguji supersede dan intent sejarah yang tidak diuji LoCoMo.
+Semua insight dari [riset OpenHuman/Hermes](research/openhuman-hermes.md) kecuali KPI benchmark (#14), di Python dan Rust:
+tanggal pada setiap baris snapshot, pagar `<rewire-memory>` + loop guard di parser transcript, aturan ekstraksi (jangan simpan kegagalan sementara / "tool X rusak"; preferensi ditulis deklaratif), bagian **About the user** dengan budget sendiri, ringkasan sesi ikut terindeks dan menempel pada potongan teratas, `refers_to` (periode yang di-resolve model, sebagai boost), hook **per-prompt** (UserPromptSubmit, maks 5 catatan yang belum dilihat sesi), **skills** (memori prosedural, selalu lewat review), pemindaian ulang saat ditampilkan (`[BLOCKED]`), `target_hash` pada item inbox, pemberitahuan saat memory tidak tersedia, escape tag pagar, baris "… N more not shown". Semantic search kini juga ada di Rust (fitur `semantic`, model dari `rewire semantic install`). Konformans: recall identik 304/304 (keyword **dan** hybrid), `prime` dan `upgrade` identik, prompt konsolidasi identik; 61 tes Python, 54 tes Rust.
+
+## Berikutnya (iterasi 11)
+
+0. **Evaluasi hemat token**: ukur dampak iterasi 10 (fresh-first rate, captured-but-not-surfaced) tanpa replay konsolidasi penuh.
 
 1. **E1 penuh:** konsolidasi 20 transcript nyata (Claude Code + Codex) milik user, label manual, ukur presisi & duplikat.
 2. **Verifikasi parser Codex** dengan file `~/.codex/sessions/**/rollout-*.jsonl` asli (fixture saat ini dibuat dari dokumentasi pihak ketiga).
