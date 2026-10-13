@@ -35,8 +35,10 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "What you want to remember. " + QUERY_GUIDE},
                 "k": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8},
-                "episodes": {"type": "integer", "minimum": 0, "maximum": 10, "default": 3,
-                             "description": "Also return this many raw excerpts from past session transcripts"},
+                "episodes": {"type": "integer", "minimum": 0, "maximum": 30, "default": 3,
+                             "description": "Also return this many raw excerpts from past session transcripts. "
+                             "Use ~20 when the answer spans sessions: counting ('how many times'), totals, "
+                             "timelines and 'how long between' questions (measured: experiments/longmemeval)."},
                 "scope": {"type": "string", "description": "'global', 'project:<slug>' or 'all'. "
                           "Default: global + the project of the current directory."},
             },
@@ -86,7 +88,7 @@ class Server:
         if name == "recall":
             self.index.refresh()
             return ops.recall(self.brain, self.index, args["query"], k=int(args.get("k", 8)),
-                              cwd=self.cwd, scope=args.get("scope"), episodes=int(args.get("episodes", 3)))
+                              cwd=self.cwd, scope=args.get("scope"), episodes=max(0, min(int(args.get("episodes", 3)), 30)))
         if name == "get":
             return ops.get(self.brain, list(args["ids"]), session=self.session)
         if name == "remember":
