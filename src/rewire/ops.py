@@ -5,7 +5,6 @@ import os
 
 from . import project as project_mod
 from . import schema, security
-from . import text as text_mod
 from .brain import Brain, Node
 from .index import Index
 from .util import now_iso
@@ -39,8 +38,6 @@ def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None =
         scopes = project_mod.scopes_for(project_mod.detect(cwd, brain.config.projects))
     hits = index.search(query, scopes=scopes, k=k, beta=beta)
     if episodes:
-        if text_mod.count_intent(query):  # "how many times": the occurrences are spread over many sessions
-            episodes *= 2
         # raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
         hits += index.search_episodes(query, k=episodes, seeds=hits)
     return hits
