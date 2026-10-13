@@ -105,6 +105,9 @@ pub enum Cmd {
     Review {
         #[arg(default_value = "list", value_parser = ["list", "approve", "reject"])]
         action: String,
+        /// approve even if the target note changed since
+        #[arg(long)]
+        force: bool,
         ids: Vec<String>,
     },
     /// rebuild the index
@@ -172,7 +175,7 @@ fn cwd() -> String {
 fn print_items(items: &[Value]) {
     println!("{}", crate::snapshot::FENCE_OPEN);
     for item in items {
-        let s = |k: &str| item.get(k).map(py_str).unwrap_or_default();
+        let s = |k: &str| crate::snapshot::escape(&item.get(k).map(py_str).unwrap_or_default());
         if item.get("error").is_some() {
             println!("! {}: {}", s("ref"), s("error"));
         } else if s("type") == "episode" {
@@ -327,7 +330,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Cmd::Review { action, ids } => {
+        Cmd::Review { action, force, ids } => {
             let brain = open_brain(bp);
             if action == "list" {
                 let items = brain.iter_inbox();
@@ -364,7 +367,7 @@ pub fn run(cli: Cli) -> Result<()> {
             };
             for id in &ids {
                 let r = if action == "approve" {
-                    ops::approve(&brain, id).map(|node| println!("approved {id} → [{}] {}", crate::util::short_of(node.id()), node.title()))
+                    ops::approve(&brain, id, force).map(|node| println!("approved {id} → [{}] {}", crate::util::short_of(node.id()), node.title()))
                 } else {
                     ops::reject(&brain, id).map(|_| println!("rejected {id}"))
                 };

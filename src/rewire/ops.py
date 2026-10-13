@@ -1,6 +1,7 @@
 """High-level operations shared by the CLI, MCP server and consolidation."""
 
 import glob
+import hashlib
 import os
 
 from . import project as project_mod
@@ -37,6 +38,10 @@ def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None =
     else:
         scopes = project_mod.scopes_for(project_mod.detect(cwd, brain.config.projects))
     hits = index.search(query, scopes=scopes, k=k, beta=beta)
+    for hit in hits:  # re-scanned when shown: files can be edited by hand or arrive by sync
+        why = security.blocked(hit["title"] + " " + hit["snippet"])
+        if why:
+            hit["title"], hit["snippet"] = f"[BLOCKED: {why}; check this note with `rewire doctor`]", ""
     if episodes:
         # raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
         hits += index.search_episodes(query, k=episodes, seeds=hits)
@@ -50,7 +55,11 @@ def get(brain: Brain, refs: list[str], session: str, harness: str = "mcp") -> li
         if node is None:
             out.append({"ref": ref, "error": "not found"})
             continue
-        out.append({"id": node.id, **{k: v for k, v in node.meta.items() if k != "id"}, "body": node.body})
+        item = {"id": node.id, **{k: v for k, v in node.meta.items() if k != "id"}, "body": node.body}
+        why = security.blocked(node.meta["title"] + " " + node.body)
+        if why:
+            item["title"], item["body"] = f"[BLOCKED: {why}; check this note with `rewire doctor`]", ""
+        out.append(item)
         events.append({"ev": "use", "node": node.id, "w": 0.5, "session": session, "harness": harness})
     brain.append_events(events)
     return out
@@ -126,11 +135,30 @@ def apply_change(brain: Brain, change: dict, source: dict | None = None) -> Node
     return brain.write_node(meta, text)
 
 
-def approve(brain: Brain, inbox_id: str) -> Node:
+def content_hash(node: Node) -> str:
+    """Fingerprint of a note's content, pinned on inbox items that change an existing note."""
+    return hashlib.sha256((node.meta["title"] + "\n" + node.body).encode()).hexdigest()[:16]
+
+
+def pin_target(brain: Brain, item: dict) -> dict:
+    """Record what the target looked like when the change was proposed (approve refuses if it moved)."""
+    node = resolve_id(brain, item["target"]) if item.get("target") else None
+    if node:
+        item["target_hash"] = content_hash(node)
+    return item
+
+
+def approve(brain: Brain, inbox_id: str, force: bool = False) -> Node:
     path = brain.path("inbox", f"{inbox_id}.md")
     item = next((i for i in brain.iter_inbox() if i.path == path), None)
     if item is None:
         raise OpError(f"inbox item not found: {inbox_id}")
+    pinned = item.meta.get("target_hash")
+    if pinned and not force:
+        target = resolve_id(brain, item.meta["target"])
+        if target is not None and content_hash(target) != pinned:
+            raise OpError(f"{inbox_id}: the note it changes was edited after this was proposed; "
+                          "check it, then approve with --force or reject")
     change = dict(item.meta)
     change["text"] = item.body
     change["confidence"] = "explicit"  # a human approved it
@@ -167,8 +195,9 @@ def doctor(brain: Brain) -> list[str]:
         except schema.SchemaError as exc:
             bad += 1
             report.append(f"INVALID {node.path}: {exc}")
-        if "secret" in security.scan(node.body + " " + node.meta["title"]):
-            report.append(f"SECRET? {node.path}")
+        why = security.blocked(node.meta["title"] + " " + node.body)
+        if why:
+            report.append(f"BLOCKED ({why}) {node.path}: hidden from sessions until edited")
     inbox = list(brain.iter_inbox())
     report.append(f"inbox: {len(inbox)} item(s) awaiting review")
     remotes = brain.git("remote", "-v").stdout.strip()

@@ -360,6 +360,7 @@ class Consolidator:
             item = {k: v for k, v in change.items() if k not in ("text", "links", "key")}
             item["source"] = {**source, "turn": claim["evidence_turn"]}
             item["edges"] = resolve_links(claim)
+            ops.pin_target(self.brain, item)
             queued.append({"inbox_id": self.brain.write_inbox(item, claim["text"]), "action": change["action"],
                            "title": claim["title"]})
 

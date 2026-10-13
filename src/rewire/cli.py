@@ -24,7 +24,7 @@ def _print(data, as_json: bool):
         return
     if isinstance(data, list):
         print(snapshot.FENCE_OPEN)
-        for item in data:
+        for item in json.loads(snapshot.escape(json.dumps(data))):
             if "error" in item:
                 print(f"! {item['ref']}: {item['error']}")
             elif item.get("type") == "episode":
@@ -152,7 +152,7 @@ def cmd_review(args):
     for inbox_id in ids:
         try:
             if args.action == "approve":
-                node = ops.approve(brain, inbox_id)
+                node = ops.approve(brain, inbox_id, force=args.force)
                 print(f"approved {inbox_id} → [{node.id[-8:].lower()}] {node.meta['title']}")
             else:
                 ops.reject(brain, inbox_id)
@@ -291,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("review", help="review the inbox")
     s.add_argument("action", nargs="?", default="list", choices=["list", "approve", "reject"])
+    s.add_argument("--force", action="store_true", help="approve even if the target note changed since")
     s.add_argument("ids", nargs="*")
     s.set_defaults(func=cmd_review)
 

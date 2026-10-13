@@ -81,6 +81,7 @@ def _stage(brain, n: int, path: str) -> str | None:
 
 def _resolve(brain) -> list[str]:
     """Resolve merge conflicts in place. Returns human-readable notes."""
+    from .ops import content_hash
     notes = []
     conflicted = _git(brain, "diff", "--name-only", "--diff-filter=U").stdout.split()
     for path in conflicted:
@@ -105,6 +106,9 @@ def _resolve(brain) -> list[str]:
                 item.update(action="UPDATE", target=m_lose.get("id"), created=now_iso(),
                             reason="sync conflict: this version lost to a newer edit from another device",
                             source={"harness": "sync"})
+                kept = brain.read_node(full)
+                if kept:
+                    item["target_hash"] = content_hash(kept)
                 brain.write_inbox(item, b_lose)
                 notes.append(f"{path}: kept the newest version; the other one is in the inbox")
         else:

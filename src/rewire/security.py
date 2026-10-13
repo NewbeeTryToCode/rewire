@@ -58,3 +58,18 @@ def scan(text: str) -> list[str]:
     if any(p.search(text) for p in INJECTION_PATTERNS):
         problems.append("injection")
     return problems
+
+
+# Load-time check (notes are re-scanned whenever they are shown, since files can be edited by hand or
+# arrive by sync): secrets and the unambiguous injection patterns. Commands such as curl are left out,
+# they are ordinary content in coding notes that a human already approved.
+LOAD_PATTERNS = [p for p in INJECTION_PATTERNS if "curl" not in p.pattern]
+
+
+def blocked(text: str) -> str:
+    """Return why a stored note must not be shown ('' when it is fine)."""
+    if any(p.search(text) for p in SECRET_PATTERNS) or _high_entropy_token(text):
+        return "secret"
+    if any(p.search(text) for p in LOAD_PATTERNS):
+        return "injection"
+    return ""

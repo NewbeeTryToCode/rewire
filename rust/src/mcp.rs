@@ -144,7 +144,7 @@ impl<'a> Server<'a> {
                         let mut text = pyjson::dumps_utf8(&data);
                         if name == "recall" || name == "get" {
                             // memory as data, dropped again from transcripts
-                            text = format!("{}\n{text}\n{}", crate::snapshot::FENCE_OPEN, crate::snapshot::FENCE_CLOSE);
+                            text = format!("{}\n{}\n{}", crate::snapshot::FENCE_OPEN, crate::snapshot::escape(&text), crate::snapshot::FENCE_CLOSE);
                         }
                         json!({"content": [{"type": "text", "text": text}]})
                     }
