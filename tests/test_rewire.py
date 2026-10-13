@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("REWIRE_SEMANTIC", "0")  # deterministic keyword ranking; semantic has its own test
 
 from rewire import activation, fm, integrations, nodefmt, ops, schema, security, snapshot  # noqa: E402
+from rewire import skills as skills_mod  # noqa: E402
 from rewire import sync as sync_mod  # noqa: E402
 from rewire import transcripts as tx  # noqa: E402
 from rewire.brain import Brain  # noqa: E402
@@ -361,6 +362,42 @@ class TestConsolidation(BrainCase):
         self.assertFalse(self.brain.get_node(existing.id).meta["retracted_at"])
         ops.approve(self.brain, item.meta["inbox_id"], force=True)
         self.assertTrue(self.brain.get_node(existing.id).meta["retracted_at"])
+
+    def test_skills_are_proposed_reviewed_listed_and_read(self):
+        skill = {"name": "Deploy Billing", "action": "create", "description": "Deploying the billing service",
+                 "steps": "1. helm upgrade billing ./chart\n2. kubectl rollout status deploy/billing", "evidence_turn": 2}
+        r = self.run_fixture(FakeProvider({**self.extraction([]), "skills": [skill]}))
+        self.assertEqual(r["queued"][0]["action"], "SKILL")
+        item = next(self.brain.iter_inbox())
+        self.assertEqual((item.meta["kind"], item.meta["name"], item.meta["skill_action"]),
+                         ("skill", "deploy-billing", "create"))
+        self.assertEqual(ops.approve(self.brain, item.meta["inbox_id"]), "skill deploy-billing")
+        with open(self.brain.path("skills", "deploy-billing", "SKILL.md")) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith('---\nname: "deploy-billing"\ndescription: "Deploying the billing service"'))
+        self.assertIn("helm upgrade billing", text)
+        snap = snapshot.build(self.brain, self.index, project=None)["text"]
+        self.assertIn("## Skills (procedures", snap)
+        self.assertIn("- deploy-billing — Deploying the billing service", snap)
+        got = ops.get(self.brain, ["skill:deploy-billing"], "s")[0]
+        self.assertIn("kubectl rollout", got["body"])
+        self.assertIn("skill:deploy-billing", [e.get("node") for e in self.brain.iter_events()])
+        # a later session appends instead of creating a second skill
+        provider = FakeProvider({**self.extraction([]), "skills": [{**skill, "name": "deploy-billing", "action": "append",
+                                                                    "steps": "3. check the grafana dashboard"}]})
+        con = Consolidator(self.brain, provider=provider, log=lambda *_: None)
+        con.run_file(os.path.join(FIX, "rollout-2026-10-01T10-00-00-abc.jsonl"))
+        self.assertIn("KNOWN SKILLS:\n- deploy-billing: Deploying the billing service", provider.prompts[0])
+        item = next(self.brain.iter_inbox())
+        self.assertEqual(item.meta["skill_action"], "append")
+        ops.approve(self.brain, item.meta["inbox_id"])
+        with open(self.brain.path("skills", "deploy-billing", "SKILL.md")) as fh:
+            text = fh.read()
+        self.assertIn("## Update ", text)
+        self.assertIn("grafana", text)
+        self.assertEqual(skills_mod.stale(self.brain), [])
+        old = datetime.now(timezone.utc) + timedelta(days=120)
+        self.assertEqual([n for n, _ in skills_mod.stale(self.brain, now=old)], ["deploy-billing"])
 
     def test_secret_claim_rejected(self):
         provider = FakeProvider(self.extraction([

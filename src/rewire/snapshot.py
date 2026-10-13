@@ -9,6 +9,7 @@ import json
 
 from . import project as project_mod
 from . import security
+from . import skills as skills_mod
 
 # Everything rewire injects is fenced, so transcripts can drop it before consolidation
 # (memory must never come back as something the user "said": transcripts.strip_injected).
@@ -66,6 +67,16 @@ def _fill(rows, budget: int) -> tuple[list[str], int]:
     return out, left
 
 
+def _fill_lines(lines: list[str], budget: int) -> tuple[list[str], int]:
+    out, used = [], 0
+    for line in lines:
+        if used + len(line) + 1 > budget:
+            break
+        out.append(line)
+        used += len(line) + 1
+    return out, len(lines) - len(out)
+
+
 def build(brain, index, cwd: str | None = None, project: str | None = None) -> dict:
     project = project or project_mod.detect(cwd, brain.config.projects)
     scopes = project_mod.scopes_for(project)
@@ -87,22 +98,30 @@ def build(brain, index, cwd: str | None = None, project: str | None = None) -> d
     about = _fill(profile, budgets.get("profile", 600))
     shown = {line.rsplit("[", 1)[1].rstrip("]") for line in about[0]}
     working = [r for r in working if r["id"][-8:].lower() not in shown]  # not twice
+    skill_lines = []
+    for s in skills_mod.all_skills(brain):
+        why = skills_mod.blocked(s)
+        skill_lines.append(escape(f"- {s['name']} — {f'[BLOCKED: {why}]' if why else s['description']}")[:200])
     sections = {
         "profile": about,
         "constraints": _fill(constraints, budgets["constraints"]),
         "preferences": _fill(prefs, budgets["preferences"]),
+        "skills": _fill_lines(skill_lines, budgets.get("skills", 400)),
         "working": _fill(list(hub) + list(working), budgets["working"]),
     }
     parts = [HEADER]
     if project:
         parts.append(f"Active project: {project}\n")
     titles = {"profile": "## About the user", "constraints": "## Rules (always apply)", "preferences": "## Preferences",
+              "skills": "## Skills (procedures: read one with `get skill:<name>` before doing that task)",
               "working": "## Current context"}
     for key, (lines, left) in sections.items():
         if lines:
-            more = [f"- … {left} more not shown (use `recall`)"] if left else []
+            hint = "see skills/ in the brain" if key == "skills" else "use `recall`"
+            more = [f"- … {left} more not shown ({hint})"] if left else []
             parts.append(titles[key] + "\n" + "\n".join(lines + more) + "\n")
-    ids = [line.rsplit("[", 1)[1].rstrip("]") for lines, _ in sections.values() for line in lines]
+    ids = [line.rsplit("[", 1)[1].rstrip("]") for key, (lines, _) in sections.items() if key != "skills"
+           for line in lines]
     text = f"{FENCE_OPEN}\n" + "\n".join(parts) + f"{FENCE_CLOSE}\n"
     return {"project": project, "text": text, "ids": ids,
             "empty": not any(lines for lines, _ in sections.values())}

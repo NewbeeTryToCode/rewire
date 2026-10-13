@@ -9,7 +9,7 @@ use crate::index::{Index, SearchOpts};
 use crate::llm::{self, Provider};
 use crate::transcripts::{self as tx, SessionMeta, Turn};
 use crate::util::{now_iso, now_ts, relpath, short_of, slugify, take};
-use crate::{ops, project, pyjson, schema, security, snapshot, Error, Meta, Result};
+use crate::{ops, project, pyjson, schema, security, skills, snapshot, Error, Meta, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
@@ -80,12 +80,46 @@ Rules:
     )
 }
 
-pub fn extract_system(profile: &str) -> String {
-    let intro = if profile == "general" { INTRO_GENERAL } else { INTRO_CODING };
-    format!("{intro}\n{}", rules())
+pub const SKILLS_RULE: &str = "
+- skills (procedures): when the session worked out a reusable multi-step procedure the user is likely to
+  repeat (a deploy, a release, a setup or debugging recipe for their environment) and it ended in success,
+  propose it. name: short kebab-case (\"deploy-billing\"); description: one sentence saying when to use it;
+  steps: numbered steps with the concrete commands. If KNOWN SKILLS has one for the same task, use its name
+  with action \"append\" and give only what is new. Skip one-off fixes and anything that did not work; [] is fine.";
+
+pub fn uses_skills(profile: &str) -> bool {
+    profile != "general"
 }
 
-pub fn extract_schema() -> Value {
+pub fn extract_system(profile: &str) -> String {
+    let intro = if profile == "general" { INTRO_GENERAL } else { INTRO_CODING };
+    format!("{intro}\n{}{}", rules(), if uses_skills(profile) { SKILLS_RULE } else { "" })
+}
+
+pub fn extract_schema(profile: &str) -> Value {
+    let mut out = base_extract_schema();
+    if uses_skills(profile) {
+        out["properties"]["skills"] = json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "action": {"type": "string", "enum": ["create", "append"]},
+                    "description": {"type": "string"},
+                    "steps": {"type": "string"},
+                    "evidence_turn": {"type": "integer"},
+                },
+                "required": ["name", "action", "description", "steps", "evidence_turn"],
+                "additionalProperties": false,
+            },
+        });
+        out["required"].as_array_mut().unwrap().push(json!("skills"));
+    }
+    out
+}
+
+fn base_extract_schema() -> Value {
     let types: Vec<&str> = schema::TYPES.iter().copied().filter(|t| *t != "project").collect();
     json!({
         "type": "object",
@@ -380,16 +414,29 @@ impl<'a> Consolidator<'a> {
         let mut claims: Vec<Meta> = Vec::new();
         let mut used: BTreeSet<String> = BTreeSet::new();
         let mut summaries: Vec<String> = Vec::new();
-        let schema_v = extract_schema();
-        let system = extract_system(&self.brain.config.profile);
+        let profile = self.brain.config.profile.clone();
+        let schema_v = extract_schema(&profile);
+        let system = extract_system(&profile);
+        let known_skills = if uses_skills(&profile) {
+            let lines: Vec<String> = skills::all_skills(self.brain).iter().map(|s| format!("- {}: {}", s.name, s.description)).collect();
+            format!("\n\nKNOWN SKILLS:\n{}", if lines.is_empty() { "(none)".to_string() } else { lines.join("\n") })
+        } else {
+            String::new()
+        };
+        let mut proposals: Vec<Meta> = Vec::new();
         for (ci, chunk) in chunks(&format_turns(turns), self.brain.config.max_chunk_chars).iter().enumerate() {
             let prompt = format!(
-                "SESSION DATE: {date}\nSESSION PROJECT: {}\n\nKNOWN MEMORY:\n{}\n\nTRANSCRIPT:\n{chunk}",
+                "SESSION DATE: {date}\nSESSION PROJECT: {}\n\nKNOWN MEMORY:\n{}{known_skills}\n\nTRANSCRIPT:\n{chunk}",
                 project.as_deref().unwrap_or("(none)"),
                 if known.is_empty() { "(empty)".to_string() } else { known.join("\n") }
             );
             let out = self.provider.complete_json(&system, &prompt, &schema_v)?;
             summaries.push(out.get("summary").map(crate::cli::py_str).unwrap_or_default().trim().to_string());
+            if uses_skills(&profile) {
+                if let Some(Value::Array(ps)) = out.get("skills") {
+                    proposals.extend(ps.iter().filter_map(|p| p.as_object().cloned()));
+                }
+            }
             if let Some(Value::Array(ids)) = out.get("used_memory_ids") {
                 used.extend(ids.iter().map(|i| crate::cli::py_str(i).to_lowercase()));
             }
@@ -520,6 +567,43 @@ impl<'a> Consolidator<'a> {
             ops::pin_target(self.brain, &mut item);
             let id = self.brain.write_inbox(&item, claim["text"].as_str().unwrap_or(""))?;
             queued.push(obj(&[("inbox_id", sv(&id)), ("action", change["action"].clone()), ("title", claim["title"].clone())]));
+        }
+
+        // Skills are followed as instructions: always reviewed by the user, never applied directly.
+        for p in &proposals {
+            let get = |k: &str| p.get(k).filter(|v| !v.is_null()).map(crate::cli::py_str).unwrap_or_default();
+            let name = skills::normalize_name(&get("name"));
+            let steps = security::strip_private(&get("steps")).trim().to_string();
+            if name.is_empty() || steps.is_empty() {
+                continue;
+            }
+            let description: String = get("description").trim().chars().take(300).collect();
+            let flags = security::scan(&format!("{name} {description} {steps}"));
+            if flags.iter().any(|f| f == "secret") {
+                rejected.push(obj(&[("title", sv(&format!("skill {name}"))), ("why", sv("secret"))]));
+                continue;
+            }
+            let turn = p.get("evidence_turn").and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
+            let exists = skills::read(self.brain, &name).is_some();
+            let title = format!("skill {name}");
+            let item = obj(&[
+                ("kind", sv("skill")),
+                ("action", sv("SKILL")),
+                ("type", sv("skill")),
+                ("title", sv(&title)),
+                ("scope", sv("global")),
+                ("name", sv(&name)),
+                ("description", sv(&description)),
+                ("skill_action", sv(if exists { "append" } else { "create" })),
+                ("confidence", sv("inferred")),
+                ("provenance", sv(roles.get(&turn).map(String::as_str).unwrap_or("assistant"))),
+                ("reason", sv("procedure worked out in this session")),
+                ("flags", json!(flags)),
+                ("source", source(&json!(turn))),
+                ("created", sv(&now_iso())),
+            ]);
+            let id = self.brain.write_inbox(&item, &steps)?;
+            queued.push(obj(&[("inbox_id", sv(&id)), ("action", sv("SKILL")), ("title", sv(&title))]));
         }
 
         for short in &used {

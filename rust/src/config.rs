@@ -47,6 +47,7 @@ pub struct Budgets {
     pub constraints: usize,
     pub preferences: usize,
     pub working: usize,
+    pub skills: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -75,7 +76,7 @@ impl Default for Config {
             sync_auto: false,
             d: 0.7,
             recall_beta: 0.3,
-            budgets: Budgets { profile: 600, constraints: 1500, preferences: 800, working: 2500 },
+            budgets: Budgets { profile: 600, constraints: 1500, preferences: 800, working: 2500, skills: 400 },
             profile: "coding".into(),
             transcripts: "auto".into(),
             provider: "command".into(),
@@ -152,6 +153,9 @@ pub fn load(path: &Path) -> Config {
     }
     if let Some(v) = num(budgets.get("preferences")) {
         cfg.budgets.preferences = v as usize;
+    }
+    if let Some(v) = num(budgets.get("skills")) {
+        cfg.budgets.skills = v as usize;
     }
     if let Some(v) = num(budgets.get("working")) {
         cfg.budgets.working = v as usize;

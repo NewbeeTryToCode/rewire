@@ -7,6 +7,7 @@ import re
 
 from . import project as project_mod
 from . import schema, security
+from . import skills as skills_mod
 from .brain import Brain, Node
 from .index import Index
 from .util import now_iso
@@ -68,6 +69,20 @@ def time_range(refers_to: dict | None) -> tuple[str, str] | None:
 def get(brain: Brain, refs: list[str], session: str, harness: str = "mcp") -> list[dict]:
     out, events = [], []
     for ref in refs[:10]:
+        if ref.strip().lower().startswith("skill:"):
+            skill = skills_mod.read(brain, ref.strip()[6:])
+            if skill is None:
+                out.append({"ref": ref, "error": "not found"})
+                continue
+            why = skills_mod.blocked(skill)
+            item = {"id": f"skill:{skill['name']}", "type": "skill", "name": skill["name"],
+                    "description": skill["description"], "updated": skill["updated"], "body": skill["body"]}
+            if why:
+                item["description"], item["body"] = f"[BLOCKED: {why}; check this note with `rewire doctor`]", ""
+            out.append(item)
+            events.append({"ev": "use", "node": f"skill:{skill['name']}", "w": 0.5, "session": session,
+                           "harness": harness})
+            continue
         node = resolve_id(brain, ref)
         if node is None:
             out.append({"ref": ref, "error": "not found"})
@@ -165,11 +180,19 @@ def pin_target(brain: Brain, item: dict) -> dict:
     return item
 
 
-def approve(brain: Brain, inbox_id: str, force: bool = False) -> Node:
+def approve(brain: Brain, inbox_id: str, force: bool = False) -> str:
+    """Apply an inbox item. Returns what it became ("[id8] title" or "skill <name>")."""
     path = brain.path("inbox", f"{inbox_id}.md")
     item = next((i for i in brain.iter_inbox() if i.path == path), None)
     if item is None:
         raise OpError(f"inbox item not found: {inbox_id}")
+    if item.meta.get("kind") == "skill":
+        try:
+            skills_mod.apply(brain, item.meta, item.body)
+        except ValueError as exc:
+            raise OpError(f"{inbox_id}: {exc}") from exc
+        os.remove(path)
+        return f"skill {skills_mod.normalize_name(item.meta.get('name'))}"
     pinned = item.meta.get("target_hash")
     if pinned and not force:
         target = resolve_id(brain, item.meta["target"])
@@ -181,7 +204,7 @@ def approve(brain: Brain, inbox_id: str, force: bool = False) -> Node:
     change["confidence"] = "explicit"  # a human approved it
     node = apply_change(brain, change, source=item.meta.get("source"))
     os.remove(path)
-    return node
+    return f"[{node.id[-8:].lower()}] {node.meta['title']}"
 
 
 def reject(brain: Brain, inbox_id: str) -> None:
@@ -215,6 +238,12 @@ def doctor(brain: Brain) -> list[str]:
         why = security.blocked(node.meta["title"] + " " + node.body)
         if why:
             report.append(f"BLOCKED ({why}) {node.path}: hidden from sessions until edited")
+    for skill in skills_mod.all_skills(brain):
+        why = skills_mod.blocked(skill)
+        if why:
+            report.append(f"BLOCKED ({why}) {skill['path']}: hidden from sessions until edited")
+    for name, days in skills_mod.stale(brain):
+        report.append(f"STALE skill {name}: not used for {days} days (delete skills/{name}/ to retire it)")
     inbox = list(brain.iter_inbox())
     report.append(f"inbox: {len(inbox)} item(s) awaiting review")
     remotes = brain.git("remote", "-v").stdout.strip()

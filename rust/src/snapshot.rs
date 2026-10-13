@@ -73,6 +73,23 @@ fn fill(rows: &[NodeRow], budget: usize) -> (Vec<String>, usize) {
     (out, left)
 }
 
+const SKILLS_TITLE: &str = "## Skills (procedures: read one with `get skill:<name>` before doing that task)";
+
+fn fill_lines(lines: &[String], budget: usize) -> (Vec<String>, usize) {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for l in lines {
+        let n = l.chars().count();
+        if used + n + 1 > budget {
+            break;
+        }
+        used += n + 1;
+        out.push(l.clone());
+    }
+    let left = lines.len() - out.len();
+    (out, left)
+}
+
 pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Option<&str>) -> Result<Snapshot> {
     let project = match project {
         Some(p) => Some(p.to_string()),
@@ -105,10 +122,19 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let shown: std::collections::HashSet<String> =
         about.0.iter().filter_map(|l| l.rsplit_once('[').map(|(_, r)| r.trim_end_matches(']').to_string())).collect();
     working.retain(|r| !shown.contains(&crate::util::short_of(&r.id))); // not twice
+    let skill_lines: Vec<String> = crate::skills::all_skills(brain)
+        .iter()
+        .map(|s| {
+            let why = crate::skills::blocked(s);
+            let what = if why.is_empty() { s.description.clone() } else { format!("[BLOCKED: {why}]") };
+            escape(&format!("- {} — {what}", s.name)).chars().take(200).collect()
+        })
+        .collect();
     let sections = [
         ("## About the user", about),
         ("## Rules (always apply)", fill(&constraints, b.constraints)),
         ("## Preferences", fill(&prefs, b.preferences)),
+        (SKILLS_TITLE, fill_lines(&skill_lines, b.skills)),
         ("## Current context", fill(&working, b.working)),
     ];
     let mut parts = vec![HEADER.to_string()];
@@ -118,10 +144,11 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let mut ids = Vec::new();
     for (title, (lines, left)) in &sections {
         if !lines.is_empty() {
-            let more = if *left > 0 { format!("\n- … {left} more not shown (use `recall`)") } else { String::new() };
+            let hint = if *title == SKILLS_TITLE { "see skills/ in the brain" } else { "use `recall`" };
+            let more = if *left > 0 { format!("\n- … {left} more not shown ({hint})") } else { String::new() };
             parts.push(format!("{title}\n{}{more}\n", lines.join("\n")));
         }
-        for l in lines {
+        for l in lines.iter().filter(|_| *title != SKILLS_TITLE) {
             if let Some((_, rest)) = l.rsplit_once('[') {
                 ids.push(rest.trim_end_matches(']').to_string());
             }

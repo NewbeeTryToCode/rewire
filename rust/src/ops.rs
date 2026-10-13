@@ -3,7 +3,7 @@
 use crate::brain::{err_str, is_set, out_str, Brain, Node};
 use crate::index::{Hit, Index, SearchOpts};
 use crate::util::{now_iso, relpath, short_of, take};
-use crate::{project, schema, security, Error, Meta, Result};
+use crate::{project, schema, security, skills, Error, Meta, Result};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -101,6 +101,19 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
     let mut out = Vec::new();
     let mut events = Vec::new();
     for r in refs.iter().take(10) {
+        if r.trim().to_lowercase().starts_with("skill:") {
+            let Some(skill) = skills::read(brain, &r.trim()[6..]) else {
+                out.push(json!({"ref": r, "error": "not found"}));
+                continue;
+            };
+            let why = skills::blocked(&skill);
+            let (description, body) =
+                if why.is_empty() { (skill.description.clone(), skill.body.clone()) } else { (security::blocked_label(why), String::new()) };
+            out.push(json!({"id": format!("skill:{}", skill.name), "type": "skill", "name": skill.name,
+                            "description": description, "updated": skill.updated, "body": body}));
+            events.push(event("use", &format!("skill:{}", skill.name), 0.5, session, harness));
+            continue;
+        }
         match resolve_id(brain, r) {
             None => out.push(json!({"ref": r, "error": "not found"})),
             Some(node) => {
@@ -272,11 +285,21 @@ pub fn pin_target(brain: &Brain, item: &mut Meta) {
     }
 }
 
-pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<Node> {
+/// Apply an inbox item. Returns what it became ("[id8] title" or "skill <name>").
+pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
     let path = brain.path(&["inbox", &format!("{inbox_id}.md")]);
     let Some(item) = brain.iter_inbox().into_iter().find(|i| i.path == path) else {
         return op(format!("inbox item not found: {inbox_id}"));
     };
+    if item.meta.get("kind").and_then(Value::as_str) == Some("skill") {
+        match skills::apply(brain, &item.meta, &item.body) {
+            Err(Error::Op(e)) => return op(format!("{inbox_id}: {e}")),
+            other => other?,
+        };
+        fs::remove_file(&path)?;
+        let name = item.meta.get("name").and_then(Value::as_str).unwrap_or("");
+        return Ok(format!("skill {}", skills::normalize_name(name)));
+    }
     if let (Some(pinned), false) = (item.meta.get("target_hash").and_then(Value::as_str).filter(|h| !h.is_empty()), force) {
         let target = item.meta.get("target").and_then(Value::as_str).and_then(|t| resolve_id(brain, t));
         if target.is_some_and(|t| content_hash(&t) != pinned) {
@@ -290,7 +313,7 @@ pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<Node> {
     change.insert("confidence".into(), json!("explicit")); // a human approved it
     let node = apply_change(brain, &change, item.meta.get("source"))?;
     fs::remove_file(&path)?;
-    Ok(node)
+    Ok(format!("[{}] {}", crate::util::short_of(node.id()), node.title()))
 }
 
 pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
@@ -327,6 +350,15 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         if !why.is_empty() {
             report.push(format!("BLOCKED ({why}) {}: hidden from sessions until edited", node.path.display()));
         }
+    }
+    for skill in skills::all_skills(brain) {
+        let why = skills::blocked(&skill);
+        if !why.is_empty() {
+            report.push(format!("BLOCKED ({why}) {}: hidden from sessions until edited", skill.path.display()));
+        }
+    }
+    for (name, days) in skills::stale(brain, None) {
+        report.push(format!("STALE skill {name}: not used for {days} days (delete skills/{name}/ to retire it)"));
     }
     report.push(format!("inbox: {} item(s) awaiting review", brain.iter_inbox().len()));
     let remotes = out_str(&brain.git(&["remote", "-v"]));
