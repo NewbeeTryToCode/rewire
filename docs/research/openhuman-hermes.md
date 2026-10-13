@@ -16,6 +16,9 @@ submodule + the closed CortexDB server) and [NousResearch/hermes-agent](https://
 
 ## Insights worth adopting (prioritised)
 
+Status (2026-10-13): 1–13 are implemented in both implementations (iterations 9–10 in
+[docs/iterations.md](../iterations.md)); 14 is part of the benchmark work.
+
 | # | Insight | From | Value | Cost |
 |---|---|---|---|---|
 | 1 | **Date on every injected item** (`valid_from`, session date on excerpts): stale-first answers on contradictions went to 6/6 correct once turns carried timestamps | OpenHuman eval (`tinymemory/docs/evals/agent-memory.md`) | high | trivial |

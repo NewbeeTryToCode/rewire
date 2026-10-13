@@ -5,7 +5,8 @@
 - **File adalah sumber kebenaran.** Node memory = markdown dengan frontmatter; bisa dibaca, diedit, di-diff, dibuka di Obsidian.
 - **Synapse dihitung, bukan disimpan.** Pemakaian dicatat sebagai event append-only; kekuatan memory (ACT-R, `d=0.7`) dihitung ulang dari log. Aturan dan preferensi tidak pernah decay.
 - **Belajar setelah sesi.** Transcript dikonsolidasi oleh LLM menjadi klaim atomik; yang eksplisit dari user langsung disimpan, sisanya masuk inbox untuk direview.
-- **Aman secara default.** Provenance diambil dari transcript (bukan dari klaim model), output tool tidak pernah otomatis jadi aturan, secret ditolak, setiap konsolidasi bisa di-`undo`.
+- **Aman secara default.** Provenance diambil dari transcript (bukan dari klaim model), output tool tidak pernah otomatis jadi aturan, secret ditolak, setiap konsolidasi bisa di-`undo`. Memory yang disuntikkan selalu dipagari `<rewire-memory>` dan dipindai ulang saat ditampilkan (`[BLOCKED]` bila berisi secret/injeksi).
+- **Tahu prosedur, bukan cuma fakta.** Prosedur yang berhasil (deploy, rilis, setup) diusulkan sebagai *skill* (`skills/<nama>/SKILL.md`) dan masuk inbox untuk direview.
 
 Arsitektur (L0/L1/L2): [`docs/design/architecture.md`](docs/design/architecture.md) · Format file: [`docs/design/format.md`](docs/design/format.md) · Desain: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Konsep: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Bukti simulasi: [`experiments/phase0`](experiments/phase0/README.md) · Log iterasi: [`docs/iterations.md`](docs/iterations.md)
 
@@ -16,14 +17,16 @@ cargo install --git https://github.com/NewbeeTryToCode/rewire rewire   # satu bi
 rewire init                     # membuat ~/brain (atau set REWIRE_BRAIN)
 ```
 
-Implementasi utama adalah binary Rust di [`rust/`](rust/) (~7,5 MB, tanpa runtime; `prime` ~11 ms, kira-kira 9× lebih cepat dari versi Python). Konsolidasi default memakai `claude -p` (login Claude Code yang sudah ada); untuk memakai API langsung set `provider = "anthropic"` di `brain.toml` dan `ANTHROPIC_API_KEY`.
+Implementasi utama adalah binary Rust di [`rust/`](rust/) (~9 MB, tanpa runtime; `prime` ~20 ms, recall ~20 ms). Konsolidasi default memakai `claude -p` (login Claude Code yang sudah ada); untuk memakai API langsung set `provider = "anthropic"` di `brain.toml` dan `ANTHROPIC_API_KEY`.
 
 Implementasi Python di [`src/rewire`](src/rewire) tetap ada sebagai **referensi** (dan untuk eksperimen/benchmark). Keduanya membaca dan menulis format file yang sama persis ([format.md](docs/design/format.md)); kesetaraannya diuji: file node identik byte demi byte dan hasil recall identik ([experiments/conformance](experiments/conformance/recall_parity.py)). Versi Python: `pipx install git+https://github.com/NewbeeTryToCode/rewire`.
+
+Pencarian semantik (opsional, offline): `rewire semantic install` menyalin model WordLlama dari paket Python `wordllama` lokal (`pip install wordllama`) atau dari `--from <dir>`. Tanpa model, recall memakai keyword (BM25 + stemming) saja; dengan model, hasilnya identik dengan versi Python hybrid.
 
 ## Pasang ke harness
 
 ```bash
-rewire install claude-code --write   # hook SessionStart/SessionEnd/PreCompact (settings di-backup dulu)
+rewire install claude-code --write   # hook SessionStart/UserPromptSubmit/SessionEnd/PreCompact (settings di-backup dulu)
 claude mcp add --scope user rewire -- rewire mcp
 
 rewire install codex                 # menulis Agent Skill + mencetak snippet AGENTS.md
@@ -37,10 +40,11 @@ Harness tanpa hook tetap bisa dipakai: agent menjalankan `rewire prime` lewat in
 ```bash
 rewire prime                      # snapshot yang disuntikkan di awal sesi
 rewire recall "keputusan storage" # cari memory
-rewire get <id>
+rewire recall "deploy" --from 2026-09-01 --to 2026-09-30   # utamakan periode tertentu
+rewire get <id>                   # atau: rewire get skill:<nama>
 rewire remember --type preference "Selalu tulis test sebelum fitur"   # masuk inbox
 rewire review                     # lihat inbox
-rewire review approve <id|all>
+rewire review approve <id|all>    # --force bila catatan targetnya sudah berubah sejak diusulkan
 rewire consolidate --pending      # proses transcript yang tertunda
 rewire undo <session-id>          # batalkan hasil konsolidasi satu sesi
 rewire doctor                     # cek kesehatan brain
@@ -64,6 +68,7 @@ rewire sync                       # pull + push manual
 ├── nodes/<type>/<slug>-<id>.md   # memory (constraint, preference, fact, decision, project, person, concept)
 ├── events/<device>/YYYY-MM.jsonl # log pemakaian (merge=union, tidak pernah konflik)
 ├── sessions/YYYY-MM-DD/*.md      # ringkasan tiap sesi yang dikonsolidasi
+├── skills/<nama>/SKILL.md        # prosedur (Agent Skills), lewat review
 ├── inbox/*.md                    # usulan yang menunggu review
 ├── .index/                       # SQLite FTS5, dibangun ulang otomatis (gitignored)
 └── .state/                       # watermark & antrean per device (gitignored)
