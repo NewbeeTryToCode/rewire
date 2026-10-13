@@ -49,6 +49,14 @@ pub fn recall(
         None => Some(project::scopes_for(project::detect(cwd, &brain.config.projects).as_deref())),
     };
     let mut hits = index.search(query, &SearchOpts { scopes, k, beta, ..Default::default() })?;
+    for hit in hits.iter_mut() {
+        // re-scanned when shown: files can be edited by hand or arrive by sync
+        let why = security::blocked(&format!("{} {}", hit.title, hit.snippet));
+        if !why.is_empty() {
+            hit.title = security::blocked_label(why);
+            hit.snippet = String::new();
+        }
+    }
     if episodes > 0 {
         // raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
         let eps = index.search_episodes(query, episodes, &hits)?;
@@ -82,6 +90,11 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
                     }
                 }
                 m.insert("body".into(), json!(node.body));
+                let why = security::blocked(&format!("{} {}", node.title(), node.body));
+                if !why.is_empty() {
+                    m.insert("title".into(), json!(security::blocked_label(why)));
+                    m.insert("body".into(), json!(""));
+                }
                 out.push(Value::Object(m));
                 events.push(event("use", node.id(), 0.5, session, harness));
             }
@@ -223,11 +236,33 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
     brain.write_node(&meta, &text, None)
 }
 
-pub fn approve(brain: &Brain, inbox_id: &str) -> Result<Node> {
+/// Fingerprint of a note's content, pinned on inbox items that change an existing note.
+pub fn content_hash(node: &Node) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(format!("{}\n{}", node.title(), node.body).as_bytes()))[..16].to_string()
+}
+
+/// Record what the target looked like when the change was proposed (approve refuses if it moved).
+pub fn pin_target(brain: &Brain, item: &mut Meta) {
+    let target = item.get("target").and_then(Value::as_str).filter(|t| !t.is_empty()).map(String::from);
+    if let Some(node) = target.and_then(|t| resolve_id(brain, &t)) {
+        item.insert("target_hash".into(), json!(content_hash(&node)));
+    }
+}
+
+pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<Node> {
     let path = brain.path(&["inbox", &format!("{inbox_id}.md")]);
     let Some(item) = brain.iter_inbox().into_iter().find(|i| i.path == path) else {
         return op(format!("inbox item not found: {inbox_id}"));
     };
+    if let (Some(pinned), false) = (item.meta.get("target_hash").and_then(Value::as_str).filter(|h| !h.is_empty()), force) {
+        let target = item.meta.get("target").and_then(Value::as_str).and_then(|t| resolve_id(brain, t));
+        if target.is_some_and(|t| content_hash(&t) != pinned) {
+            return op(format!(
+                "{inbox_id}: the note it changes was edited after this was proposed; check it, then approve with --force or reject"
+            ));
+        }
+    }
     let mut change = item.meta.clone();
     change.insert("text".into(), json!(item.body));
     change.insert("confidence".into(), json!("explicit")); // a human approved it
@@ -266,8 +301,9 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
             bad += 1;
             report.push(format!("INVALID {}: {}", node.path.display(), e));
         }
-        if security::scan(&format!("{} {}", node.body, node.title())).iter().any(|p| p == "secret") {
-            report.push(format!("SECRET? {}", node.path.display()));
+        let why = security::blocked(&format!("{} {}", node.title(), node.body));
+        if !why.is_empty() {
+            report.push(format!("BLOCKED ({why}) {}: hidden from sessions until edited", node.path.display()));
         }
     }
     report.push(format!("inbox: {} item(s) awaiting review", brain.iter_inbox().len()));

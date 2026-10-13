@@ -517,6 +517,7 @@ impl<'a> Consolidator<'a> {
                 change.iter().filter(|(k, _)| !["text", "links", "key"].contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
             item.insert("source".into(), source(&claim["evidence_turn"]));
             item.insert("edges".into(), Value::Array(resolve_links(claim, &node_by_key)));
+            ops::pin_target(self.brain, &mut item);
             let id = self.brain.write_inbox(&item, claim["text"].as_str().unwrap_or(""))?;
             queued.push(obj(&[("inbox_id", sv(&id)), ("action", change["action"].clone()), ("title", claim["title"].clone())]));
         }

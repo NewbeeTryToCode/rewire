@@ -8,6 +8,7 @@ to the active project.
 import json
 
 from . import project as project_mod
+from . import security
 
 # Everything rewire injects is fenced, so transcripts can drop it before consolidation
 # (memory must never come back as something the user "said": transcripts.strip_injected).
@@ -20,26 +21,49 @@ HEADER = (
 )
 
 
+def escape(text: str) -> str:
+    """Neutralize fence tags inside memory content, so a note can never close the fence early."""
+    return text.replace("<rewire-memory", "&lt;rewire-memory").replace("</rewire-memory", "&lt;/rewire-memory")
+
+
+def fenced(text: str) -> str:
+    body = text.rstrip("\n")
+    return f"{FENCE_OPEN}\n{body}\n{FENCE_CLOSE}\n"
+
+
+def notice(message: str) -> str:
+    """Session-start text when memory could not be loaded: the agent should know memory is missing,
+    not conclude the user has no notes."""
+    return fenced(f"# rewire memory\nMemory unavailable this session: {message}. Notes about the user may exist; "
+                  "do not assume there are none.")
+
+
 def _line(row) -> str:
     body = " ".join(row["body"].split())
     text = row["title"] if not body or body == row["title"] else f"{row['title']} — {body}"
+    why = security.blocked(text)
+    if why:
+        text = f"[BLOCKED: {why}; check this note with `rewire doctor`]"
     if len(text) > 380:
         text = text[:377] + "..."
+    text = escape(text)
     # Dated notes let the model prefer the current value when facts changed over time.
     meta = json.loads(row["meta"]) if row["meta"] else {}
     date = (meta.get("valid_from") or row["recorded_at"] or "")[:10]
     return f"- {date + ' · ' if date else ''}{text} [{row['id'][-8:].lower()}]"
 
 
-def _fill(rows, budget: int) -> list[str]:
-    out, used = [], 0
+def _fill(rows, budget: int) -> tuple[list[str], int]:
+    """Lines that fit the budget, and how many rows did not."""
+    out, used, left = [], 0, 0
     for row in rows:
         line = _line(row)
         if used + len(line) + 1 > budget:
+            left += 1
             continue
         out.append(line)
         used += len(line) + 1
-    return out
+    return out, left
 
 
 def build(brain, index, cwd: str | None = None, project: str | None = None) -> dict:
@@ -67,10 +91,11 @@ def build(brain, index, cwd: str | None = None, project: str | None = None) -> d
         parts.append(f"Active project: {project}\n")
     titles = {"constraints": "## Rules (always apply)", "preferences": "## Preferences",
               "working": "## Current context"}
-    for key, lines in sections.items():
+    for key, (lines, left) in sections.items():
         if lines:
-            parts.append(titles[key] + "\n" + "\n".join(lines) + "\n")
-    ids = [line.rsplit("[", 1)[1].rstrip("]") for lines in sections.values() for line in lines]
+            more = [f"- … {left} more not shown (use `recall`)"] if left else []
+            parts.append(titles[key] + "\n" + "\n".join(lines + more) + "\n")
+    ids = [line.rsplit("[", 1)[1].rstrip("]") for lines, _ in sections.values() for line in lines]
     text = f"{FENCE_OPEN}\n" + "\n".join(parts) + f"{FENCE_CLOSE}\n"
     return {"project": project, "text": text, "ids": ids,
-            "empty": not any(sections.values())}
+            "empty": not any(lines for lines, _ in sections.values())}

@@ -53,44 +53,59 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
     if internal() {
         return Ok(String::new());
     }
+    let start = event == "session-start";
+    let only_at_start = |text: String| Ok(if start { text } else { String::new() });
     let brain = if brain.exists() {
         brain
     } else {
         // Ephemeral machines (cloud sessions, fresh Codespaces): fetch the brain from REWIRE_REMOTE.
-        let Ok(url) = std::env::var("REWIRE_REMOTE") else { return Ok(String::new()) };
+        let url = std::env::var("REWIRE_REMOTE").unwrap_or_default();
         if url.is_empty() {
-            return Ok(String::new());
+            // The hook is installed but there is no brain: say so, instead of a silent empty memory.
+            let root = brain.root.display();
+            return only_at_start(snapshot::notice(&format!("no brain at {root} (run `rewire init`, or set REWIRE_REMOTE)")));
         }
         match Brain::clone_from(&url, Some(&brain.root), None) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("rewire: could not clone brain: {e}");
-                return Ok(String::new());
+                return only_at_start(snapshot::notice("could not fetch the brain from REWIRE_REMOTE"));
             }
         }
     };
     let mut out = String::new();
-    if event == "session-start" && brain.config.sync_auto {
-        match brain.lock(Duration::ZERO) {
-            Ok(_guard) => {
-                if let Err(e) = sync::pull(&brain, 8) {
-                    eprintln!("rewire: pull skipped: {e}"); // hook budget is short; stale is better than slow
-                }
-            }
-            Err(e) => eprintln!("rewire: pull skipped: {e}"),
+    let mut stale = false;
+    if start && brain.config.sync_auto {
+        let skipped = match brain.lock(Duration::ZERO) {
+            Ok(_guard) => sync::pull(&brain, 8).err().map(|e| e.to_string()), // hook budget is short; stale is better than slow
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(e) = skipped {
+            eprintln!("rewire: pull skipped: {e}");
+            stale = true;
         }
     }
-    if event == "session-start" {
-        let mut index = Index::new(&brain);
-        index.refresh()?;
+    if start {
         let cwd = payload
             .get("cwd")
             .and_then(Value::as_str)
             .map(String::from)
             .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
-        let snap = snapshot::build(&brain, &mut index, Some(&cwd), None)?;
-        if !snap.empty {
-            out = snap.text;
+        let mut index = Index::new(&brain);
+        // never break session start; tell the agent memory is missing instead
+        match index.refresh().and_then(|_| snapshot::build(&brain, &mut index, Some(&cwd), None)) {
+            Ok(snap) if !snap.empty => {
+                out = snap.text;
+                if stale {
+                    let note = "Sync was skipped this session, so notes from other devices may be missing.\n";
+                    out = out.replacen(snapshot::HEADER, &format!("{}{note}", snapshot::HEADER), 1);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("rewire: snapshot failed: {e}");
+                return Ok(snapshot::notice("the memory index could not be read (run `rewire doctor`)"));
+            }
         }
     }
     if let Some(transcript) = payload.get("transcript_path").and_then(Value::as_str).filter(|s| !s.is_empty()) {

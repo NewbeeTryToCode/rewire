@@ -121,6 +121,9 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                     item.insert("created".into(), json!(now_iso()));
                     item.insert("reason".into(), json!("sync conflict: this version lost to a newer edit from another device"));
                     item.insert("source".into(), json!({"harness": "sync"}));
+                    if let Some(kept) = brain.read_node(&full) {
+                        item.insert("target_hash".into(), json!(crate::ops::content_hash(&kept)));
+                    }
                     brain.write_inbox(&item, &b_lose)?;
                     notes.push(format!("{path}: kept the newest version; the other one is in the inbox"));
                 }

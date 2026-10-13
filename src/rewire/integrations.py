@@ -39,29 +39,38 @@ def hook(brain: Brain, event: str, payload: dict, harness: str = "claude-code") 
     """Run a lifecycle hook. Returns text for stdout (SessionStart context)."""
     if internal():
         return ""
+    start = event == "session-start"
     if not brain.exists:
         # Ephemeral machines (cloud sessions, fresh Codespaces): fetch the brain
         # from REWIRE_REMOTE on first use.
         url = os.environ.get("REWIRE_REMOTE")
         if not url:
-            return ""
+            # The hook is installed but there is no brain: say so, instead of a silent empty memory.
+            return snapshot.notice(f"no brain at {brain.root} (run `rewire init`, or set REWIRE_REMOTE)") if start else ""
         try:
             brain = Brain.clone(url, brain.root)
         except (OSError, RuntimeError) as exc:
             print(f"rewire: could not clone brain: {exc}", file=sys.stderr)
-            return ""
-    out = ""
-    if event == "session-start" and brain.config.sync_auto:
+            return snapshot.notice("could not fetch the brain from REWIRE_REMOTE") if start else ""
+    out, stale = "", ""
+    if start and brain.config.sync_auto:
         try:
             with brain.lock():
                 sync_mod.pull(brain, timeout=8)  # hook budget is short; stale is better than slow
         except (Locked, sync_mod.SyncError) as exc:
             print(f"rewire: pull skipped: {exc}", file=sys.stderr)
-    if event == "session-start":
-        index = Index(brain)
-        index.refresh()
-        snap = snapshot.build(brain, index, cwd=payload.get("cwd") or os.getcwd())
+            stale = "Sync was skipped this session, so notes from other devices may be missing.\n"
+    if start:
+        try:
+            index = Index(brain)
+            index.refresh()
+            snap = snapshot.build(brain, index, cwd=payload.get("cwd") or os.getcwd())
+        except Exception as exc:  # never break session start; tell the agent memory is missing instead
+            print(f"rewire: snapshot failed: {exc}", file=sys.stderr)
+            return snapshot.notice("the memory index could not be read (run `rewire doctor`)")
         out = "" if snap["empty"] else snap["text"]
+        if stale and out:
+            out = out.replace(snapshot.HEADER, snapshot.HEADER + stale, 1)
     transcript = payload.get("transcript_path")
     if event in ("session-end", "pre-compact") and transcript:
         pending = brain.read_state("pending")

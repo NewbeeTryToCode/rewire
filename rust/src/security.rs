@@ -96,6 +96,23 @@ pub fn scan(text: &str) -> Vec<String> {
     problems
 }
 
+/// Why a stored note must not be shown ("" when it is fine). Notes are re-scanned whenever they are shown,
+/// since files can be edited by hand or arrive by sync: secrets and the unambiguous injection patterns.
+/// Commands such as curl are left out, they are ordinary content in coding notes a human already approved.
+pub fn blocked(text: &str) -> &'static str {
+    if secret_patterns().iter().any(|p| p.is_match(text)) || high_entropy_token(text) {
+        return "secret";
+    }
+    if injection_patterns().iter().any(|p| !p.as_str().contains("curl") && p.is_match(text)) {
+        return "injection";
+    }
+    ""
+}
+
+pub fn blocked_label(why: &str) -> String {
+    format!("[BLOCKED: {why}; check this note with `rewire doctor`]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
