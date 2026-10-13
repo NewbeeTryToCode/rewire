@@ -119,6 +119,19 @@ class TestSnapshotAndRecall(BrainCase):
         self.assertIn("events not weights", snap["text"])
         self.assertNotIn("uses Go", snap["text"])
 
+    def test_profile_section_comes_first_and_is_not_repeated(self):
+        self.add("person", "Rina is the user's manager")
+        self.add("fact", "The user is a backend engineer in Jakarta", importance=5)
+        self.add("fact", "minor global fact", importance=2)
+        self.add("constraint", "Never push directly to main", importance=5)
+        text = snapshot.build(self.brain, self.index, project=None)["text"]
+        about = text.split("## About the user\n")[1].split("\n## ")[0]
+        self.assertIn("Rina is the user's manager", about)
+        self.assertIn("backend engineer", about)
+        self.assertNotIn("minor global fact", about)
+        self.assertLess(text.index("## About the user"), text.index("## Rules"))
+        self.assertEqual(text.count("backend engineer"), 1)
+
     def test_budget_limits(self):
         self.brain.config.budgets["working"] = 120
         for i in range(10):
@@ -583,6 +596,30 @@ class TestTimeAndHistory(BrainCase):
         hits = self.index.search("What did Melanie paint in July 2023?", scopes=["global"])
         self.assertEqual(hits[0]["title"], "Melanie painted a sunset")
         self.assertEqual(hits[0]["date"], "2023-07-10")
+
+    def test_refers_to_boosts_the_period_the_model_resolved(self):
+        self.add("fact", "Melanie painted a lake", valid_from="2023-05-02")
+        self.add("fact", "Melanie painted a sunset", valid_from="2023-07-10")
+        hits = ops.recall(self.brain, self.index, "what did Melanie paint last summer", scope="all",
+                          refers_to={"from": "2023-07-01", "to": "2023-07-31"})
+        self.assertEqual(hits[0]["title"], "Melanie painted a sunset")
+        self.assertEqual(len(hits), 2)  # a boost, not a filter
+        with self.assertRaises(ops.OpError):
+            ops.recall(self.brain, self.index, "x", refers_to={"from": "last week"})
+
+    def test_session_summaries_are_searchable_and_bookend_the_top_excerpt(self):
+        path = self.brain.path("sessions", "2023-05-08", "claude-code-s1.md")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as fh:
+            fh.write("# s\n\n- date: 2023-05-08\n\n## Summary\n\nMigrated the billing service to Kubernetes.\n\n"
+                     "## Applied\n- -\n\n## Transcript\n\n[1 user] let us move billing\n[2 user] the helm chart "
+                     "needs a readiness probe\n")
+        self.index.refresh()
+        eps = self.index.search_episodes("kubernetes migration", k=3)
+        self.assertEqual(eps[0]["text"], "Summary: Migrated the billing service to Kubernetes.")
+        eps = self.index.search_episodes("helm readiness probe", k=3)
+        self.assertIn("readiness probe", eps[0]["text"])
+        self.assertEqual(eps[0]["summary"], "Summary: Migrated the billing service to Kubernetes.")
 
     def test_fact_pulls_in_the_excerpt_it_came_from(self):
         lines = [f"[{n} user] Ann: small talk number {n}" for n in range(1, 21)]

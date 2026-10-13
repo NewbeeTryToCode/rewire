@@ -14,6 +14,8 @@ pub const PROTOCOL: &str = "2025-06-18";
 /// LLM and widens the query far better than a stemmer can.
 pub const QUERY_GUIDE: &str = "Write the query as keywords, not a sentence: the key terms plus their synonyms, and the same terms in both English and Indonesian (memories may be written in either language).";
 
+pub const REFERS_TO_GUIDE: &str = "When the question is about a time ('last week', 'in March', 'kemarin'), resolve it to ISO dates {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}; when a word is ambiguous, cover both readings. Notes and excerpts from that period rank higher (nothing is filtered out).";
+
 pub fn tools() -> Value {
     json!([
         {
@@ -27,6 +29,9 @@ pub fn tools() -> Value {
                     "episodes": {"type": "integer", "minimum": 0, "maximum": 30, "default": 3,
                                  "description": "Also return this many raw excerpts from past session transcripts. Use ~20 when the answer spans sessions: counting ('how many times'), totals, timelines and 'how long between' questions (measured: experiments/longmemeval)."},
                     "scope": {"type": "string", "description": "'global', 'project:<slug>' or 'all'. Default: global + the project of the current directory."},
+                    "refers_to": {"type": "object", "description": REFERS_TO_GUIDE,
+                                  "properties": {"from": {"type": "string"}, "to": {"type": "string"}},
+                                  "additionalProperties": false},
                 },
                 "required": ["query"],
                 "additionalProperties": false,
@@ -95,7 +100,7 @@ impl<'a> Server<'a> {
                 let k = int_arg(args, "k", 8)?.max(1) as usize;
                 let episodes = int_arg(args, "episodes", 3)?.clamp(0, 30) as usize;
                 let scope = args.get("scope").and_then(Value::as_str);
-                let hits = ops::recall(self.brain, &mut self.index, query, k, Some(&self.cwd), scope, None, episodes)?;
+                let hits = ops::recall(self.brain, &mut self.index, query, k, Some(&self.cwd), scope, None, episodes, args.get("refers_to"))?;
                 Ok(Value::Array(hits.iter().map(|h| h.to_json()).collect()))
             }
             "get" => {

@@ -42,13 +42,17 @@ pub fn recall(
     scope: Option<&str>,
     beta: Option<f64>,
     episodes: usize,
+    refers_to: Option<&Value>,
 ) -> Result<Vec<Hit>> {
+    // `refers_to` {from, to}: the time the question is about, resolved by the calling model ("last week",
+    // "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter).
+    let window = time_range(refers_to)?;
     let scopes = match scope.filter(|s| !s.is_empty()) {
         Some("all") => None,
         Some(s) => Some(vec![s.to_string()]),
         None => Some(project::scopes_for(project::detect(cwd, &brain.config.projects).as_deref())),
     };
-    let mut hits = index.search(query, &SearchOpts { scopes, k, beta, ..Default::default() })?;
+    let mut hits = index.search(query, &SearchOpts { scopes, k, beta, window: window.clone(), ..Default::default() })?;
     for hit in hits.iter_mut() {
         // re-scanned when shown: files can be edited by hand or arrive by sync
         let why = security::blocked(&format!("{} {}", hit.title, hit.snippet));
@@ -59,10 +63,28 @@ pub fn recall(
     }
     if episodes > 0 {
         // raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
-        let eps = index.search_episodes(query, episodes, &hits)?;
+        let eps = index.search_episodes(query, episodes, &hits, window.as_ref())?;
         hits.extend(eps);
     }
     Ok(hits)
+}
+
+pub fn time_range(refers_to: Option<&Value>) -> Result<Option<(String, String)>> {
+    let Some(r) = refers_to.filter(|v| !v.is_null() && v.as_object().is_none_or(|o| !o.is_empty())) else { return Ok(None) };
+    let Some(o) = r.as_object() else { return op("refers_to must be an object {from, to}") };
+    let field = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").chars().take(10).collect::<String>();
+    let (mut start, mut end) = (field("from"), field("to"));
+    if start.is_empty() {
+        start = end.clone();
+    }
+    if end.is_empty() {
+        end = start.clone();
+    }
+    let iso = |s: &str| s.len() == 10 && s.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() });
+    if !iso(&start) || !iso(&end) {
+        return op("refers_to needs ISO dates: {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}");
+    }
+    Ok(Some(if start <= end { (start, end) } else { (end, start) }))
 }
 
 pub fn event(ev: &str, node: &str, w: f64, session: &str, harness: &str) -> Meta {

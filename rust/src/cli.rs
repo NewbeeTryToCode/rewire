@@ -62,6 +62,11 @@ pub enum Cmd {
         /// global | project:<slug> | all
         #[arg(long)]
         scope: Option<String>,
+        /// the question is about this period: boost it
+        #[arg(long = "from", value_name = "YYYY-MM-DD")]
+        since: Option<String>,
+        #[arg(long = "to", value_name = "YYYY-MM-DD")]
+        until: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -225,12 +230,16 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("{}", snap.text);
             }
         }
-        Cmd::Recall { query, k, episodes, scope, json: as_json } => {
+        Cmd::Recall { query, k, episodes, scope, since, until, json: as_json } => {
             let brain = open_brain(bp);
             let mut index = Index::new(&brain);
             index.refresh()?;
             let here = cwd();
-            let hits = ops::recall(&brain, &mut index, &query.join(" "), k, Some(&here), scope.as_deref(), None, episodes)?;
+            let refers_to = (since.is_some() || until.is_some()).then(|| json!({"from": since, "to": until}));
+            let hits = match ops::recall(&brain, &mut index, &query.join(" "), k, Some(&here), scope.as_deref(), None, episodes, refers_to.as_ref()) {
+                Err(Error::Op(e)) => fail(&e),
+                other => other?,
+            };
             let items: Vec<Value> = hits.iter().map(|h| h.to_json()).collect();
             if as_json { print_json(&Value::Array(items)) } else { print_items(&items) }
         }

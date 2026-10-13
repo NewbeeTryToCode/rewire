@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
-pub const SCHEMA: &str = "7";
+pub const SCHEMA: &str = "8";
 const HOP_DECAY: f64 = 0.5;
 const ACT_MAX_AGE: f64 = 300.0;
 const SCAN_MAX_AGE: f64 = 60.0;
@@ -98,6 +98,19 @@ impl NodeRow {
     }
 }
 
+pub const SUMMARY_CHARS: usize = 600;
+
+/// "Summary: …" row text of one consolidation run in a session file ("" if none).
+pub fn session_summary(part: &str) -> String {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let re = R.get_or_init(|| Regex::new(r"(?s)\n## Summary\n(.*?)(?:\n## |\z)").unwrap());
+    let body = re.captures(part).map(|c| c[1].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    if body.is_empty() || body == "-" {
+        return String::new();
+    }
+    format!("Summary: {}", body.chars().take(SUMMARY_CHARS).collect::<String>())
+}
+
 /// A recall hit: a memory node or (type "episode") a transcript excerpt.
 #[derive(Debug, Clone)]
 pub struct Hit {
@@ -114,13 +127,19 @@ pub struct Hit {
     /// episodes only
     pub session: String,
     pub text: String,
+    /// the top excerpt only: its session's goal and outcome
+    pub summary: Option<String>,
 }
 
 impl Hit {
     pub fn to_json(&self) -> Value {
         if self.type_ == "episode" {
-            return json!({"id": self.id, "type": "episode", "date": self.date, "session": self.session,
-                          "text": self.text});
+            let mut v = json!({"id": self.id, "type": "episode", "date": self.date, "session": self.session,
+                               "text": self.text});
+            if let Some(s) = &self.summary {
+                v["summary"] = json!(s);
+            }
+            return v;
         }
         let mut m = Meta::new();
         m.insert("id".into(), json!(self.id));
@@ -146,11 +165,13 @@ pub struct SearchOpts {
     pub include_inactive: bool,
     pub spread: bool,
     pub history: Option<bool>,
+    /// explicit time window from the calling model (`refers_to`); otherwise read from the query
+    pub window: Option<(String, String)>,
 }
 
 impl Default for SearchOpts {
     fn default() -> Self {
-        SearchOpts { scopes: None, k: 8, beta: None, include_inactive: false, spread: true, history: None }
+        SearchOpts { scopes: None, k: 8, beta: None, include_inactive: false, spread: true, history: None, window: None }
     }
 }
 
@@ -480,6 +501,13 @@ impl Index {
             let folder = Path::new(path).parent().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().into_owned());
             for part in content.split("\n---\n") {
                 let date = date_re.captures(part).map(|c| c[1].to_string()).unwrap_or_else(|| folder.clone().unwrap_or_default());
+                let summary = session_summary(part);
+                if !summary.is_empty() {
+                    // the session's goal and outcome, searchable like an excerpt (first = last = 0)
+                    db.execute("INSERT INTO episodes VALUES (?,?,?,?,?)", params![path, date, summary, 0, 0])?;
+                    let rid = db.last_insert_rowid();
+                    db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, summary])?;
+                }
                 let Some((_, transcript)) = part.split_once("\n## Transcript\n") else { continue };
                 let lines: Vec<&str> = transcript.lines().filter(|l| l.starts_with('[')).collect();
                 let n = lines.len();
@@ -726,7 +754,7 @@ impl Index {
             }
         }
         let mut fused: IndexSet<String> = fts_ids.iter().cloned().collect();
-        let window = text::time_window(query);
+        let window = opts.window.clone().or_else(|| text::time_window(query)); // an explicit window comes from the calling model
         if let Some((start, end)) = &window {
             // dated memories inside the asked window join the candidates
             let rows = self.rows(
@@ -843,6 +871,7 @@ impl Index {
                 via: via.get(node_id).cloned(),
                 session: String::new(),
                 text: String::new(),
+                summary: None,
             });
         }
         // ties by id: deterministic across implementations
@@ -854,7 +883,7 @@ impl Index {
     /// Raw transcript excerpts (L1 episodic memory). `seeds` are memory hits for the same query: the
     /// excerpt each one was extracted from (its source session and turn) is boosted, so a well-matched
     /// fact brings its context.
-    pub fn search_episodes(&mut self, query: &str, k: usize, seeds: &[Hit]) -> Result<Vec<Hit>> {
+    pub fn search_episodes(&mut self, query: &str, k: usize, seeds: &[Hit], window: Option<&(String, String)>) -> Result<Vec<Hit>> {
         let limit = (k * 4).max(20);
         let mut fused: IndexMap<i64, f64> = IndexMap::new();
         if let Some(m) = text::match_expression(query) {
@@ -871,7 +900,7 @@ impl Index {
         for (rid, bonus) in self.seed_episodes(seeds)? {
             *fused.entry(rid).or_insert(0.0) += bonus * scale;
         }
-        let window = text::time_window(query);
+        let window = window.cloned().or_else(|| text::time_window(query));
         let mut rows: HashMap<i64, (String, String, String, i64)> = HashMap::new();
         if !fused.is_empty() {
             let ids: Vec<i64> = fused.keys().cloned().collect();
@@ -900,7 +929,19 @@ impl Index {
         order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| tie(&a.0).cmp(&tie(&b.0))));
         order.truncate(k);
         let root = self.root.clone();
-        Ok(order
+        // the top excerpt carries its session's goal and outcome (bookends), unless it is the summary itself
+        let mut bookend = None;
+        if let Some((path, _, _, first)) = order.first().and_then(|(rid, _)| rows.get(rid)) {
+            if *first != 0 {
+                let db = self.db()?;
+                let mut st = db.prepare("SELECT text FROM episodes WHERE path = ? AND first = 0 AND last = 0 ORDER BY rowid")?;
+                let texts = st.query_map([path], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                if !texts.is_empty() {
+                    bookend = Some(texts.join(" / ").chars().take(300).collect::<String>());
+                }
+            }
+        }
+        let mut out: Vec<Hit> = order
             .into_iter()
             .filter_map(|(rid, _)| {
                 let (path, date, text, _) = rows.get(&rid)?;
@@ -917,9 +958,14 @@ impl Index {
                     via: None,
                     session: relpath(Path::new(path), &root),
                     text: text.clone(),
+                    summary: None,
                 })
             })
-            .collect())
+            .collect();
+        if let Some(first) = out.first_mut() {
+            first.summary = bookend;
+        }
+        Ok(out)
     }
 
     /// Episode rowid -> bonus, for the excerpts the seed memories were extracted from.

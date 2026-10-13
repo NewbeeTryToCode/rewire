@@ -137,12 +137,27 @@ fn unsafe_notes_blocked_when_shown_and_fence_escaped() {
     assert!(snap.text.contains("[BLOCKED: injection"));
     assert_eq!(snap.text.matches("</rewire-memory>").count(), 1);
     assert!(snap.text.contains("&lt;/rewire-memory> tags"));
-    let hits = ops::recall(&c.brain, &mut c.index, "build tips env", 8, None, Some("all"), None, 0).unwrap();
+    let hits = ops::recall(&c.brain, &mut c.index, "build tips env", 8, None, Some("all"), None, 0, None).unwrap();
     assert!(hits[0].title.starts_with("[BLOCKED: injection"));
     assert_eq!(hits[0].snippet, "");
     let got = ops::get(&c.brain, &[bad.id().to_string()], "s", "mcp").unwrap();
     assert_eq!(got[0]["body"], "");
     assert!(ops::doctor(&c.brain).iter().any(|l| l.starts_with("BLOCKED (injection)")));
+}
+
+#[test]
+fn profile_section_comes_first_and_is_not_repeated() {
+    let mut c = Case::new();
+    c.add("person", "Rina is the user's manager", json!({}));
+    c.add("fact", "The user is a backend engineer in Jakarta", json!({"importance": 5}));
+    c.add("fact", "minor global fact", json!({"importance": 2}));
+    c.add("constraint", "Never push directly to main", json!({"importance": 5}));
+    let text = snapshot::build(&c.brain, &mut c.index, None, None).unwrap().text;
+    let about = text.split("## About the user\n").nth(1).unwrap().split("\n## ").next().unwrap();
+    assert!(about.contains("Rina is the user's manager") && about.contains("backend engineer"));
+    assert!(!about.contains("minor global fact"));
+    assert!(text.find("## About the user").unwrap() < text.find("## Rules").unwrap());
+    assert_eq!(text.matches("backend engineer").count(), 1);
 }
 
 #[test]
@@ -448,7 +463,7 @@ fn transcript_kept_redacted_searchable_and_profile_filtered() {
     let content = read(&file);
     assert!(content.contains("## Transcript") && content.contains("never deploy on Fridays"));
     let mut index = Index::new(&c.brain);
-    let hits = index.search_episodes("deploy fridays", 5, &[]).unwrap();
+    let hits = index.search_episodes("deploy fridays", 5, &[], None).unwrap();
     assert!(hits[0].text.contains("Fridays"));
     // coding profile (default): only user turns are kept
     let c = Case::new();
@@ -600,6 +615,34 @@ fn time_window_boost_and_year_ranges() {
 }
 
 #[test]
+fn refers_to_boosts_the_period_the_model_resolved() {
+    let mut c = Case::new();
+    c.add("fact", "Melanie painted a lake", json!({"valid_from": "2023-05-02"}));
+    c.add("fact", "Melanie painted a sunset", json!({"valid_from": "2023-07-10"}));
+    let r = json!({"from": "2023-07-01", "to": "2023-07-31"});
+    let hits = ops::recall(&c.brain, &mut c.index, "what did Melanie paint last summer", 8, None, Some("all"), None, 0, Some(&r)).unwrap();
+    assert_eq!(hits[0].title, "Melanie painted a sunset");
+    assert_eq!(hits.len(), 2); // a boost, not a filter
+    let bad = json!({"from": "last week"});
+    assert!(ops::recall(&c.brain, &mut c.index, "x", 8, None, None, None, 0, Some(&bad)).is_err());
+}
+
+#[test]
+fn session_summaries_are_searchable_and_bookend_the_top_excerpt() {
+    let mut c = Case::new();
+    let path = c.brain.root.join("sessions/2023-05-08/claude-code-s1.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "# s\n\n- date: 2023-05-08\n\n## Summary\n\nMigrated the billing service to Kubernetes.\n\n\
+        ## Applied\n- -\n\n## Transcript\n\n[1 user] let us move billing\n[2 user] the helm chart needs a readiness probe\n").unwrap();
+    c.index.refresh().unwrap();
+    let eps = c.index.search_episodes("kubernetes migration", 3, &[], None).unwrap();
+    assert_eq!(eps[0].text, "Summary: Migrated the billing service to Kubernetes.");
+    let eps = c.index.search_episodes("helm readiness probe", 3, &[], None).unwrap();
+    assert!(eps[0].text.contains("readiness probe"));
+    assert_eq!(eps[0].summary.as_deref(), Some("Summary: Migrated the billing service to Kubernetes."));
+}
+
+#[test]
 fn fact_pulls_in_the_excerpt_it_came_from() {
     let mut c = Case::new();
     let mut lines: Vec<String> = (1..=20).map(|n| format!("[{n} user] Ann: small talk number {n}")).collect();
@@ -612,9 +655,9 @@ fn fact_pulls_in_the_excerpt_it_came_from() {
     let node = ops::apply_change(&c.brain, &change, Some(&json!({"harness": "locomo", "session": "conv-1-session_1", "turn": 15}))).unwrap();
     assert!(read(&node.path).contains("conv-1-session_1 · turn 15"));
     c.index.refresh().unwrap();
-    let plain = c.index.search_episodes("Ann pet", 1, &[]).unwrap();
+    let plain = c.index.search_episodes("Ann pet", 1, &[], None).unwrap();
     assert!(!plain[0].text.contains("Rex"));
-    let hits = ops::recall(&c.brain, &mut c.index, "Ann pet", 5, None, Some("all"), None, 1).unwrap();
+    let hits = ops::recall(&c.brain, &mut c.index, "Ann pet", 5, None, Some("all"), None, 1, None).unwrap();
     assert_eq!(hits[0].id, node.id());
     assert!(hits.last().unwrap().text.contains("named him Rex"));
 }

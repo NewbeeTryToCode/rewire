@@ -10,6 +10,7 @@ d = 0.7                  # decay; tuned in experiments/phase0
 recall_beta = 0.3        # weight of activation in recall ranking (0 = off)
 
 [budgets]                # characters (~4 chars per token)
+profile = 600            # "About the user": people and the most important global facts
 constraints = 1500
 preferences = 800
 working = 2500
@@ -42,6 +43,7 @@ auto = false
 
 #[derive(Debug, Clone)]
 pub struct Budgets {
+    pub profile: usize,
     pub constraints: usize,
     pub preferences: usize,
     pub working: usize,
@@ -73,7 +75,7 @@ impl Default for Config {
             sync_auto: false,
             d: 0.7,
             recall_beta: 0.3,
-            budgets: Budgets { constraints: 1500, preferences: 800, working: 2500 },
+            budgets: Budgets { profile: 600, constraints: 1500, preferences: 800, working: 2500 },
             profile: "coding".into(),
             transcripts: "auto".into(),
             provider: "command".into(),
@@ -142,6 +144,9 @@ pub fn load(path: &Path) -> Config {
     cfg.sync_auto = section("sync").get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
     cfg.d = num(act.get("d")).unwrap_or(cfg.d);
     cfg.recall_beta = num(act.get("recall_beta")).unwrap_or(cfg.recall_beta);
+    if let Some(v) = num(budgets.get("profile")) {
+        cfg.budgets.profile = v as usize;
+    }
     if let Some(v) = num(budgets.get("constraints")) {
         cfg.budgets.constraints = v as usize;
     }

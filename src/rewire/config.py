@@ -14,6 +14,7 @@ d = 0.7                  # decay; tuned in experiments/phase0
 recall_beta = 0.3        # weight of activation in recall ranking (0 = off)
 
 [budgets]                # characters (~4 chars per token)
+profile = 600            # "About the user": people and the most important global facts
 constraints = 1500
 preferences = 800
 working = 2500
@@ -51,7 +52,7 @@ class Config:
     sync_auto: bool = False
     d: float = 0.7
     recall_beta: float = 0.3
-    budgets: dict = field(default_factory=lambda: {"constraints": 1500, "preferences": 800, "working": 2500})
+    budgets: dict = field(default_factory=lambda: {"profile": 600, "constraints": 1500, "preferences": 800, "working": 2500})
     profile: str = "coding"
     transcripts: str = "auto"
     provider: str = "command"
