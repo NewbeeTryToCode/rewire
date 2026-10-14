@@ -50,7 +50,13 @@ def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None =
             hit["title"], hit["snippet"] = f"[BLOCKED: {why}; check this note with `rewire doctor`]", ""
     if episodes:
         # raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
-        hits += index.search_episodes(query, k=episodes, seeds=hits, window=window)
+        eps = index.search_episodes(query, k=episodes, seeds=hits, window=window, scopes=scopes)
+        for ep in eps:  # excerpts are re-scanned too: sessions/ arrive by sync and quote untrusted pages
+            why = security.blocked(ep["text"] + " " + ep.get("summary", ""))
+            if why:
+                ep["text"] = f"[BLOCKED: {why}; excerpt of {ep['session']} withheld]"
+                ep.pop("summary", None)
+        hits += eps
     return hits
 
 

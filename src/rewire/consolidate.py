@@ -205,7 +205,8 @@ JUDGE_SCHEMA = {
 def _format_turns(turns: list[dict]) -> list[str]:
     out = []
     for t in turns:
-        text = security.strip_private(t["text"])
+        # redacted before anything leaves the machine: these lines go to the LLM and into sessions/
+        text = security.redact(security.strip_private(t["text"]))
         if t["role"] == "assistant" and len(text) > ASSISTANT_CHARS:
             text = text[:ASSISTANT_CHARS] + " …[condensed]"
         out.append(f"[{t['n']} {t['role']}] {text}")
@@ -337,7 +338,7 @@ class Consolidator:
             prompt = (f"SESSION DATE: {date}\nSESSION PROJECT: {project or '(none)'}\n\nKNOWN MEMORY:\n"
                       + ("\n".join(known) or "(empty)") + known_skills + f"\n\nTRANSCRIPT:\n{chunk}")
             out = self.provider.complete_json(extract_system(profile), prompt, extract_schema(profile))
-            summaries.append(str(out.get("summary", "")).strip())
+            summaries.append(security.redact(str(out.get("summary", "")).strip()))
             if uses_skills(profile):
                 proposals += [s for s in out.get("skills") or [] if isinstance(s, dict)]
             used.update(str(i).lower() for i in out.get("used_memory_ids") or [])
@@ -360,7 +361,7 @@ class Consolidator:
         for claim, (action, target, reason) in zip(claims, decisions):
             change = {**claim, "action": action, "target": target, "reason": reason}
             if "secret" in claim.get("flags", []):
-                rejected.append({"title": claim["title"], "why": "secret"})
+                rejected.append({"title": security.redact(claim["title"]), "why": "secret"})
                 continue
             if action == "SAME" and target and gate(claim, action):
                 node = ops.resolve_id(self.brain, target)
@@ -416,7 +417,7 @@ class Consolidator:
             description = str(p.get("description") or "").strip()[:300]
             flags = security.scan(f"{name} {description} {steps}")
             if "secret" in flags:
-                rejected.append({"title": f"skill {name}", "why": "secret"})
+                rejected.append({"title": security.redact(f"skill {name}"), "why": "secret"})
                 continue
             turn = int(p.get("evidence_turn") or 0)
             exists = skills_mod.read(self.brain, name) is not None
@@ -490,7 +491,7 @@ class Consolidator:
         if keep == "none":
             return []
         roles = ("user",) if keep == "user" else ("user", "assistant")
-        return [security.redact(line) for t, line in zip(turns, _format_turns(turns)) if t["role"] in roles]
+        return [line for t, line in zip(turns, _format_turns(turns)) if t["role"] in roles]
 
     def _write_session(self, harness, session, project, summaries, applied, queued, rejected, shown, used,
                        date=None, transcript=None):
