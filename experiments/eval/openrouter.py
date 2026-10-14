@@ -43,6 +43,10 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+class QuotaExhausted(BudgetExceeded):
+    """The provider's daily request quota (free models: 1000/day) is used up: stop, resume after the reset."""
+
+
 class Ledger:
     """Thread-safe record of every LLM call: tokens, cost, latency, per stage."""
 
@@ -130,7 +134,10 @@ class Client:
                 self.ledger.add(call)
                 return {**call, "text": text}
             except urllib.error.HTTPError as exc:
-                err = f"HTTP {exc.code}: {exc.read()[:300]!r}"
+                body = exc.read()
+                err = f"HTTP {exc.code}: {body[:300]!r}"
+                if exc.code == 429 and b"per-day" in body:  # retrying only burns time until the daily reset
+                    raise QuotaExhausted(f"{model}: daily quota used up ({err})") from exc
                 if exc.code not in (408, 409, 429) and exc.code < 500:
                     raise RuntimeError(err) from exc  # bad request / auth: retrying will not help
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
@@ -156,13 +163,20 @@ class JsonProvider:
 
     def __init__(self, client: Client, model: str, stage: str = "ingest"):
         self.client, self.model, self.stage = client, model, stage
+        self.bad_json = 0  # replies that were not valid JSON (each one retried)
 
-    def complete_json(self, system: str, prompt: str, schema: dict) -> dict:
-        from rewire.llm import extract_json
+    def complete_json(self, system: str, prompt: str, schema: dict, attempts: int = 3) -> dict:
+        from rewire.llm import LLMError, extract_json
 
         instruction = ("\n\nReturn ONLY a JSON object that matches this JSON schema, with no other text:\n"
                        + json.dumps(schema))
-        call = self.client.chat(self.model, [{"role": "system", "content": system},
-                                             {"role": "user", "content": prompt + instruction}],
-                                stage=self.stage, max_tokens=8000)
-        return extract_json(call["text"])
+        for attempt in range(attempts):  # a reasoning model sometimes returns no or broken JSON: ask again
+            call = self.client.chat(self.model, [{"role": "system", "content": system},
+                                                 {"role": "user", "content": prompt + instruction}],
+                                    stage=self.stage, max_tokens=8000)
+            try:
+                return extract_json(call["text"])
+            except LLMError:
+                self.bad_json += 1
+                if attempt == attempts - 1:
+                    raise

@@ -364,18 +364,32 @@ jawaban "how many" kelebihan hitung (commit 084fae2).
 Model gratis punya batas per menit dan per hari: `--parallel 2`, dan bila run berhenti (429 / batas harian),
 jalankan perintah yang sama lagi nanti: cache melanjutkan dari titik terakhir.
 
+**Run penuh mode `full` di model gratis (1.000 request/hari).** 1.540 soal LoCoMo butuh ±3.600 request:
+±550 ingest (ekstraksi + judge per sesi, 272 sesi), lalu 1.540 jawaban dan 1.540 judge, jadi ±4 hari. Saat
+balasan 429 menyebut batas harian (`free-models-per-day`), runner langsung berhenti tanpa retry, menulis
+report parsial (`PARTIAL RUN`), dan menjawab soal hanya untuk percakapan yang ingest-nya selesai. Ingest
+dilanjutkan per sesi (`<brain>/.state/eval_ingest.jsonl`), jawaban dan judge dari cache. Urutan yang hemat:
+
+```bash
+# hari 1: ingest semua percakapan (soal ikut berjalan dengan sisa kuota)
+python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --mode full --ingest-model $M \
+  --k 30 --episodes 20 --sample 0 --answer-model $M --judge-model $M --reasoning-effort low --parallel 2 --label full-q
+# setelah ingest lengkap, 0 token: bukti dan konteks seluruh soal pada brain yang sama
+python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --mode full \
+  --k 30 --episodes 20 --sample 0 --retrieval-only --label full-q-retrieval
+# hari berikutnya: perintah hari 1 yang sama, sampai tidak ada PARTIAL RUN
+```
+
+Report mode `full` memuat bagian **Ingest**: sesi yang dikonsolidasi, percobaan gagal, balasan yang bukan JSON
+(dicoba ulang hingga 3 kali), fakta per sesi, jumlah pertanyaan hipotetis, dan node aktif per tipe. Bila model
+penjawab sama dengan judge, report memberi catatan bahwa J cenderung lebih longgar.
+
 ### Langkah 5: simpan hasil ke repo
 
 `$OUT` ada di scratchpad dan hilang bersama sesi. Salin report (bukan cache, bukan brain) ke
 `experiments/eval/results/<tanggal>-<bench>-<label>.md`, catat model, sampel, dan seed, lalu commit.
 
 ### Opsi runner yang sering dipakai
-
-```bash
-# 0 token: retrieval saja
-python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 0 --retrieval-only
-# 0 token: perkiraan token dan biaya run sebelum dijalankan (--price MODEL=IN,OUT bila katalog tidak terjangkau)
-python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --sample 20 --dry-run
 
 ```bash
 # 0 token: retrieval saja
