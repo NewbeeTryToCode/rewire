@@ -154,8 +154,8 @@ memakai model lebih kecil.
 | Mem0 platform 2026, top-50 | 50 fakta (≈1,7–2k token, perkiraan) | fakta ringkas | 82,7% (GPT-5) | `memory-benchmarks/results/platform/locomo_top50_results.json` |
 | Mem0 platform 2026, top-200 | 200 fakta, rata-rata 6.956 token | fakta ringkas | 91,6% (GPT-5) | `locomo_results.json` + laporan Mem0 |
 | Full-context | ≈26k token | seluruh percakapan | 72,9% (4o-mini) – 87,5% | paper Mem0; Memori |
-| **rewire, 10 potongan** | **≈2,5k token** | 10 potongan × 6 giliran transcript mentah | bukti lengkap 77,5% | §8 |
-| **rewire, 20 potongan** | **≈4,9k token** | 20 potongan transcript mentah | bukti lengkap 82,9% | §8 |
+| **rewire, 10 potongan** | **≈2,2k token** (≈2,5k sebelum penggabungan) | 10 potongan × 6 giliran transcript mentah | bukti lengkap 77,5% | §8 |
+| **rewire, 20 potongan** | **≈4,2k token** (≈4,8k sebelum penggabungan) | 20 potongan transcript mentah | bukti lengkap 82,9% | §8 |
 
 Pelajaran: sistem dengan konteks kecil (≈1,3–1,8k token) mengirim **fakta ringkas**, bukan transcript mentah;
 skor tinggi Mem0 2026 justru memakai konteks besar (≈7k token, 200 fakta). rewire mode `episodes` mengirim
@@ -252,7 +252,9 @@ Benchmark lain yang dipertimbangkan:
 ## 8. Baseline tanpa LLM (sudah diukur)
 
 Batas atas untuk run dengan LLM: bila bukti tidak ada di konteks, model penjawab tidak bisa menjawab benar
-(kecuali menebak). Semua angka: mode `episodes`, keyword (tanpa semantic), k=30, 10 potongan.
+(kecuali menebak). Semua angka: mode `episodes`, keyword (tanpa semantic), k=30, 10 potongan. Sejak
+2026-10-14 potongan satu sesi yang tumpang tindih digabung (bukti sama, konteks −11–12%; rincian di
+`experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md` §7).
 
 **LoCoMo, 1.540 soal (2026-10-14):**
 
@@ -262,13 +264,14 @@ Batas atas untuk run dengan LLM: bila bukti tidak ada di konteks, model penjawab
 | temporal | 321 | 84,0% | 83,4% | 0,68 | ≈2,5k |
 | multi-hop | 282 | 54,9% | 32,3% | 0,55 | ≈2,6k |
 | open-domain | 96 | 39,9% | 40,2% | 0,40 | ≈2,4k |
-| **overall** | 1.540 | **73,2%** | **77,5%** | 0,71 | ≈2,5k (7,4× lebih kecil dari riwayat penuh) |
+| **overall** | 1.540 | **73,2%** | **77,5%** | 0,71 | ≈2,5k (7,4× lebih kecil dari riwayat penuh); ≈2,2k setelah penggabungan |
 
 Retrieval p50 4 ms, p99 16 ms. Open-domain banyak butuh pengetahuan umum (tidak ada di percakapan); multi-hop
 adalah sasaran perbaikan rewire. Catatan: skor J 94% dari iterasi 6–7 memakai k=50.
 
 **LongMemEval_S, 470 soal non-abstention (iterasi 8):** sesi bukti ditemukan 97,0%, semua sesi bukti 87,9%,
-konteks ≈11,2k token dari ≈115k (≈10× lebih kecil).
+konteks ≈11,2k token dari ≈115k (≈10× lebih kecil). Sampel 120 soal setelah penggabungan: bukti sama, konteks
+11.090 → 9.780 token, MRR 0,71 → 0,79.
 
 **PersonaMem (dry-run):** 32k, semua 589 soal: konteks ≈12,6k token, kompresi 2,8× (riwayatnya pendek),
 perkiraan $1,30 dengan GPT-4o-mini. 1M, 140 soal (20 per tipe): konteks ≈12,7k token dari ≈925k
@@ -384,6 +387,9 @@ Output: `OUT/report-<bench>-<label>.md` (tabel per kategori, token per tahap dan
 dan `OUT/results-<bench>-<label>.json` (per soal: konteks, jawaban, putusan, usage).
 
 ## 10. Berikutnya
+
+- Retrieval multi-hop (32–44% bukti lengkap): hop kedua lewat entitas/fakta (mode `full`) pada anggaran token
+  tetap ≈2,5k. Unit 1 giliran, pemangkasan baris, dan pseudo-relevance feedback sudah dicoba dan tidak membantu.
 
 - Judge alternatif yang lebih murah: Jev (keputusan ya/tidak dengan probabilitas) dengan cascade ke judge LLM
   untuk kasus ragu; perlu dikalibrasi dulu terhadap judge resmi pada ~100 soal.

@@ -13,7 +13,7 @@ use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -212,6 +212,45 @@ pub struct Index {
 
 fn mtime_ns(md: &fs::Metadata) -> i64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(0)
+}
+
+/// Episode row: path, date, text, first turn, last turn.
+type EpRow = (String, String, String, i64, i64);
+
+/// Excerpts of one session whose turn ranges overlap or touch become one excerpt (no line twice), at the
+/// rank of the best of them. Windows overlap by two turns, so without this the same lines are sent twice:
+/// 11-12% of the excerpt tokens on LoCoMo, with the same evidence (experiments/eval/results).
+fn merge_excerpts(best: &[i64], rows: &HashMap<i64, EpRow>) -> Vec<(i64, String)> {
+    struct Group<'a> {
+        rid: i64,
+        path: &'a str,
+        lo: i64,
+        hi: i64,
+        lines: BTreeMap<i64, &'a str>,
+    }
+    let mut groups: Vec<Group> = Vec::new();
+    for rid in best {
+        let Some((path, _, text, lo, hi)) = rows.get(rid) else { continue };
+        let mut lines: BTreeMap<i64, &str> = BTreeMap::new();
+        for line in text.lines() {
+            let n = turn_re().captures(line).and_then(|c| c[1].parse().ok()).unwrap_or(-(lines.len() as i64) - 1);
+            lines.insert(n, line);
+        }
+        // a session summary (turn 0) is never merged; neither are runs that reuse turn numbers
+        let target = groups.iter_mut().find(|g| {
+            *lo > 0 && g.lo > 0 && g.path == path && *lo <= g.hi + 1 && *hi >= g.lo - 1
+                && lines.iter().all(|(n, l)| g.lines.get(n).is_none_or(|x| x == l))
+        });
+        match target {
+            Some(g) => {
+                g.lo = g.lo.min(*lo);
+                g.hi = g.hi.max(*hi);
+                g.lines.extend(lines);
+            }
+            None => groups.push(Group { rid: *rid, path, lo: *lo, hi: *hi, lines }),
+        }
+    }
+    groups.into_iter().map(|g| (g.rid, g.lines.into_values().collect::<Vec<_>>().join("\n"))).collect()
 }
 
 fn turn_re() -> &'static Regex {
@@ -1048,15 +1087,15 @@ impl Index {
             *fused.entry(rid).or_insert(0.0) += bonus * scale;
         }
         let window = window.cloned().or_else(|| text::time_window(query));
-        let mut rows: HashMap<i64, (String, String, String, i64)> = HashMap::new();
+        let mut rows: HashMap<i64, EpRow> = HashMap::new();
         if !fused.is_empty() {
             let ids: Vec<i64> = fused.keys().cloned().collect();
             let db = self.db()?;
             for part in ids.chunks(500) {
-                let sql = format!("SELECT rowid, path, date, text, first FROM episodes WHERE rowid IN ({})", marks(part.len()));
+                let sql = format!("SELECT rowid, path, date, text, first, last FROM episodes WHERE rowid IN ({})", marks(part.len()));
                 let mut st = db.prepare(&sql)?;
                 for r in st.query_map(params_from_iter(part), |r| {
-                    Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0))))
+                    Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0), r.get::<_, Option<i64>>(5)?.unwrap_or(0))))
                 })? {
                     let (rid, v) = r?;
                     rows.insert(rid, v);
@@ -1064,7 +1103,7 @@ impl Index {
             }
         }
         if let Some((start, end)) = &window {
-            for (rid, (_, date, _, _)) in &rows {
+            for (rid, (_, date, _, _, _)) in &rows {
                 let d: String = date.chars().take(10).collect();
                 if start.as_str() <= d.as_str() && d.as_str() <= end.as_str() {
                     *fused.get_mut(rid).unwrap() += 1.0 / RRF_K;
@@ -1078,7 +1117,7 @@ impl Index {
         let root = self.root.clone();
         // the top excerpt carries its session's goal and outcome (bookends), unless it is the summary itself
         let mut bookend = None;
-        if let Some((path, _, _, first)) = order.first().and_then(|(rid, _)| rows.get(rid)) {
+        if let Some((path, _, _, first, _)) = order.first().and_then(|(rid, _)| rows.get(rid)) {
             if *first != 0 {
                 let db = self.db()?;
                 let mut st = db.prepare("SELECT text FROM episodes WHERE path = ? AND first = 0 AND last = 0 ORDER BY rowid")?;
@@ -1088,10 +1127,11 @@ impl Index {
                 }
             }
         }
-        let mut out: Vec<Hit> = order
+        let merged = merge_excerpts(&order.iter().map(|(rid, _)| *rid).collect::<Vec<_>>(), &rows);
+        let mut out: Vec<Hit> = merged
             .into_iter()
-            .filter_map(|(rid, _)| {
-                let (path, date, text, _) = rows.get(&rid)?;
+            .filter_map(|(rid, text)| {
+                let (path, date, _, _, _) = rows.get(&rid)?;
                 Some(Hit {
                     id: format!("ep:{rid}"),
                     type_: "episode".into(),
@@ -1104,7 +1144,7 @@ impl Index {
                     status: String::new(),
                     via: None,
                     session: relpath(Path::new(path), &root),
-                    text: text.clone(),
+                    text,
                     summary: None,
                 })
             })
