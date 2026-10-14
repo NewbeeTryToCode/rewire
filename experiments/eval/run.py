@@ -141,10 +141,11 @@ def ask(client: Client | None, cache: Cache, stage: str, model: str, prompt: str
     """Cached LLM call. Returns the call record plus "cached" (True when nothing was spent now)."""
     key = Cache.key(stage, model, prompt)
     hit = cache.get(key)
-    if hit:
+    # a reply cut off by max_tokens is reused only if the new limit is no larger than the one that cut it
+    if hit and not (hit.get("finish_reason") == "length" and max_tokens > hit.get("max_tokens", 0)):
         return {**hit, "cached": True}
     call = client.chat(model, [{"role": "user", "content": prompt}], stage=stage, max_tokens=max_tokens)
-    cache.put(key, call)
+    cache.put(key, {**call, "max_tokens": max_tokens})
     return {**call, "cached": False}
 
 
