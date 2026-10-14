@@ -129,3 +129,62 @@ pada k=50), diukur pada anggaran token tetap (≈2,5k), bukan menambah jumlah po
 **Evaluasi ulang dengan LLM** (gpt-4o-mini sebagai penjawab dan judge) dijalankan di sesi evaluasi, sesuai
 runbook `docs/evaluation.md` §9: sesi ini tidak punya `OPENROUTER_API_KEY`. Karena balasan di-cache per prompt,
 hanya soal yang konteksnya berubah yang dibayar ulang.
+
+## 8. Ide dari sistem lain: entitas, hop kedua, keragaman sesi (tanpa LLM, 2026-10-14)
+
+Sumber ide: Mem0 2026 (entity boost via spaCy, diredam untuk entitas yang sering muncul), Hindsight dan
+CortexDB/OpenHuman (jalur entitas di RRF, hasil diselang-seling antar sesi/scope), SmartSearch dan paper
+Entity–Memory Graph (perluasan entitas berbasis aturan). OpenHuman v2 sendiri tidak lagi punya retrieval lokal:
+peringkat dan multi-hop berjalan di server CortexDB yang tertutup; yang terbuka hanya lapisan klien (anggaran
+1.200 token per bagian, tanggal sebagai boost, bukan filter; rewire sudah begitu).
+
+**Diagnosis dulu:** bukti multi-hop ada, tapi peringkatnya dalam. Mode `episodes`, keyword:
+
+| Potongan | Konteks | Multi-hop | Open-domain | Overall |
+|---|---|---|---|---|
+| 10 | 2,2k | 32,3% | 40,2% | 77,5% |
+| 20 | 4,2k | 44,3% | 50,0% | 82,9% |
+| 50 | 9,7k | 61,3% | 57,6% | 89,1% |
+| 100 | 17,9k | 79,8% | 78,3% | 94,5% |
+| 200 | 26k (≈ seluruh percakapan) | 99,6% | 100% | 99,9% |
+
+**Hasil (persen soal dengan semua bukti, k=10 / k=20):**
+
+| Varian | Overall | Multi-hop | Hasil |
+|---|---|---|---|
+| Baseline | 77,5 / 82,9 | 32,3 / 44,3 | acuan |
+| Maks. 1 potongan per sesi (sisanya menyusul) | 70,2 / 73,2 | 27,3 / 33,7 | lebih buruk |
+| Maks. 2 potongan per sesi | 75,8 / 79,9 | 31,6 / 42,2 | lebih buruk |
+| Jalur entitas (kata berhuruf kapital di pertanyaan, df ≤ 5%) di RRF | 77,5 / 82,8 | 32,3 / 44,3 | netral |
+| Hop kedua lewat entitas dari 5 potongan teratas, bobot 0,5 | 71,3 / 80,4 | 25,5 / 40,8 | lebih buruk |
+| Hop kedua, bobot 1,0 | 70,2 / 76,5 | 23,4 / 35,8 | lebih buruk |
+
+Kenapa tidak berhasil di LoCoMo: soal multi-hop yang gagal hampir semuanya soal agregasi dengan kosakata
+berbeda dari buktinya ("Which countries has Deborah traveled to?" ↔ "I was in Rio de Janeiro"; "favorite
+desserts" ↔ "coconut milk icecream"; "as a child" ↔ "as a kid"). Entitas di pertanyaan biasanya hanya nama
+pembicara, yang muncul di hampir semua potongan; entitas baru dari hasil teratas membawa topik lain, bukan bukti
+kedua. Bukti biasanya tersebar di banyak sesi, tetapi membatasi potongan per sesi justru membuang bukti yang
+sesinya memang relevan.
+
+**Yang membantu: fakta (mode `full`) pada anggaran token yang sama.** Bukti dihitung juga bila fakta yang
+terambil diekstrak dari giliran bukti (`experiments/locomo/evidence.py --facts`; 1.535 soal, brain mode full
+dari iterasi sebelumnya):
+
+| Isi konteks | Konteks | Multi-hop | Open-domain | Overall |
+|---|---|---|---|---|
+| episodes, 15 potongan | 3,2k | 36,9% | 45,7% | 80,4% |
+| full: 30 fakta + 10 potongan | 3,0k | 41,5% | 44,6% | 82,5% |
+| full: 50 fakta + 10 potongan | 3,7k | 45,4% | 50,0% | 83,8% |
+| episodes, 20 potongan | 4,2k | 44,3% | 50,0% | 82,9% |
+| **full: 30 fakta + 20 potongan** | **4,7k** | **51,4%** | **52,2%** | **86,4%** |
+| full: 100 fakta saja | 3,4k | 35,1% | 47,8% | 66,4% |
+
+Fakta saja kehilangan detail (single-hop hanya 74%), tetapi fakta + potongan sumbernya memberi +3,5 poin overall
+dan +7 poin multi-hop dibanding potongan saja pada konteks ≈4,5k. Biayanya ada di ingest (satu ekstraksi LLM per
+sesi), bukan di query.
+
+**Kesimpulan:** tidak ada varian berbasis entitas yang diadopsi. Tuas berikutnya yang tersisa:
+1. Mode `full` untuk LoCoMo/LongMemEval di sesi evaluasi (biaya ingest gpt-4o-mini, sekali per brain).
+2. Encoder kontekstual kecil (bge-small / e5-small, ONNX) menggantikan WordLlama, dan/atau cross-encoder kecil
+   untuk mengurutkan ulang 50 kandidat teratas. Ini yang paling mungkin menutup selisih kosakata, tetapi
+   modelnya tidak bisa diunduh di sesi ini (Hugging Face dan mirror GCS fastembed ditolak proxy, 403).

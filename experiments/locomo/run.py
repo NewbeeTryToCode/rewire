@@ -128,7 +128,7 @@ def ingest(conv: dict, root: str, profile: str) -> None:
 
 def approve_all(root: str) -> None:
     """The benchmark has no human reviewer: inbox proposals are accepted, as a user would in bulk."""
-    from rewire import ops
+    from rewire import nodefmt, ops
 
     brain = Brain(root)
     for item in list(brain.iter_inbox()):
@@ -153,7 +153,7 @@ def backfill_transcripts(conv: dict, root: str) -> None:
 
 def memories_for(index: Index, question: str, k: int, episodes: int = 0) -> list[dict]:
     """What rewire's recall returns (the same path MCP and the CLI use), as Mem0-style memory rows."""
-    from rewire import ops
+    from rewire import nodefmt, ops
 
     out = []
     for h in ops.recall(index.brain, index, question, k=k, scope="all", episodes=episodes):
@@ -163,8 +163,11 @@ def memories_for(index: Index, question: str, k: int, episodes: int = 0) -> list
             continue
         row = index.rows("id = ?", (h["id"],))[0]
         meta = json.loads(row["meta"])
+        src = nodefmt.parse_source(meta.get("source"))
+        m = re.search(r"session_(\d+)$", src[1]) if src else None
         out.append({"memory": f"{row['title']}: {row['body'].strip()}" if row["body"].strip() != row["title"]
-                    else row["title"], "created_at": meta.get("valid_from") or meta.get("recorded_at", "")[:10]})
+                    else row["title"], "created_at": meta.get("valid_from") or meta.get("recorded_at", "")[:10],
+                    "source": f"D{m.group(1)}:{src[2]}" if m else None})  # the LoCoMo turn (dia_id) it came from
     return out
 
 

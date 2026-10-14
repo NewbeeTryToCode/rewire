@@ -7,6 +7,7 @@ inner loop for retrieval changes (the LLM judge varies by +-3 points between run
 
 Usage: python experiments/locomo/evidence.py --data locomo10.json --out DIR [--k 50 --episodes 10]
        [--failed results-full-hybrid.json]   # also report on the questions that run got wrong
+       [--facts]   # mode full: a turn also counts when a retrieved fact was extracted from it
 """
 
 import argparse
@@ -38,6 +39,8 @@ def main():
     ap.add_argument("--failed", help="results-*.json from run.py: also score its WRONG questions")
     ap.add_argument("--seed-weight", type=float, help="override Index.SEED_WEIGHT (0 disables)")
     ap.add_argument("--dump", help="write per-question rows here (JSON)")
+    ap.add_argument("--facts", action="store_true",
+                    help="count an evidence turn as found when a retrieved fact's source is that turn")
     args = ap.parse_args()
     if args.seed_weight is not None:
         Index.SEED_WEIGHT = args.seed_weight
@@ -63,7 +66,8 @@ def main():
                 continue
             mems = memories_for(index, qa["question"], args.k, args.episodes)
             eps = norm(" ".join(m["memory"] for m in mems if m["memory"].startswith("Conversation excerpt")))
-            hit = sum(norm(turns[e])[:50] in eps for e in ev)
+            srcs = {m["source"] for m in mems if m.get("source")} if args.facts else set()
+            hit = sum(norm(turns[e])[:50] in eps or e in srcs for e in ev)
             rows.append({"qid": f"{sid}-{i}", "cat": CATS[qa["category"]], "n_ev": len(ev), "hit": hit,
                          "ctx": sum(len(m["memory"]) for m in mems)})
     if args.dump:
