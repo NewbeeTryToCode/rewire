@@ -57,10 +57,19 @@ pub fn line(row: &NodeRow) -> String {
 }
 
 /// Lines that fit the budget, and how many rows did not.
+const LINE_EXTRA: usize = "- ".len() + " [12345678]".len();
+const MIN_TEXT: usize = 50; // shorter than "[BLOCKED: …; check this note with `rewire doctor`]" and the 380-char cap
+
 fn fill(rows: &[NodeRow], budget: usize) -> (Vec<String>, usize) {
     let mut out = Vec::new();
     let (mut used, mut left) = (0, 0);
     for row in rows {
+        // a line is never shorter than its title or the BLOCKED notice (capped at 380) plus "- " and " [id8]":
+        // rows that cannot fit are counted without formatting and scanning them (most rows once the budget is full)
+        if used + row.title.chars().count().min(MIN_TEXT) + LINE_EXTRA + 1 > budget {
+            left += 1;
+            continue;
+        }
         let l = line(row);
         let n = l.chars().count();
         if used + n + 1 > budget {
