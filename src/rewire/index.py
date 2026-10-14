@@ -325,16 +325,17 @@ class Index:
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
         window = window or text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
-            f"SELECT rowid AS rid, path, date, text, first FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
+            f"SELECT rowid AS rid, path, date, text, first, last FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
             list(fused))} if fused else {}
         if window:
             for rid, r in rows.items():
                 if window[0] <= (r["date"] or "")[:10] <= window[1]:
                     fused[rid] += 1.0 / self.RRF_K
         best = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))[:k]
+        best, texts = self._merge(best, rows)
         out = [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
-                "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": rows[rid]["text"]}
-               for rid in best if rid in rows]
+                "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": texts[rid]}
+               for rid in best]
         if out and rows[best[0]]["first"] != 0:
             # the top excerpt carries its session's goal and outcome (bookends), unless it is the summary itself
             summary = " / ".join(r[0] for r in self.db.execute(
@@ -343,6 +344,31 @@ class Index:
             if summary:
                 out[0]["summary"] = summary[:300]
         return out
+
+    @staticmethod
+    def _merge(best: list[int], rows: dict) -> tuple[list[int], dict[int, str]]:
+        """Excerpts of one session whose turn ranges overlap or touch become one excerpt (no line twice), at
+        the rank of the best of them. Windows overlap by two turns, so without this the same lines are sent
+        twice: 11-12% of the excerpt tokens on LoCoMo, with the same evidence (experiments/eval/results)."""
+        groups: list[list] = []  # [anchor rowid, path, first turn, last turn, {turn: line}]
+        for rid in best:
+            r = rows.get(rid)
+            if r is None:
+                continue
+            lines: dict[int, str] = {}
+            for line in r["text"].splitlines():
+                m = _TURN.match(line)
+                lines[int(m.group(1)) if m else -len(lines) - 1] = line
+            lo, hi = r["first"], r["last"]
+            for g in groups:  # a session summary (turn 0) is never merged; neither are runs that reuse turn numbers
+                if (lo > 0 and g[2] > 0 and g[1] == r["path"] and lo <= g[3] + 1 and hi >= g[2] - 1
+                        and all(g[4].get(n, line) == line for n, line in lines.items())):
+                    g[2], g[3] = min(g[2], lo), max(g[3], hi)
+                    g[4].update(lines)
+                    break
+            else:
+                groups.append([rid, r["path"], lo, hi, lines])
+        return [g[0] for g in groups], {g[0]: "\n".join(g[4][n] for n in sorted(g[4])) for g in groups}
 
     SEED_WEIGHT = 0.35  # source-excerpt bonus for the top memory hit, as a share of the best excerpt's score (tuned: experiments/locomo/evidence.py)
 

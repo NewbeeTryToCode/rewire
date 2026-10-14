@@ -90,3 +90,42 @@ Persen soal dengan semua bukti di konteks (mode `episodes`, k=30):
 Pada sampel penuh, semantic (WordLlama) **tidak** membantu LoCoMo (sama dengan temuan iterasi 6); kenaikan di
 sampel 80 soal tadi adalah noise. 20 potongan memberi +5,4 poin overall dan +12 poin multi-hop, tapi multi-hop
 tetap di 44%: menambah jumlah saja tidak cukup, perlu perubahan cara mencari (entitas, unit lebih kecil).
+
+## 7. Perbaikan retrieval: bentuk potongan (tanpa LLM, 2026-10-14)
+
+Pertanyaan: dengan anggaran token yang sama, bisakah konteks memuat lebih banyak bukti? Semua angka: seluruh
+1.540 soal LoCoMo, mode `episodes`, keyword, k=30 fakta; "bukti" = persen soal dengan semua bukti di konteks.
+
+| Varian | k=10 | k=15 | k=20 | k=25 | Hasil |
+|---|---|---|---|---|---|
+| Baseline (jendela 6 giliran, langkah 4) | 77,5% / 2.458 tok | – | 82,9% / 4.795 tok | – | acuan |
+| Unit 1 giliran ± 1 tetangga (lalu digabung) | – | – | – | 74,4% / 2.655 tok | **lebih buruk** pada token sama |
+| **Gabung potongan yang tumpang tindih** | 77,5% / 2.196 tok | 80,4% / 3.223 tok | 82,9% / 4.219 tok | 84,8% / 5.174 tok | **bukti sama, token −11–12%** |
+| Pangkas baris yang tidak memuat kata pertanyaan (±1/±2 baris) | – | – | – | – | bukti −0,2 s.d. −2 poin |
+| Pseudo-relevance feedback (3/5/10 potongan teratas) + gabung | 77,1–77,7% | 80,5–80,6% | 82,9–83,2% | – | netral (dalam noise) |
+
+Kenapa gabung berhasil: jendela 6 giliran bergeser 4, jadi dua potongan bersebelahan berbagi 2 giliran; bila
+keduanya terambil, giliran yang sama dikirim dua kali. Potongan satu sesi yang bertumpuk atau bersambung kini
+dijadikan satu potongan (tiap baris sekali), di peringkat potongan terbaiknya. Ringkasan sesi tidak pernah
+digabung.
+
+Kenapa unit kecil dan pemangkasan gagal: bukti LoCoMo sering ada di giliran yang tidak memuat kata pertanyaan
+(jawaban ada di giliran sebelum/sesudah yang cocok); memotong konteks di sekitar kata kunci membuang bukti itu.
+PRF menambah kata dari potongan teratas, tapi kata yang sering muncul di sana kebanyakan topik obrolan umum, bukan
+jembatan ke bukti kedua.
+
+**LongMemEval_S (120 soal, 20 per tipe, keyword):** bukti identik (giliran 87,6%, semua bukti 85,5%, sesi 94,9%);
+konteks 11.090 → 9.780 token (−11,8%), MRR 0,709 → 0,794, context precision 16,9% → 21,3%; latensi retrieval
+sama (p50 ≈170 ms).
+
+**Diterapkan:** penggabungan jadi perilaku bawaan di Python (`Index._merge`) dan Rust (`merge_excerpts`); parity
+recall Rust–Python tetap 304/304 (keyword) dan 298/304 (semantic, sama dengan sebelumnya). Varian lain tidak
+dipertahankan.
+
+**Yang belum terpecahkan:** multi-hop (32–44%) dan open-domain. Transcript mentah saja tidak cukup; langkah
+berikutnya yang paling menjanjikan adalah hop kedua lewat entitas/fakta (mode `full`, yang dulu mencapai J 94%
+pada k=50), diukur pada anggaran token tetap (≈2,5k), bukan menambah jumlah potongan.
+
+**Evaluasi ulang dengan LLM** (gpt-4o-mini sebagai penjawab dan judge) dijalankan di sesi evaluasi, sesuai
+runbook `docs/evaluation.md` §9: sesi ini tidak punya `OPENROUTER_API_KEY`. Karena balasan di-cache per prompt,
+hanya soal yang konteksnya berubah yang dibayar ulang.
