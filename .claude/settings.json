@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "ecc": {
+      "source": { "source": "git", "url": "https://github.com/affaan-m/ecc.git" }
+    }
+  },
+  "enabledPlugins": {
+    "ecc@ecc": true
+  }
+}
