@@ -323,6 +323,8 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "retrieval_ms_p99": pct([r["retrieval_ms"] for r in g], 0.99),
                "MRR": sum(e["rr"] for e in ev) / len(ev) if ev else None,
                "context_precision": sum(e["precision"] for e in ev) / len(ev) if ev else None,
+               "evidence_session_any": (sum(e["session_any"] for e in ev if "session_any" in e)
+                                        / max(1, sum("session_any" in e for e in ev))) if any("session_any" in e for e in ev) else None,
                "compression": sum(r["raw_tokens"] for r in g) / max(1, sum(r["context_tokens"] for r in g))}
         if args.bench == "locomo" and judged:
             out["F1"] = sum(r["f1"] for r in judged) / len(judged)
@@ -365,11 +367,12 @@ def write_report(summary: dict, path: str) -> None:
             f"{f(g['context_tokens_mean'])} / {f(g['context_tokens_p95'])} | "
             f"{f(g.get('answer_prompt_tokens_per_response'))} / {f(g.get('answer_completion_tokens_per_response'))} | "
             f"{g['retrieval_ms_p50']:.0f} / {g['retrieval_ms_p95']:.0f} |")
-    lines += ["", "| category | MRR (first evidence excerpt) | context precision | compression vs full history | retrieval ms p99 |",
-              "|---|---|---|---|---|"]
+    lines += ["", "| category | MRR (first evidence excerpt) | context precision | evidence session found | compression vs full history | retrieval ms p99 | answer words |",
+              "|---|---|---|---|---|---|---|"]
     for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
-        lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | {g['compression']:.1f}× | "
-                     f"{g['retrieval_ms_p99']:.0f} |")
+        lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | "
+                     f"{f(g['evidence_session_any'], True)} | {g['compression']:.1f}× | {g['retrieval_ms_p99']:.0f} | "
+                     f"{f(g.get('answer_words_mean'))} |")
     if "abstention_accuracy" in summary:
         lines += ["", f"Abstention accuracy: {summary['abstention_accuracy']:.1%}"]
     lines += ["", "## LLM usage this run (cached replies cost nothing)", "",
