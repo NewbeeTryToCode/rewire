@@ -119,6 +119,10 @@ Node creation (`recorded_at`) counts as the first use. Activation: `B = ln Σ w�
 ## Rejected                                (only if any)
 - <title> (<why>)
 
+## Questions                               (only if transcripts are kept and the LLM wrote any)
+
+- [<n>] <question a later search might ask, answered by turn n>
+
 ## Transcript                              (only if transcripts are kept)
 
 [<n> <role>] <text on one line>
@@ -128,6 +132,10 @@ A file may hold several consolidation runs of the same session, separated by `\n
 lines are secret-redacted; assistant turns longer than 1,500 characters are cut and end with ` …[condensed]`.
 For search, transcript lines are cut into excerpts of 6 lines with a stride of 4, and each run's summary
 is one more searchable excerpt (`Summary: <text>`, whitespace collapsed, at most 600 characters).
+Questions (secret-redacted, one line, at most 200 characters) are written by the extraction call. Each
+one is added to the search text of every excerpt whose turn range holds its turn; the excerpt shown in
+recall is unchanged. On LoCoMo this raised evidence recall at the same context size
+(experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md §11–12).
 
 ## Inbox item
 

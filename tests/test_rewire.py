@@ -480,6 +480,23 @@ class TestConsolidation(BrainCase):
         self.assertTrue(hits and "Fridays" in hits[0]["text"])
         self.assertEqual(r["status"], "consolidated")
 
+    def test_hypothetical_questions_find_the_excerpt_without_being_shown(self):
+        key = "sk-ant-abcdefghijklmnopqrstuvwxyz0123"
+        out = dict(self.extraction([]), questions=[
+            {"turn": 2, "question": "Which weekdays are   off-limits for releases?"},
+            {"turn": 3, "question": f"Which token is {key}?"},
+            {"turn": 99, "question": "Unknown turn?"}, {"turn": True, "question": "Not a turn?"}])
+        self.brain.config.transcripts = "all"
+        self.run_fixture(FakeProvider(out))
+        content = open(glob.glob(self.brain.path("sessions", "*", "*.md"))[0]).read()
+        self.assertIn("## Questions\n\n- [2] Which weekdays are off-limits for releases?\n- [3] Which token is [redacted]?\n\n## Transcript", content)
+        self.assertNotIn("Unknown turn", content)
+        self.assertNotIn("Not a turn", content)
+        self.index.refresh()
+        hits = self.index.search_episodes("weekdays off-limits", k=3)
+        self.assertTrue(hits and "Fridays" in hits[0]["text"])
+        self.assertNotIn("weekdays", hits[0]["text"])
+
     def test_coding_profile_keeps_only_user_turns(self):
         self.run_fixture(FakeProvider(self.extraction([])))
         content = open(glob.glob(self.brain.path("sessions", "*", "*.md"))[0]).read()
