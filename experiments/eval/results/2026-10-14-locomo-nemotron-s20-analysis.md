@@ -307,3 +307,24 @@ bisa melakukannya sendiri lewat beberapa panggilan `recall`).
 | Query decomposition (aturan) | netral |
 | Diversity per sesi, PRF, pangkas baris | lebih buruk / netral |
 | Belum diuji: cross-encoder (model tidak terjangkau), Personalized PageRank, ringkasan komunitas GraphRAG | – |
+
+## 12. Kombinasi terbaik per anggaran konteks (2026-10-14)
+
+1.535 soal LoCoMo, keyword, persen soal dengan semua bukti di konteks. "Q" = pertanyaan hipotetis per potongan
+di indeks (§11); "full" = fakta + potongan sumber (§8).
+
+| Anggaran | Kombinasi | Konteks | Multi-hop | Temporal | Overall |
+|---|---|---|---|---|---|
+| ≈2,2k | episodes, 10 potongan | 2,2k | 32,3% | 83,4% | 77,5% |
+| ≈2,2k | episodes + Q, 10 potongan | 2,2k | 34,8% | 89,1% | 80,6% |
+| ≈3k | full: 30 fakta + 10 potongan | 3,0k | 41,5% | 92,5% | 82,5% |
+| ≈3k | full + Q: 30 + 10 | 3,1k | 43,6% | 93,4% | 83,3% |
+| ≈4,5k | episodes + Q, 20 potongan | 4,2k | 47,2% | 92,5% | 85,0% |
+| ≈4,5k | full: 30 + 20 | 4,7k | 51,4% | 93,8% | 86,4% |
+| ≈4,5k | **full + Q: 30 + 20** | 4,8k | **53,9%** | 93,8% | **87,0%** |
+| ≈5,5k | full + Q: 50 + 20 | 5,6k | 59,2% | 95,3% | 88,5% |
+| ≈7k | full: 100 + 20 | 7,1k | 64,2% | 95,6% | 90,3% |
+| ≈7k | **full + Q: 100 + 20** | 7,3k | **67,4%** | 95,9% | **90,9%** |
+
+Q menambah +0,6–0,8 poin overall dan +2–3 poin multi-hop di atas mode `full`; tanpa fakta, Q menambah +2–3
+poin overall. Kedua teknik memakai LLM hanya saat ingest.
