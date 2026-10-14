@@ -21,6 +21,7 @@ Usage (OPENROUTER_API_KEY must be set as an environment secret):
 """
 
 import argparse
+import glob
 import hashlib
 import importlib.util
 import json
@@ -293,11 +294,213 @@ def lme_verdict(text: str) -> bool:
     return text.strip().lower().lstrip("*\"' ").startswith("yes")
 
 
+# ---- shared helpers for the transcript-only benchmarks -------------------
+
+_ROOT_LOCKS: dict[str, threading.Lock] = defaultdict(threading.Lock)
+_ROOT_LOCKS_GUARD = threading.Lock()
+
+
+def write_sessions(root: str, harness: str, sessions: list[tuple[str, str, list[dict]]]) -> None:
+    """Store sessions exactly as consolidation stores transcripts, without LLM extraction (mode episodes).
+    Questions on the same history run in parallel: the first one writes the brain, the others wait."""
+    with _ROOT_LOCKS_GUARD:
+        lock = _ROOT_LOCKS[root]
+    with lock:
+        _write_sessions(root, harness, sessions)
+
+
+def _write_sessions(root: str, harness: str, sessions: list[tuple[str, str, list[dict]]]) -> None:
+    done = os.path.join(root, ".state", "eval_done")
+    if os.path.exists(done):
+        return
+    brain = LME.new_brain(root)  # profile "general": every role is kept in the transcript
+    con = Consolidator.__new__(Consolidator)  # only the transcript writer: no LLM
+    con.brain = brain
+    for sid, date, turns in sessions:
+        con._write_session(harness, sid, None, [], [], [], [], [], set(), date, con._transcript(turns))
+    os.makedirs(os.path.dirname(done), exist_ok=True)
+    open(done, "w").close()
+
+
+def recall_context(root: str, query: str, k: int, episodes: int, keep=None) -> tuple[str, list[str], float]:
+    """rewire recall -> (context text, ranked excerpt texts, ms). `keep(excerpt_line)` drops lines (e.g. the future)."""
+    brain = Brain(root)
+    index = Index(brain)
+    index.refresh()
+    start = time.time()
+    hits = ops.recall(brain, index, query, k=k, scope="all", episodes=episodes)
+    ms = (time.time() - start) * 1000
+    facts, ranked = [], []
+    for h in hits:
+        if h["type"] == "episode":
+            lines = [l for l in h["text"].splitlines() if keep is None or keep(l)]
+            if lines:
+                ranked.append(f"({h['date']}) " + "\n".join(lines))
+        else:
+            facts.append(f"({h.get('date') or 'undated'}) {h['title']}: {h['snippet']}")
+    index.close()
+    parts = (["Facts remembered about the user:"] + facts if facts else []) + \
+            (["Excerpts from earlier conversations (best match first):"] + ranked if ranked else [])
+    return "\n".join(parts) or "(no relevant memories found)", ranked, ms
+
+
+# ---- BEAM (github.com/mohammadtavakoli78/BEAM; chats/<size>/<id>/) ---------
+
+BEAM_PROMPTS = _load("beam_prompts", os.path.join(HERE, "beam_prompts.py"))
+
+
+def beam_date(anchor: str | None) -> str:
+    from datetime import datetime
+    try:
+        return datetime.strptime(anchor or "", "%B-%d-%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def beam_ids(src) -> list[int]:
+    if isinstance(src, dict):
+        return [i for v in src.values() for i in beam_ids(v)]
+    if isinstance(src, list):
+        return [i for v in src for i in beam_ids(v)]
+    return [src] if isinstance(src, int) else []
+
+
+def beam_items(args) -> list[dict]:
+    """--data is BEAM's chats/ directory (repository copy or download_dataset.py output)."""
+    items = []
+    for size in args.beam_sizes.split(","):
+        for chat_dir in sorted(glob.glob(os.path.join(args.data, size, "*")), key=lambda p: (len(p), p)):
+            qpath = os.path.join(chat_dir, "probing_questions", "probing_questions.json")
+            if not os.path.exists(qpath) or not os.path.exists(os.path.join(chat_dir, "chat.json")):
+                continue
+            for qtype, qs in json.load(open(qpath)).items():
+                for i, q in enumerate(qs):
+                    gold = next((q[k] for k in ("answer", "ideal_answer", "ideal_response", "ideal_summary") if k in q), "")
+                    items.append({"bench": "beam", "qid": f"{size}-{os.path.basename(chat_dir)}-{qtype}-{i}",
+                                  "chat_dir": chat_dir, "size": size, "category": qtype, "question": q["question"],
+                                  "gold": json.dumps(gold) if not isinstance(gold, str) else gold,
+                                  "rubric": q.get("rubric") or [], "evidence_ids": beam_ids(q.get("source_chat_ids")),
+                                  "abstention": qtype == "abstention"})
+    return items
+
+
+def beam_messages(chat_dir: str) -> list[tuple[str, list[dict]]]:
+    """(date, turns) per batch; turn n = the message id, as BEAM's source_chat_ids refer to it."""
+    out = []
+    for batch in json.load(open(os.path.join(chat_dir, "chat.json"))):
+        msgs = [m for turn in batch["turns"] for m in turn]
+        date = next((beam_date(m.get("time_anchor")) for m in msgs if beam_date(m.get("time_anchor"))), "")
+        out.append((date, [{"n": m["id"], "role": "assistant" if m["role"] == "assistant" else "user",
+                            "text": m["content"], "ts": ""} for m in msgs]))
+    return out
+
+
+def beam_prepare(it: dict, args, provider) -> dict:
+    if args.mode != "episodes":
+        raise SystemExit("BEAM is supported in --mode episodes (a 1M-token chat costs too much to consolidate)")
+    root = os.path.join(args.out, "beam", "brains", it["size"], os.path.basename(it["chat_dir"]))
+    batches = beam_messages(it["chat_dir"])
+    name = f"beam-{it['size']}-{os.path.basename(it['chat_dir'])}"
+    write_sessions(root, "beam", [(f"{name}-b{i + 1}", date or "2024-01-01", turns) for i, (date, turns) in enumerate(batches)])
+    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes)
+    by_id = {t["n"]: t["text"] for _, turns in batches for t in turns}
+    evidence = [by_id[i] for i in it["evidence_ids"] if i in by_id]
+    text = norm(" ".join(ranked))
+    hits = sum(norm(e)[:50] in text for e in evidence)
+    return {"prompt": BEAM_PROMPTS.ANSWER_GENERATION_FOR_RAG.replace("<context>", context).replace("<question>", it["question"]),
+            "context_tokens": est_tokens(context), "retrieval_ms": ms, "n_memories": len(ranked),
+            "raw_tokens": est_tokens(" ".join(by_id.values())),
+            "evidence": {"turns": hits, "n_turns": len(evidence), "all": hits == len(evidence),
+                         **ranking(ranked, evidence)} if evidence else None}
+
+
+def beam_judge(it: dict, response: str, judge) -> tuple[float, list[dict]]:
+    """Official BEAM scoring: one judge call per rubric item (1.0 / 0.5 / 0.0), averaged."""
+    scores, calls = [], []
+    for item in it["rubric"]:
+        call = judge(BEAM_PROMPTS.UNIFIED_LLM_JUDGE_BASE_PROMPT.replace("<rubric_item>", item)
+                     .replace("<llm_response>", response))
+        calls.append(call)
+        m = re.search(r'"score"\s*:\s*"?([01](?:\.\d+)?)', call["text"])
+        scores.append(float(m.group(1)) if m else 0.0)
+    return (sum(scores) / len(scores) if scores else 0.0), calls
+
+
+# ---- PersonaMem (huggingface.co/datasets/bowen-upenn/PersonaMem) -------------
+
+PERSONAMEM_INSTRUCTIONS = ("Find the most appropriate model response and give your final answer (a), (b), (c), or (d) "
+                           "after the special token <final_answer>.")  # verbatim from the official inference code
+
+
+def personamem_items(args) -> list[dict]:
+    """--data holds questions_<size>.csv and shared_contexts_<size>.jsonl (size from --personamem-size)."""
+    import csv
+
+    size = args.personamem_size
+    contexts = {}
+    with open(os.path.join(args.data, f"shared_contexts_{size}.jsonl"), encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                contexts.update(json.loads(line))
+    items = []
+    with open(os.path.join(args.data, f"questions_{size}.csv"), encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            items.append({"bench": "personamem", "qid": row["question_id"], "category": row["question_type"],
+                          "question": row["user_question_or_message"], "gold": row["correct_answer"],
+                          "options": row["all_options"], "context_id": row["shared_context_id"],
+                          "end": int(float(row["end_index_in_shared_context"])), "abstention": False,
+                          "messages": contexts[row["shared_context_id"]]})
+    return items
+
+
+def personamem_prepare(it: dict, args, provider) -> dict:
+    """One brain per shared context, holding all of it; excerpts after the question's position are dropped,
+    so memory never contains the future (questions on the same context sit at different positions)."""
+    if args.mode != "episodes":
+        raise SystemExit("PersonaMem is supported in --mode episodes (facts could leak turns after the question)")
+    root = os.path.join(args.out, "personamem", args.personamem_size, "brains", re.sub(r"\W+", "-", it["context_id"])[:60])
+    turns = [{"n": i, "role": "assistant" if m.get("role") == "assistant" else "user",
+              "text": (f"[{m['role']}] " if m.get("role") == "system" else "") + str(m.get("content", "")), "ts": ""}
+             for i, m in enumerate(it["messages"])]
+    write_sessions(root, "personamem", [(f"pm-{it['context_id']}"[:80], "2024-01-01", turns)])
+
+    def before(line: str) -> bool:
+        m = re.match(r"\[(\d+) ", line)
+        return bool(m) and int(m.group(1)) < it["end"]
+
+    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, keep=before)
+    prompt = (f"{context}\n\n{it['question']}\n\n{PERSONAMEM_INSTRUCTIONS}\n\n{it['options']}")
+    return {"prompt": prompt, "context_tokens": est_tokens(context), "retrieval_ms": ms, "n_memories": len(ranked),
+            "raw_tokens": est_tokens(" ".join(t["text"] for t in turns[:it["end"]])), "evidence": None}
+
+
+def personamem_score(it: dict, response: str, judge) -> tuple[float, list[dict]]:
+    """Official scoring: the option letter after <final_answer> (or anywhere) must be exactly the correct one."""
+    def options(text: str) -> set:
+        text = text.lower()
+        found = re.findall(r"\(([a-d])\)", text)
+        return set(found) if found else set(re.findall(r"\b([a-d])\b", text))
+
+    correct = it["gold"].lower().strip("() ")
+    final = response.split("<final_answer>")[-1].strip().removesuffix("</final_answer>").strip()
+    return (1.0 if options(final) == {correct} or options(response) == {correct} else 0.0), []
+
+
+def single_judge(prompt_fn, verdict_fn):
+    def run(it, response, judge):
+        call = judge(prompt_fn(it, response))
+        return (1.0 if verdict_fn(call["text"]) else 0.0), [call]
+    return run
+
+
 BENCH = {
     "locomo": {"items": locomo_items, "prepare": locomo_prepare, "answer": locomo_answer,
-               "judge_prompt": locomo_judge_prompt, "verdict": locomo_verdict},
+               "judge": single_judge(locomo_judge_prompt, locomo_verdict)},
     "longmemeval": {"items": lme_items, "prepare": lme_prepare, "answer": lambda t: t.strip(),
-                    "judge_prompt": lme_judge_prompt, "verdict": lme_verdict},
+                    "judge": single_judge(lme_judge_prompt, lme_verdict)},
+    "beam": {"items": beam_items, "prepare": beam_prepare, "answer": lambda t: t.strip(), "judge": beam_judge},
+    "personamem": {"items": personamem_items, "prepare": personamem_prepare, "answer": lambda t: t.strip(),
+                   "judge": personamem_score},
 }
 
 
@@ -399,7 +602,8 @@ def write_report(summary: dict, path: str) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bench", choices=list(BENCH), required=True)
+    ap.add_argument("--bench", choices=list(BENCH), required=True,
+                    help="locomo | longmemeval | beam (data: BEAM's chats/ dir) | personamem (data: dir with the csv + jsonl)")
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--mode", choices=["episodes", "full"], default="episodes",
@@ -407,6 +611,8 @@ def main():
     ap.add_argument("--sample", type=int, default=20, help="questions per category (0 = all)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--convs", default="all", help="LoCoMo conversations (comma-separated sample ids or all)")
+    ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
+    ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     ap.add_argument("--answer-model", default="openai/gpt-4o-mini")
@@ -449,11 +655,12 @@ def main():
         row["response"] = bench["answer"](a["text"])
         row["answer_call"] = {k: a[k] for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cost",
                                                 "latency_ms", "cached")}
-        j = ask(client, cache, "judge", args.judge_model, bench["judge_prompt"](it, row["response"]),
-                args.judge_max_tokens)
-        row["correct"] = bench["verdict"](j["text"])
-        row["judge_call"] = {k: j[k] for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cost",
-                                               "latency_ms", "cached")}
+        judge = lambda prompt: ask(client, cache, "judge", args.judge_model, prompt, args.judge_max_tokens)  # noqa: E731
+        row["correct"], calls = bench["judge"](it, row["response"], judge)  # score in [0, 1]
+        if calls:  # several calls for rubric judges (BEAM); none for multiple choice (PersonaMem)
+            row["judge_call"] = {k: sum(c[k] for c in calls) for k in ("prompt_tokens", "completion_tokens",
+                                                                       "reasoning_tokens", "cost", "latency_ms")}
+            row["judge_call"]["cached"] = all(c["cached"] for c in calls)
         if args.bench == "locomo":
             row["f1"] = LOCOMO.f1(row["response"], row["gold"])
             row["bleu1"] = bleu1(row["response"], row["gold"])
@@ -490,12 +697,19 @@ def main():
             except Exception as exc:
                 print(f"price catalog unreachable ({exc}); pass --price MODEL=IN,OUT for a cost estimate")
         ans_in = sum(r["answer_prompt_tokens_est"] for r in rows)
-        judge_in = len(rows) * 400  # judge prompt (rules + question + gold + answer), roughly
+        if args.bench == "beam":  # one judge call per rubric item, each carrying the full judge prompt
+            per_call = est_tokens(BEAM_PROMPTS.UNIFIED_LLM_JUDGE_BASE_PROMPT) + args.est_answer_out
+            n_calls = sum(len(it["rubric"]) for it in items if it["qid"] in {r["qid"] for r in rows})
+        elif args.bench == "personamem":  # multiple choice: scored by matching the option, no judge
+            per_call, n_calls = 0, 0
+        else:  # judge prompt (rules + question + gold + answer), roughly
+            per_call, n_calls = 400, len(rows)
+        judge_in = per_call * n_calls
         est = {"questions": len(rows), "answer_prompt_tokens": ans_in,
                "answer_completion_tokens": len(rows) * args.est_answer_out,
-               "judge_prompt_tokens": judge_in, "judge_completion_tokens": len(rows) * args.est_judge_out}
+               "judge_calls": n_calls, "judge_prompt_tokens": judge_in, "judge_completion_tokens": n_calls * args.est_judge_out}
         for stage, model, tin, tout in (("answer", args.answer_model, ans_in, len(rows) * args.est_answer_out),
-                                        ("judge", args.judge_model, judge_in, len(rows) * args.est_judge_out)):
+                                        ("judge", args.judge_model, judge_in, n_calls * args.est_judge_out)):
             if model in prices:
                 est[f"{stage}_cost_usd"] = round((tin * prices[model][0] + tout * prices[model][1]) / 1e6, 4)
 
