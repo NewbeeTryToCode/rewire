@@ -201,7 +201,13 @@ LongMemEval membawa ≈11–22k token konteks per soal.
 | Penjawab | satu model tetap untuk semua sistem yang dibandingkan | model penjawab menggeser skor puluhan poin (Mastra: 94,9% vs 84,2% hanya karena model) |
 | Ingest (`--mode full`) | model yang andal untuk JSON schema | ekstraksi gagal = memory hilang, bukan sekadar skor turun |
 
-**Model untuk run pertama (keputusan 2026-10-14):** `nvidia/nemotron-3-ultra-550b-a55b:free` untuk penjawab
+**Model utama (keputusan 2026-10-14, setelah run Nemotron):** `openai/gpt-4o-mini` sebagai penjawab **dan**
+judge: sama dengan paper Mem0 dan angka LoCoMo Zep (tabel di §4), judge-nya stabil, bukan model reasoning
+(tidak perlu `--reasoning-effort`), dan murah (LoCoMo penuh ≈$1,60–2,30; `openai/gpt-4o-mini:batch` setengahnya).
+Untuk LongMemEval, judge resmi adalah GPT-4o: tambahkan run `--judge-model openai/gpt-4o` bila angkanya
+akan dibandingkan dengan protokol resmi (jawaban diambil dari cache, hanya judge yang dibayar).
+
+**Model untuk run pertama (2026-10-14):** `nvidia/nemotron-3-ultra-550b-a55b:free` untuk penjawab
 dan judge. Bila skornya jauh di bawah batas atas retrieval (§8), atau banyak jawaban kosong / terpotong, coba
 `thinkingmachines/inkling:free` pada soal yang sama (seed sama; cache menyimpan balasan per model).
 **Catatan 2026-10-14:** `inkling:free` membalas 403 untuk panggilan API langsung (hanya untuk "agentic harness"
