@@ -144,6 +144,25 @@ Konsekuensinya: untuk dibandingkan dengan paper Mem0 dan angka LoCoMo Zep, pakai
 penjawab **dan** judge. Angka Mem0 2026 memakai GPT-5 untuk keduanya, jadi tidak sebanding dengan run yang
 memakai model lebih kecil.
 
+### Besar konteks yang dikirim ke penjawab (per soal, LoCoMo)
+
+| Sistem | Konteks / soal | Isi konteks | Skor | Sumber |
+|---|---|---|---|---|
+| Memori | ≈1.294 token | fakta ringkas | 81,95% | laporan Memori (vendor) |
+| Zep | ≈1.602 token | fakta (edge) + ringkasan entitas | 79,1% (Memori), 75,1% (Zep) | paper MemCoT; Memori; Zep |
+| Mem0 (paper 2025 / pengukuran pihak ketiga) | ≈1.764 token | 10–30 fakta ringkas | 62,5–68,4% | paper MemCoT; Memori; paper Mem0 |
+| Mem0 platform 2026, top-50 | 50 fakta (≈1,7–2k token, perkiraan) | fakta ringkas | 82,7% (GPT-5) | `memory-benchmarks/results/platform/locomo_top50_results.json` |
+| Mem0 platform 2026, top-200 | 200 fakta, rata-rata 6.956 token | fakta ringkas | 91,6% (GPT-5) | `locomo_results.json` + laporan Mem0 |
+| Full-context | ≈26k token | seluruh percakapan | 72,9% (4o-mini) – 87,5% | paper Mem0; Memori |
+| **rewire, 10 potongan** | **≈2,5k token** | 10 potongan × 6 giliran transcript mentah | bukti lengkap 77,5% | §8 |
+| **rewire, 20 potongan** | **≈4,9k token** | 20 potongan transcript mentah | bukti lengkap 82,9% | §8 |
+
+Pelajaran: sistem dengan konteks kecil (≈1,3–1,8k token) mengirim **fakta ringkas**, bukan transcript mentah;
+skor tinggi Mem0 2026 justru memakai konteks besar (≈7k token, 200 fakta). rewire mode `episodes` mengirim
+transcript mentah dengan context precision hanya 11–20%: tokennya habis untuk giliran yang tidak relevan. Target
+yang tepat bukan "konteks lebih besar" tetapi **lebih banyak bukti per token**: KPI retrieval = persen soal dengan
+semua bukti pada anggaran token tetap (mis. 2,5k).
+
 ### Perbandingan head-to-head (apples-to-apples)
 
 Satu-satunya cara membandingkan secara adil adalah menjalankan Mem0, Zep (Graphiti, open source) dan rewire
