@@ -8,7 +8,7 @@
 - **Aman secara default.** Provenance diambil dari transcript (bukan dari klaim model), output tool tidak pernah otomatis jadi aturan, secret ditolak, setiap konsolidasi bisa di-`undo`. Memory yang disuntikkan selalu dipagari `<rewire-memory>` dan dipindai ulang saat ditampilkan (`[BLOCKED]` bila berisi secret/injeksi).
 - **Tahu prosedur, bukan cuma fakta.** Prosedur yang berhasil (deploy, rilis, setup) diusulkan sebagai *skill* (`skills/<nama>/SKILL.md`) dan masuk inbox untuk direview.
 
-Arsitektur (L0/L1/L2): [`docs/design/architecture.md`](docs/design/architecture.md) · Format file: [`docs/design/format.md`](docs/design/format.md) · Desain: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Konsep: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Bukti simulasi: [`experiments/phase0`](experiments/phase0/README.md) · Log iterasi: [`docs/iterations.md`](docs/iterations.md)
+Arsitektur (L0/L1/L2): [`docs/design/architecture.md`](docs/design/architecture.md) · Format file: [`docs/design/format.md`](docs/design/format.md) · Desain: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Konsep: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Bukti simulasi: [`experiments/phase0`](experiments/phase0/README.md) · Log iterasi: [`docs/iterations.md`](docs/iterations.md) · Evaluasi: [`docs/evaluation.md`](docs/evaluation.md)
 
 ## Instalasi
 
