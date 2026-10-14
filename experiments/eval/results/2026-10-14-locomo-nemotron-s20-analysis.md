@@ -214,3 +214,46 @@ Per token, fakta lebih efisien daripada potongan (100+20 di 7k token mengalahkan
 lengkap 80% butuh ±12k token; itu bukan tujuan, karena konteks besar menurunkan presisi jawaban. Konfigurasi yang
 diuji dengan J: 30+20 (≈4,7k) dan 100+20 (≈7k, setara Mem0 2026 dengan 200 fakta ≈7k token, J 91,6% pakai
 GPT-5). Perintahnya ada di runbook `docs/evaluation.md` §9.
+
+## 10. Posisi retrieval rewire dan teknik RAG (NirDiamant/rag_techniques), 2026-10-14
+
+**Kuat:** single-hop 94–99% dan temporal 83–95% bukti lengkap pada 2–5k token; query tanpa LLM; retrieval
+dalam milidetik (LoCoMo p50 4 ms); potongan bertumpuk digabung.
+**Lemah:** multi-hop dan open-domain. Bukti yang kosakatanya berbeda dari pertanyaan berperingkat dalam (MRR
+multi-hop 0,55); embedding statis (WordLlama) tidak menutup celah itu, dan tidak ada reranker. Sistem tanpa LLM
+saat query yang skornya tinggi (SmartSearch, Hindsight) memakai cross-encoder dan encoder kontekstual.
+
+| Teknik (nomor di repo) | Status di rewire |
+|---|---|
+| Proposition chunking (5) | ada: fakta mode `full` |
+| Choose chunk size (4), semantic chunking (12) | diuji: 6 giliran / langkah 4 lebih baik dari unit 1 giliran |
+| Relevant segment extraction (10), context window enrichment (11) | ada: penggabungan potongan (§7) |
+| Contextual compression (13) | diuji (pangkas baris tanpa LLM): lebih buruk |
+| Fusion retrieval (15) | ada: BM25 + WordLlama, RRF |
+| Intelligent reranking (16) | belum: cross-encoder perlu file model (diblokir proxy di sesi ini) |
+| Multi-faceted filtering (17) | ada: jendela waktu sebagai boost |
+| Hierarchical indices (18), RAPTOR (32) | sebagian: ringkasan sesi diindeks; brain LoCoMo belum punya ringkasan per sesi |
+| Contextual chunk headers (9) | sebagian: tanggal dan ringkasan ikut di hasil; belum diuji ke indeks |
+| Dartboard / diversity (20) | diuji (batas per sesi): lebih buruk |
+| Feedback loops (22) | ada untuk fakta: aktivasi ACT-R dari event `use` |
+| Adaptive retrieval (23) | pernah (count intent): dicabut, jawaban kelebihan hitung |
+| Graph RAG, LightRAG, GraphRAG (29–31, 36) | sebagian: relasi + spreading activation; hop entitas diuji: lebih buruk (§8) |
+| Query transformation, HyDE, HyPE-query, Self/Corrective RAG, agentic (6–8, 28, 33–34) | tidak cocok: LLM saat query (agen pemanggil sudah bisa menulis ulang query sendiri) |
+| **Document augmentation / question generation (14), HyPE (8)** | **paling menjanjikan**: LLM saat ingest, query tetap tanpa LLM |
+
+**Uji augmentasi dokumen dengan fakta yang sudah ada** (indeks potongan ditambah teks fakta yang diekstrak dari
+gilirannya; teks yang dikirim tidak berubah; 1.535 soal, keyword):
+
+| Konfigurasi | Konteks | Multi-hop | Overall |
+|---|---|---|---|
+| 10 potongan, indeks biasa | 1,7k | 25,9% | 75,8% |
+| 10 potongan, indeks + fakta | 2,0k | 31,9% | 80,2% |
+| 20 potongan, indeks biasa | 3,3k | 38,3% | 81,2% |
+| 20 potongan, indeks + fakta | 3,9k | 43,6% | 84,6% |
+| 30 fakta + 20 potongan, indeks biasa | 4,7k | 51,4% | 86,4% |
+| 30 fakta + 20 potongan, indeks + fakta | 5,0k | 50,0% | 86,4% |
+
+Kosakata hasil ekstraksi membuat potongan lebih mudah ditemukan (+3–4 poin pada token setara bila konteks hanya
+potongan), tetapi bila fakta sudah ikut dikirim, seeding fakta → potongan sumber sudah memberi efek yang sama.
+Tidak diadopsi. Ini mengisyaratkan bahwa pertanyaan hipotetis per potongan (teknik 14), yang memakai bentuk
+pertanyaan ("Which countries has Deborah visited?"), bisa memberi lebih; perlu LLM saat ingest untuk diuji.
