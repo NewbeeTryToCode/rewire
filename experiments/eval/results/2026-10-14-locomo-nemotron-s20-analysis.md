@@ -257,3 +257,53 @@ Kosakata hasil ekstraksi membuat potongan lebih mudah ditemukan (+3–4 poin pad
 potongan), tetapi bila fakta sudah ikut dikirim, seeding fakta → potongan sumber sudah memberi efek yang sama.
 Tidak diadopsi. Ini mengisyaratkan bahwa pertanyaan hipotetis per potongan (teknik 14), yang memakai bentuk
 pertanyaan ("Which countries has Deborah visited?"), bisa memberi lebih; perlu LLM saat ingest untuk diuji.
+
+## 11. Encoder kontekstual, pertanyaan hipotetis, query decomposition (2026-10-14)
+
+Semua: 1.535 soal LoCoMo, mode `episodes`, persen soal dengan semua bukti di konteks.
+
+**Encoder kontekstual (all-MiniLM-L6-v2, ONNX, dari mirror S3 Chroma).** Hugging Face diblokir proxy; model ini
+satu-satunya encoder kontekstual yang bisa diunduh di sesi ini. Cross-encoder belum bisa diuji (tidak ada mirror
+yang terjangkau).
+
+| Varian | k=10 | k=20 |
+|---|---|---|
+| BM25 (sekarang) | 77,5% / 2,2k tok | 82,9% / 4,2k tok |
+| BM25 + MiniLM (RRF) | 76,5% / 2,1k | 83,5% / 4,0k |
+| MiniLM saja | 65,8% / 2,0k | 76,0% / 3,8k |
+
+Netral, sama seperti WordLlama: BM25 kuat di LoCoMo karena pertanyaan dan bukti sering berbagi nama dan kata benda.
+
+**Pertanyaan hipotetis per potongan (document augmentation / HyPE, teknik 14 dan 8).** Saat ingest, satu
+panggilan LLM per sesi (Claude Haiku via `claude -p`, 272 panggilan) menulis 4 pertanyaan per potongan yang
+jawabannya ada di potongan itu, memakai kata kategori ("countries visited", "desserts", "as a child"). LLM
+tidak melihat soal benchmark. Pertanyaan hanya ditambahkan ke indeks FTS potongan; teks yang dikirim tidak berubah.
+
+| | k=10 | k=15 | k=20 |
+|---|---|---|---|
+| Indeks biasa | 77,5% (multi 32,3, temporal 83,4) | 80,4% (36,9 / 86,2) | 82,9% (44,3 / 88,1) |
+| + pertanyaan hipotetis | **80,6%** (34,8 / 89,1) | **83,1%** (41,8 / 91,6) | **85,0%** (47,2 / 92,5) |
+
+Naik di semua kategori pada token yang sama (single-hop +1–2, temporal +4–6, multi-hop +2,5–5, open-domain
++1–4). Pilot 3 percakapan (383 soal) sempat menunjukkan multi-hop +11 poin; di set penuh +3–5. Ini teknik
+pertama sejak penggabungan potongan yang menaikkan bukti tanpa menambah konteks. Query tetap tanpa LLM; biayanya
+satu panggilan model kecil per sesi saat ingest.
+
+**Query decomposition berbasis aturan.** 40–52 dari 282 soal multi-hop menyebut dua orang ("What have X and Y
+both …"). Query dipecah per orang, hasil diselang-seling: k=10 77,7% (multi-hop 32,3%), k=20 82,9% (44,3%) →
+netral; dengan pertanyaan hipotetis juga netral. Dekomposisi dengan LLM butuh LLM saat query (agen pemanggil
+bisa melakukannya sendiri lewat beberapa panggilan `recall`).
+
+**Ringkasan teknik yang sudah diuji:**
+
+| Teknik | Hasil |
+|---|---|
+| Hybrid BM25 + vektor (WordLlama, MiniLM) | netral |
+| Parent context: unit kecil → jendela induk (1 giliran ± tetangga) | lebih buruk |
+| Parent context: fakta → potongan sumber (mode `full`) | membantu (§8) |
+| Parent context: pertanyaan hipotetis → potongan | **membantu** |
+| Entity graph ringan: jalur entitas / hop entitas | netral / lebih buruk (§8) |
+| Graf relasi + spreading activation (mode `full`) | sudah ada |
+| Query decomposition (aturan) | netral |
+| Diversity per sesi, PRF, pangkas baris | lebih buruk / netral |
+| Belum diuji: cross-encoder (model tidak terjangkau), Personalized PageRank, ringkasan komunitas GraphRAG | – |
