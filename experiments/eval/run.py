@@ -40,7 +40,7 @@ ROOT = os.path.join(HERE, "..", "..")
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, HERE)
 
-from openrouter import BudgetExceeded, Client, JsonProvider, Ledger, model_prices  # noqa: E402
+from openrouter import BudgetExceeded, Client, JsonProvider, Ledger, model_prices, normalize_model  # noqa: E402
 from rewire import ops  # noqa: E402
 from rewire.brain import Brain  # noqa: E402
 from rewire.consolidate import Consolidator  # noqa: E402
@@ -543,6 +543,10 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "answer_model": args.answer_model, "judge_model": args.judge_model,
                "groups": {name: group(g) for name, g in by.items()},
                "llm_spent_this_run": ledger.summary()}
+    answered = [r for r in rows if "response" in r]
+    if answered:  # a reasoning model that runs out of max_tokens returns no text: raise the limit or lower effort
+        summary["empty_answers"] = sum(not r["response"].strip() for r in answered)
+        summary["truncated_answers"] = sum((r["answer_call"].get("finish_reason") == "length") for r in answered)
     abst = [r for r in rows if r["abstention"] and r.get("correct") is not None]
     if abst:
         summary["abstention_accuracy"] = sum(r["correct"] for r in abst) / len(abst)
@@ -578,6 +582,9 @@ def write_report(summary: dict, path: str) -> None:
                      f"{f(g.get('answer_words_mean'))} |")
     if "abstention_accuracy" in summary:
         lines += ["", f"Abstention accuracy: {summary['abstention_accuracy']:.1%}"]
+    if summary.get("empty_answers") or summary.get("truncated_answers"):
+        lines += ["", f"WARNING: {summary['empty_answers']} empty and {summary['truncated_answers']} truncated answers "
+                      "(max_tokens reached): raise --answer-max-tokens or pass --reasoning-effort low."]
     lines += ["", "## LLM usage this run (cached replies cost nothing)", "",
               "| stage | calls | prompt tokens | completion tokens | reasoning tokens | tokens/call in / out | cost USD | latency p50 / p95 ms |",
               "|---|---|---|---|---|---|---|---|"]
@@ -615,9 +622,12 @@ def main():
     ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
-    ap.add_argument("--answer-model", default="openai/gpt-4o-mini")
-    ap.add_argument("--judge-model", default="openai/gpt-4o-mini")
-    ap.add_argument("--ingest-model", default="openai/gpt-4o-mini", help="consolidation model for --mode full")
+    default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
+    ap.add_argument("--answer-model", default=default_model, help="default: $OPENROUTER_MODEL or openai/gpt-4o-mini")
+    ap.add_argument("--judge-model", default=default_model)
+    ap.add_argument("--ingest-model", default=default_model, help="consolidation model for --mode full")
+    ap.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
+                    help="for reasoning models (e.g. Nemotron 3): keeps thinking from using up max_tokens")
     ap.add_argument("--answer-max-tokens", type=int, default=1500)
     ap.add_argument("--judge-max-tokens", type=int, default=200)
     ap.add_argument("--parallel", type=int, default=8)
@@ -635,7 +645,9 @@ def main():
     if args.mode == "full" and no_llm:
         sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
     ledger = Ledger(args.max_cost)
-    client = None if no_llm else Client(ledger)
+    client = None if no_llm else Client(ledger, reasoning_effort=args.reasoning_effort)
+    args.answer_model, args.judge_model, args.ingest_model = (
+        normalize_model(m) for m in (args.answer_model, args.judge_model, args.ingest_model))
     provider = JsonProvider(client, args.ingest_model) if client else None
     bench = BENCH[args.bench]
     os.makedirs(args.out, exist_ok=True)
@@ -653,8 +665,8 @@ def main():
             return row
         a = ask(client, cache, "answer", args.answer_model, prep["prompt"], args.answer_max_tokens)
         row["response"] = bench["answer"](a["text"])
-        row["answer_call"] = {k: a[k] for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cost",
-                                                "latency_ms", "cached")}
+        row["answer_call"] = {k: a.get(k) for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cost",
+                                                    "latency_ms", "cached", "finish_reason")}
         judge = lambda prompt: ask(client, cache, "judge", args.judge_model, prompt, args.judge_max_tokens)  # noqa: E731
         row["correct"], calls = bench["judge"](it, row["response"], judge)  # score in [0, 1]
         if calls:  # several calls for rubric judges (BEAM); none for multiple choice (PersonaMem)
