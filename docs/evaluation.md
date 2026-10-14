@@ -190,7 +190,9 @@ LongMemEval membawa ≈11–22k token konteks per soal.
 
 **Model untuk run pertama (keputusan 2026-10-14):** `nvidia/nemotron-3-ultra-550b-a55b:free` untuk penjawab
 dan judge. Bila skornya jauh di bawah batas atas retrieval (§8), atau banyak jawaban kosong / terpotong, coba
-`thinkingmachines/inkling:free` pada soal yang sama (seed sama; cache menyimpan balasan per model). Keduanya
+`thinkingmachines/inkling:free` pada soal yang sama (seed sama; cache menyimpan balasan per model).
+**Catatan 2026-10-14:** `inkling:free` membalas 403 untuk panggilan API langsung (hanya untuk "agentic harness"
+terdaftar); pakai `thinkingmachines/inkling` (berbayar) atau model gratis lain. Keduanya
 ada di katalog OpenRouter (gratis, konteks ±1M token) dan keduanya model *reasoning*: pakai
 `--reasoning-effort low`, karena proses berpikir ikut memakai `max_tokens` dan jawaban bisa kosong
 (report memberi peringatan bila itu terjadi). Penjawab dan judge yang sama cenderung menilai dirinya sendiri
