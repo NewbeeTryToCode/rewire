@@ -328,3 +328,30 @@ di indeks (§11); "full" = fakta + potongan sumber (§8).
 
 Q menambah +0,6–0,8 poin overall dan +2–3 poin multi-hop di atas mode `full`; tanpa fakta, Q menambah +2–3
 poin overall. Kedua teknik memakai LLM hanya saat ingest.
+
+## 13. Latency dan lama proses (2026-10-14)
+
+**Query (recall), seluruh 1.540 soal LoCoMo, CPU 4 core, keyword:**
+
+| Kombinasi | Python (dalam proses) p50 / p95 / p99 | Rust CLI (proses baru per query) p50 / p95 |
+|---|---|---|
+| episodes, 10 potongan (sekarang) | 0,6 / 0,9 / 1,2 ms | – |
+| episodes + Q, 20 potongan | 1,4 / 2,3 / 2,8 ms | – |
+| full 30 + 20 | 6,0 / 9,4 / 11,7 ms | 14 / 20 ms (conv-26) |
+| full + Q 30 + 20 | 6,8 / 11,7 / 13,8 ms | – |
+| full + Q 100 + 20 | 13,5 / 21,4 / 24,6 ms | 19 / 26 ms (100 + 20, tanpa Q) |
+| full + Q 30 + 20, semantic WordLlama | 7,2 / 10,9 / 13,2 ms | – |
+
+Q hampir tidak menambah latency (hanya teks FTS yang lebih panjang). Angka Rust sudah termasuk startup proses.
+
+**Ingest (sekali per sesi, di latar belakang setelah sesi selesai, tidak di jalur jawaban):**
+
+| Langkah | Waktu per sesi | LoCoMo (272 sesi) |
+|---|---|---|
+| Ekstraksi fakta (`claude -p`, dari timestamp commit brain lama) | 23–26 s | ≈1,8 jam berurutan, ≈30 menit dengan 4 paralel |
+| Pertanyaan hipotetis (`claude -p --model haiku`, 4–6 potongan per sesi) | ≈11 s | ≈50 menit berurutan, ≈12 menit dengan 4 paralel |
+| Indeks (FTS, tanpa LLM) | milidetik | detik |
+
+Angka `claude -p` sudah termasuk startup CLI (beberapa detik); lewat API langsung (OpenRouter) lebih cepat.
+Bila pertanyaan dibuat dalam panggilan ekstraksi fakta yang sama, tidak ada panggilan tambahan, hanya token
+keluaran lebih banyak.
