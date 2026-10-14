@@ -131,6 +131,19 @@ Sumber: [paper Mem0](https://arxiv.org/pdf/2504.19413) ·
 [ZenBrain (catatan soal angka vendor)](https://arxiv.org/pdf/2604.23878) ·
 [User as Code (reimplementasi Mem0 29,3%)](https://arxiv.org/pdf/2606.16707).
 
+### Model penjawab dan judge yang dipakai pembanding (dicek dari kode evaluasi mereka, 2026-10-14)
+
+| Angka | Penjawab | Judge | Sumber |
+|---|---|---|---|
+| Paper Mem0 2025 (LoCoMo: Mem0 ≈66,9%, Mem0ᵍ ≈68,4%, Zep ≈66,0%, full-context ≈72,9%) | `gpt-4o-mini` (env `MODEL`, default README) | `gpt-4o-mini` (tertanam di `metrics/llm_judge.py`) | repo `mem0ai/mem0`, folder `evaluation/` (commit `d85fcda`) |
+| Mem0 platform 2026 (LoCoMo 92,5%, LongMemEval 94,4%) | `gpt-5` | `gpt-5` | repo `mem0ai/memory-benchmarks`, `results/platform/*.json` (default runner: `gpt-4o` / `gpt-4o`) |
+| Zep LoCoMo 75,14% (sanggahan Zep) | `gpt-4o-mini` | `gpt-4o-mini`, prompt grader milik Zep | repo `getzep/zep-papers`, `locomo_eval/` |
+| Zep LongMemEval (paper 2025) | `gpt-4o-mini`, dan `gpt-4o` untuk angka 71,2% | kode: `gpt-4o-mini`, prompt grader milik Zep, bukan prompt resmi LongMemEval | `zep-papers`, `zep_longmem_eval.ipynb` ("models default to gpt-4o-mini") |
+
+Konsekuensinya: untuk dibandingkan dengan paper Mem0 dan angka LoCoMo Zep, pakai `gpt-4o-mini` sebagai
+penjawab **dan** judge. Angka Mem0 2026 memakai GPT-5 untuk keduanya, jadi tidak sebanding dengan run yang
+memakai model lebih kecil.
+
 ### Perbandingan head-to-head (apples-to-apples)
 
 Satu-satunya cara membandingkan secara adil adalah menjalankan Mem0, Zep (Graphiti, open source) dan rewire
