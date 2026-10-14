@@ -136,6 +136,16 @@ pub fn session_scope(part: &str, previous: &str) -> String {
     }
 }
 
+/// (turn, question) lines of one consolidation run's "## Questions" section.
+pub fn session_questions(part: &str) -> Vec<(i64, String)> {
+    static S: OnceLock<Regex> = OnceLock::new();
+    static Q: OnceLock<Regex> = OnceLock::new();
+    let section = S.get_or_init(|| Regex::new(r"(?s)\n## Questions\n(.*?)(?:\n## |\z)").unwrap());
+    let line = Q.get_or_init(|| Regex::new(r"(?m)^- \[(\d+)\] (.+)$").unwrap());
+    let Some(m) = section.captures(part) else { return Vec::new() };
+    line.captures_iter(&m[1]).filter_map(|c| Some((c[1].parse().ok()?, c[2].trim().to_string()))).collect()
+}
+
 /// "Summary: …" row text of one consolidation run in a session file ("" if none).
 pub fn session_summary(part: &str) -> String {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -727,6 +737,7 @@ impl Index {
                 }
                 let Some((_, transcript)) = part.split_once("\n## Transcript\n") else { continue };
                 let lines: Vec<&str> = transcript.lines().filter(|l| l.starts_with('[')).collect();
+                let questions = session_questions(part);
                 let n = lines.len();
                 let mut start = 0;
                 while start < n.saturating_sub(2).max(1) {
@@ -735,12 +746,15 @@ impl Index {
                     if !chunk.is_empty() {
                         let turns: Vec<i64> =
                             part_lines.iter().filter_map(|l| turn_re().captures(l).and_then(|c| c[1].parse().ok())).collect();
-                        db.execute(
-                            "INSERT INTO episodes VALUES (?,?,?,?,?,?)",
-                            params![path, date, chunk, turns.iter().min().copied().unwrap_or(0), turns.iter().max().copied().unwrap_or(0), scope],
-                        )?;
+                        let (first, last) = (turns.iter().min().copied().unwrap_or(0), turns.iter().max().copied().unwrap_or(0));
+                        db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)", params![path, date, chunk, first, last, scope])?;
                         let rid = db.last_insert_rowid();
-                        db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, chunk])?;
+                        // the chunk's hypothetical questions make it findable by them; the excerpt is unchanged
+                        let indexed = std::iter::once(chunk.as_str())
+                            .chain(questions.iter().filter(|(n, _)| (first..=last).contains(n)).map(|(_, q)| q.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, indexed])?;
                     }
                     start += EP_STEP;
                 }

@@ -541,6 +541,27 @@ fn transcript_kept_redacted_searchable_and_profile_filtered() {
 }
 
 #[test]
+fn hypothetical_questions_find_the_excerpt_without_being_shown() {
+    let mut c = Case::new();
+    c.brain.config.transcripts = "all".into();
+    let key = "sk-ant-abcdefghijklmnopqrstuvwxyz0123";
+    let mut out = extraction(vec![], vec![]);
+    out["questions"] = json!([
+        {"turn": 2, "question": "Which weekdays are   off-limits for releases?"},
+        {"turn": 3, "question": format!("Which token is {key}?")},
+        {"turn": 99, "question": "Unknown turn?"}, {"turn": true, "question": "Not a turn?"}]);
+    run_fixture(&c.brain, Fake::new(vec![out]));
+    let day = c.brain.path(&["sessions", "2026-10-01"]);
+    let content = read(&std::fs::read_dir(&day).unwrap().next().unwrap().unwrap().path());
+    assert!(content.contains(
+        "## Questions\n\n- [2] Which weekdays are off-limits for releases?\n- [3] Which token is [redacted]?\n\n## Transcript"));
+    assert!(!content.contains("Unknown turn") && !content.contains("Not a turn"));
+    let mut index = Index::new(&c.brain);
+    let hits = index.search_episodes("weekdays off-limits", 3, &[], None, None).unwrap();
+    assert!(hits[0].text.contains("Fridays") && !hits[0].text.contains("weekdays"));
+}
+
+#[test]
 fn gate_rules() {
     let base = m(json!({"confidence": "explicit", "provenance": "user", "type": "fact", "flags": []}));
     let with = |k: &str, v: Value| {
