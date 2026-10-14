@@ -75,3 +75,18 @@ Sumber: [Hindsight (arXiv 2512.12818)](https://arxiv.org/html/2512.12818v1) ·
 [PRISM issue #94: second-hop retrieval](https://github.com/dwamianm/prism/issues/94) ·
 [QueryLink (ACL Findings 2026)](https://aclanthology.org/2026.findings-acl.765.pdf) ·
 [LoCoMo overview](https://www.emergentmind.com/topics/locomo).
+
+## 6. Ablasi pada seluruh 1.540 soal (tanpa LLM, 2026-10-14)
+
+Persen soal dengan semua bukti di konteks (mode `episodes`, k=30):
+
+| Konfigurasi | single | temporal | multi-hop | open | **overall** | konteks |
+|---|---|---|---|---|---|---|
+| keyword, 10 potongan | 94,5 | 83,4 | 32,3 | 40,2 | **77,5** | 2,5k |
+| keyword, 20 potongan | 97,5 | 88,1 | 44,3 | 50,0 | **82,9** | 4,9k |
+| semantic, 10 potongan | 92,6 | 80,9 | 28,4 | 40,2 | **75,2** | 2,4k |
+| semantic, 20 potongan | 97,1 | 90,0 | 42,6 | 47,8 | **82,7** | 4,6k |
+
+Pada sampel penuh, semantic (WordLlama) **tidak** membantu LoCoMo (sama dengan temuan iterasi 6); kenaikan di
+sampel 80 soal tadi adalah noise. 20 potongan memberi +5,4 poin overall dan +12 poin multi-hop, tapi multi-hop
+tetap di 44%: menambah jumlah saja tidak cukup, perlu perubahan cara mencari (entitas, unit lebih kecil).
