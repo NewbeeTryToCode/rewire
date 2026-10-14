@@ -68,6 +68,15 @@ def _session_scope(part: str, previous: str = "global") -> str:
     return f"project:{m.group(1)}" if m.group(1) != "-" else "global"
 
 
+_QUESTION = re.compile(r"(?m)^- \[(\d+)\] (.+)$")
+
+
+def _questions(part: str) -> list[tuple[int, str]]:
+    """(turn, question) lines of one consolidation run's '## Questions' section."""
+    m = re.search(r"\n## Questions\n(.*?)(?:\n## |\Z)", part, re.S)
+    return [(int(n), q.strip()) for n, q in _QUESTION.findall(m.group(1))] if m else []
+
+
 def _summary(part: str) -> str:
     """'Summary: …' row text of one consolidation run in a session file ('' if none)."""
     m = re.search(r"\n## Summary\n(.*?)(?:\n## |\Z)", part, re.S)
@@ -261,14 +270,19 @@ class Index:
                 if "\n## Transcript\n" not in part:
                     continue
                 lines = [l for l in part.split("\n## Transcript\n", 1)[1].splitlines() if l.startswith("[")]
+                questions = _questions(part)
                 for start in range(0, max(len(lines) - 2, 1), self.EP_STEP):
                     part_lines = lines[start:start + self.EP_WINDOW]
                     chunk = "\n".join(part_lines)
                     if chunk:
                         turns = [int(m.group(1)) for m in map(_TURN.match, part_lines) if m]
+                        first, last = min(turns, default=0), max(turns, default=0)
                         cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)",
-                                         (path, date, chunk, min(turns, default=0), max(turns, default=0), scope))
-                        db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, chunk))
+                                         (path, date, chunk, first, last, scope))
+                        # the chunk's hypothetical questions make it findable by them; the excerpt is unchanged
+                        asked = [q for n, q in questions if first <= n <= last]
+                        db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)",
+                                   (cur.lastrowid, "\n".join([chunk] + asked)))
             db.execute("INSERT OR REPLACE INTO epfiles VALUES (?,?,?)", (path, mtime, size))
         return changed
 
