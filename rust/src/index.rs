@@ -214,6 +214,9 @@ fn mtime_ns(md: &fs::Metadata) -> i64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(0)
 }
 
+/// Excerpt rowid with its first and last turn.
+type TurnSpan = (i64, Option<i64>, Option<i64>);
+
 /// Episode row: path, date, text, first turn, last turn.
 type EpRow = (String, String, String, i64, i64);
 
@@ -1176,18 +1179,28 @@ impl Index {
             }
         }
         let sep = std::path::MAIN_SEPARATOR;
+        let seed_weight = self.seed_weight;
+        let db = self.db()?;
+        let mut st = db.prepare("SELECT rowid, first, last FROM episodes WHERE path LIKE ?")?;
+        // excerpts per session file, read once: seeds often share a session, and LIKE scans the table
+        let mut by_name: HashMap<String, Vec<TurnSpan>> = HashMap::new();
         for h in seeds {
             let Some(meta) = metas.get(&h.id) else { continue };
             let Some((harness, session, turn)) = nodefmt::parse_source(meta.get("source")) else { continue };
             let name = format!("{harness}-{}.md", slugify(&session, 40));
-            let bonus = self.seed_weight * h.score / top;
-            let db = self.db()?;
-            let mut st = db.prepare("SELECT rowid FROM episodes WHERE path LIKE ? AND first <= ? AND last >= ?")?;
-            let rids = st
-                .query_map(params![format!("%{sep}{name}"), turn, turn], |r| r.get::<_, i64>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for rid in rids {
-                *out.entry(rid).or_insert(0.0) += bonus;
+            let bonus = seed_weight * h.score / top;
+            if !by_name.contains_key(&name) {
+                let rows = st
+                    .query_map(params![format!("%{sep}{name}")], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                by_name.insert(name.clone(), rows);
+            }
+            for &(rid, first, last) in &by_name[&name] {
+                if first.is_some_and(|f| f <= turn) && last.is_some_and(|l| l >= turn) {  // NULL never matches, as in SQL
+                    *out.entry(rid).or_insert(0.0) += bonus;
+                }
             }
         }
         Ok(out)
