@@ -17,7 +17,26 @@ import time
 import urllib.error
 import urllib.request
 
-BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+def normalize_base_url(url: str) -> str:
+    """Accept "openrouter.ai", "https://openrouter.ai" or the full API root; return the API root."""
+    url = (url or "https://openrouter.ai/api/v1").strip().rstrip("/")
+    if "://" not in url:
+        url = "https://" + url
+    if url.split("://", 1)[1].split("/", 1)[0] == "openrouter.ai" and not url.endswith("/api/v1"):
+        url = "https://openrouter.ai/api/v1"
+    return url
+
+
+def normalize_model(model: str) -> str:
+    """Accept a model page URL ("openrouter.ai/nvidia/x:free") as well as the model id ("nvidia/x:free")."""
+    model = model.strip()
+    for prefix in ("https://", "http://", "openrouter.ai/", "www.openrouter.ai/"):
+        if model.startswith(prefix):
+            model = model[len(prefix):]
+    return model.removeprefix("openrouter.ai/")
+
+
+BASE_URL = normalize_base_url(os.environ.get("OPENROUTER_BASE_URL", ""))
 
 
 class BudgetExceeded(RuntimeError):
@@ -67,20 +86,25 @@ class Ledger:
 
 
 class Client:
-    def __init__(self, ledger: Ledger, api_key: str | None = None, base_url: str = BASE_URL, timeout: int = 300):
+    def __init__(self, ledger: Ledger, api_key: str | None = None, base_url: str = BASE_URL, timeout: int = 600,
+                 reasoning_effort: str | None = None):
         self.ledger = ledger
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.base_url = base_url
         self.timeout = timeout
+        self.reasoning_effort = reasoning_effort  # reasoning models: "low" keeps thinking from eating max_tokens
 
     def chat(self, model: str, messages: list[dict], stage: str, max_tokens: int = 2000,
-             temperature: float = 0.0, attempts: int = 6) -> dict:
+             temperature: float = 0.0, attempts: int = 8) -> dict:
         """One chat completion -> the ledger record plus "text". Retries 429/5xx/network errors."""
         if not self.api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not set")
         self.ledger.check_budget()
+        model = normalize_model(model)
         body = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature,
                 "usage": {"include": True}}  # OpenRouter: return the exact cost of the call
+        if self.reasoning_effort:
+            body["reasoning"] = {"effort": self.reasoning_effort}
         data = json.dumps(body).encode()
         err = ""
         for attempt in range(attempts):
@@ -94,22 +118,28 @@ class Client:
                 latency = int((time.time() - start) * 1000)
                 if out.get("error"):
                     raise RuntimeError(str(out["error"])[:300])
-                text = out["choices"][0]["message"].get("content") or ""
+                choice = out["choices"][0]
+                text = choice["message"].get("content") or ""
                 usage = out.get("usage") or {}
                 details = usage.get("completion_tokens_details") or {}
                 call = {"stage": stage, "model": model, "prompt_tokens": usage.get("prompt_tokens") or 0,
                         "completion_tokens": usage.get("completion_tokens") or 0,
                         "reasoning_tokens": details.get("reasoning_tokens") or 0,
-                        "cost": usage.get("cost") or 0.0, "latency_ms": latency}
+                        "cost": usage.get("cost") or 0.0, "latency_ms": latency,
+                        "finish_reason": choice.get("finish_reason") or ""}  # "length" + empty text: raise max_tokens
                 self.ledger.add(call)
                 return {**call, "text": text}
             except urllib.error.HTTPError as exc:
                 err = f"HTTP {exc.code}: {exc.read()[:300]!r}"
                 if exc.code not in (408, 409, 429) and exc.code < 500:
                     raise RuntimeError(err) from exc  # bad request / auth: retrying will not help
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                if exc.code == 429 and retry_after and retry_after.isdigit():  # free models: strict rate limits
+                    time.sleep(min(int(retry_after), 300))
+                    continue
             except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
                 err = str(exc)[:300]
-            time.sleep(min(2 ** attempt + random.random(), 60))
+            time.sleep(min(2 ** attempt + random.random(), 120))
         raise RuntimeError(f"{model}: failed after {attempts} attempts: {err}")
 
 
