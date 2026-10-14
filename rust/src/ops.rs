@@ -52,7 +52,7 @@ pub fn recall(
         Some(s) => Some(vec![s.to_string()]),
         None => Some(project::scopes_for(project::detect(cwd, &brain.config.projects).as_deref())),
     };
-    let mut hits = index.search(query, &SearchOpts { scopes, k, beta, window: window.clone(), ..Default::default() })?;
+    let mut hits = index.search(query, &SearchOpts { scopes: scopes.clone(), k, beta, window: window.clone(), ..Default::default() })?;
     for hit in hits.iter_mut() {
         // re-scanned when shown: files can be edited by hand or arrive by sync
         let why = security::blocked(&format!("{} {}", hit.title, hit.snippet));
@@ -63,7 +63,15 @@ pub fn recall(
     }
     if episodes > 0 {
         // raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
-        let eps = index.search_episodes(query, episodes, &hits, window.as_ref())?;
+        let mut eps = index.search_episodes(query, episodes, &hits, window.as_ref(), scopes.as_deref())?;
+        for ep in eps.iter_mut() {
+            // excerpts are re-scanned too: sessions/ arrive by sync and quote untrusted pages
+            let why = security::blocked(&format!("{} {}", ep.text, ep.summary.as_deref().unwrap_or("")));
+            if !why.is_empty() {
+                ep.text = format!("[BLOCKED: {why}; excerpt of {} withheld]", ep.session);
+                ep.summary = None;
+            }
+        }
         hits.extend(eps);
     }
     Ok(hits)

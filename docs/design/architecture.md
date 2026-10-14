@@ -43,9 +43,10 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
   the excerpt they were extracted from, the top excerpt carries its session's summary; `refers_to` boosts a
   period the model resolved) and `get` for full notes or `skill:<name>`. Using a note appends an event,
   which raises its activation.
-- **Safety at load time**: all injected text is fenced (`<rewire-memory>`), notes are re-scanned when shown
-  (`[BLOCKED]` instead of a secret or an injection), and session start says when memory is unavailable
-  (no brain, failed clone, skipped sync) instead of injecting nothing.
+- **Safety at load time**: all injected text is fenced (`<rewire-memory>`), notes and transcript excerpts are
+  re-scanned when shown (`[BLOCKED]` instead of a secret or an injection), excerpts follow the same project
+  scope as notes, and session start says when memory is unavailable (no brain, failed clone, skipped sync)
+  instead of injecting nothing. Transcripts are secret-redacted before they reach the LLM or `sessions/`.
 
 ## Token cost profile
 

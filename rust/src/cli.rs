@@ -169,6 +169,15 @@ fn fail(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
+/// Writer lock for commands that change files and commit (`git add -A`): without it a background
+/// consolidation could sweep their half-done changes into its own commit.
+fn writing(brain: &Brain) -> crate::brain::LockGuard {
+    match brain.lock(Duration::from_secs(120)) {
+        Ok(g) => g,
+        Err(e) => fail(format!("{e}; try again in a moment")),
+    }
+}
+
 fn open_brain(path: &Option<PathBuf>) -> Brain {
     let brain = Brain::open(path.as_deref());
     if !brain.exists() {
@@ -280,6 +289,7 @@ pub fn run(cli: Cli) -> Result<()> {
                     ] {
                         change.insert(k.into(), v);
                     }
+                    let _g = writing(&brain);
                     let node = ops::apply_change(&brain, &change, None)?;
                     ops::write_home(&brain, &mut Index::new(&brain))?;
                     brain.commit(&format!("remember {}", node.id()));
@@ -379,6 +389,7 @@ pub fn run(cli: Cli) -> Result<()> {
             if ids.is_empty() {
                 fail("give inbox ids, or `all`");
             }
+            let _g = writing(&brain);
             let ids: Vec<String> = if ids == ["all"] {
                 brain.iter_inbox().iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
             } else {
@@ -420,6 +431,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Upgrade => {
             let brain = open_brain(bp);
             let mut count = 0;
+            let _g = writing(&brain);
             for node in brain.iter_nodes() {
                 brain.write_node(&node.meta, &node.body, Some(&node.path))?;
                 count += 1;
@@ -430,15 +442,26 @@ pub fn run(cli: Cli) -> Result<()> {
             brain.commit("upgrade node format");
             println!("rewrote {count} nodes in the current format");
         }
-        Cmd::Undo { session } => match ops::undo(&open_brain(bp), &session) {
-            Ok(sha) => println!("reverted {sha}"),
-            Err(e) => fail(e),
-        },
+        Cmd::Undo { session } => {
+            let brain = open_brain(bp);
+            let undone = {
+                let _g = writing(&brain);
+                ops::undo(&brain, &session)
+            };
+            match undone {
+                Ok(sha) => println!("reverted {sha}"),
+                Err(e) => fail(e),
+            }
+        }
         Cmd::Remote { action, url } => {
             let mut brain = open_brain(bp);
             if action == "set" {
                 let Some(url) = url else { fail("usage: rewire remote set <git-url>") };
-                println!("{}", sync::set_remote(&mut brain, &url)?.join("\n"));
+                let notes = {
+                    let _g = writing(&brain);
+                    sync::set_remote(&mut brain, &url)?
+                };
+                println!("{}", notes.join("\n"));
             } else {
                 let url = sync::remote_url(&brain);
                 println!(

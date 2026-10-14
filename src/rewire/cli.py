@@ -1,6 +1,7 @@
 """rewire command line."""
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -16,6 +17,17 @@ def _brain(args) -> Brain:
     if not brain.exists:
         sys.exit(f"no brain at {brain.root} — run `rewire init` (or set REWIRE_BRAIN)")
     return brain
+
+
+@contextlib.contextmanager
+def _writing(brain: Brain):
+    """Writer lock for commands that change files and commit (`git add -A`): without it a background
+    consolidation could sweep their half-done changes into its own commit."""
+    try:
+        with brain.lock(timeout=120):
+            yield
+    except Locked as exc:
+        sys.exit(f"{exc}; try again in a moment")
 
 
 def _print(data, as_json: bool):
@@ -90,11 +102,12 @@ def cmd_remember(args):
         if args.apply:
             if not sys.stdin.isatty():
                 sys.exit("--apply is only allowed from an interactive terminal (agents use the review queue)")
-            node = ops.apply_change(brain, {"action": "NEW", "type": args.type, "text": text, "scope": args.scope,
-                                            "importance": args.importance, "confidence": "explicit",
-                                            "provenance": provenance})
-            ops.write_home(brain, Index(brain))
-            brain.commit(f"remember {node.id}")
+            with _writing(brain):
+                node = ops.apply_change(brain, {"action": "NEW", "type": args.type, "text": text, "scope": args.scope,
+                                                "importance": args.importance, "confidence": "explicit",
+                                                "provenance": provenance})
+                ops.write_home(brain, Index(brain))
+                brain.commit(f"remember {node.id}")
             print(f"saved [{node.id[-8:].lower()}] {node.meta['title']}")
         else:
             inbox_id = ops.remember(brain, text, type_=args.type, scope=args.scope, provenance=provenance,
@@ -154,18 +167,19 @@ def cmd_review(args):
         return
     if not args.ids:
         sys.exit("give inbox ids, or `all`")
-    ids = [i.meta["inbox_id"] for i in brain.iter_inbox()] if args.ids == ["all"] else args.ids
-    for inbox_id in ids:
-        try:
-            if args.action == "approve":
-                print(f"approved {inbox_id} → {ops.approve(brain, inbox_id, force=args.force)}")
-            else:
-                ops.reject(brain, inbox_id)
-                print(f"rejected {inbox_id}")
-        except ops.OpError as exc:
-            print(f"! {exc}", file=sys.stderr)
-    ops.write_home(brain, Index(brain))
-    brain.commit(f"review {args.action} {len(ids)} item(s)")
+    with _writing(brain):
+        ids = [i.meta["inbox_id"] for i in brain.iter_inbox()] if args.ids == ["all"] else args.ids
+        for inbox_id in ids:
+            try:
+                if args.action == "approve":
+                    print(f"approved {inbox_id} → {ops.approve(brain, inbox_id, force=args.force)}")
+                else:
+                    ops.reject(brain, inbox_id)
+                    print(f"rejected {inbox_id}")
+            except ops.OpError as exc:
+                print(f"! {exc}", file=sys.stderr)
+        ops.write_home(brain, Index(brain))
+        brain.commit(f"review {args.action} {len(ids)} item(s)")
 
 
 def cmd_rebuild(args):
@@ -175,12 +189,13 @@ def cmd_rebuild(args):
 def cmd_upgrade(args):
     brain = _brain(args)
     count = 0
-    for node in brain.iter_nodes():
-        brain.write_node(node.meta, node.body, path=node.path)
-        count += 1
-    Index(brain).refresh()
-    ops.write_home(brain, Index(brain))
-    brain.commit("upgrade node format")
+    with _writing(brain):
+        for node in brain.iter_nodes():
+            brain.write_node(node.meta, node.body, path=node.path)
+            count += 1
+        Index(brain).refresh()
+        ops.write_home(brain, Index(brain))
+        brain.commit("upgrade node format")
     print(f"rewrote {count} nodes in the current format")
 
 
@@ -189,8 +204,11 @@ def cmd_doctor(args):
 
 
 def cmd_undo(args):
+    brain = _brain(args)
     try:
-        print(f"reverted {ops.undo(_brain(args), args.session)}")
+        with _writing(brain):
+            sha = ops.undo(brain, args.session)
+        print(f"reverted {sha}")
     except ops.OpError as exc:
         sys.exit(str(exc))
 
@@ -200,7 +218,9 @@ def cmd_remote(args):
     if args.action == "set":
         if not args.url:
             sys.exit("usage: rewire remote set <git-url>")
-        print("\n".join(sync_mod.set_remote(brain, args.url)))
+        with _writing(brain):
+            notes = sync_mod.set_remote(brain, args.url)
+        print("\n".join(notes))
     else:
         url = sync_mod.remote_url(brain)
         print(f"origin: {url or '(none)'}; auto sync: {'on' if brain.config.sync_auto else 'off'}; "

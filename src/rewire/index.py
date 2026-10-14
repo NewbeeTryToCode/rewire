@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from . import activation, nodefmt, semantic, text
 from .util import parse_iso
 
-SCHEMA = "8"
+SCHEMA = "9"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -40,7 +40,7 @@ CREATE TABLE uses(node TEXT, key TEXT, t TEXT, w REAL, PRIMARY KEY(node, key));
 CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, title, body, keywords,
                                   tokenize='unicode61 remove_diacritics 2');
 CREATE TABLE epfiles(path TEXT PRIMARY KEY, mtime_ns INT, size INT);
-CREATE TABLE episodes(path TEXT, date TEXT, text TEXT, first INT, last INT);  -- turn range
+CREATE TABLE episodes(path TEXT, date TEXT, text TEXT, first INT, last INT, scope TEXT);  -- turn range; scope of the session
 CREATE INDEX episodes_path ON episodes(path);
 CREATE VIRTUAL TABLE fts_ep USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 CREATE TABLE vec(id TEXT PRIMARY KEY, v BLOB);
@@ -57,6 +57,15 @@ class _Stale(Exception):
 
 
 SUMMARY_CHARS = 600
+
+
+def _session_scope(part: str, previous: str = "global") -> str:
+    """Scope of the session one consolidation run belongs to ('global' when it had no project). A part
+    without the header (a `---` rule inside a summary splits a run) keeps the scope of the part before it."""
+    m = re.search(r"(?m)^- project: (.+?)[ \t]*$", part)
+    if not m:
+        return previous
+    return f"project:{m.group(1)}" if m.group(1) != "-" else "global"
 
 
 def _summary(part: str) -> str:
@@ -240,12 +249,14 @@ class Index:
             changed = True
             with open(path, encoding="utf-8") as fh:
                 content = fh.read()
+            scope = "global"
             for part in content.split("\n---\n"):  # one file may hold several consolidation runs
                 m = re.search(r"(?m)^- date: (\S+)", part)
                 date = m.group(1) if m else os.path.basename(os.path.dirname(path))
+                scope = _session_scope(part, scope)
                 summary = _summary(part)
                 if summary:  # the session's goal and outcome, searchable like an excerpt (first = last = 0)
-                    cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?)", (path, date, summary, 0, 0))
+                    cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)", (path, date, summary, 0, 0, scope))
                     db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, summary))
                 if "\n## Transcript\n" not in part:
                     continue
@@ -255,8 +266,8 @@ class Index:
                     chunk = "\n".join(part_lines)
                     if chunk:
                         turns = [int(m.group(1)) for m in map(_TURN.match, part_lines) if m]
-                        cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?)",
-                                         (path, date, chunk, min(turns, default=0), max(turns, default=0)))
+                        cur = db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)",
+                                         (path, date, chunk, min(turns, default=0), max(turns, default=0), scope))
                         db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", (cur.lastrowid, chunk))
             db.execute("INSERT OR REPLACE INTO epfiles VALUES (?,?,?)", (path, mtime, size))
         return changed
@@ -290,32 +301,36 @@ class Index:
         db.execute("DELETE FROM epfiles WHERE path=?", (path,))
 
     def search_episodes(self, query: str, k: int = 5, seeds: list[dict] | None = None,
-                        window: tuple[str, str] | None = None) -> list[dict]:
+                        window: tuple[str, str] | None = None, scopes: list[str] | None = None) -> list[dict]:
         """Raw transcript excerpts (episodic memory), hybrid-ranked like memories.
+
+        `scopes` limits excerpts to sessions of those scopes, as for memories (None: every session).
 
         `seeds` are memory hits for the same query: the excerpt each one was extracted from
         (its source session and turn) is boosted, so a well-matched fact brings its context.
         """
         limit = max(k * 4, 20)
         match = text.match_expression(query)
+        cond = f" AND e.scope IN ({','.join('?' * len(scopes))})" if scopes else ""
         fts = []
         if match:
             fts = [r[0] for r in self.db.execute(  # ties broken by file and turn: identical in every implementation
-                "SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ? "
-                "ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?", (match, limit))]
+                "SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ?"
+                f"{cond} ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?", (match, *(scopes or []), limit))]
         sem = []
         if semantic.available():
             if self._epmat is None:
                 import numpy as np
 
-                rows = self.db.execute("SELECT rid, v FROM epvec").fetchall()
-                self._epmat = ([r["rid"] for r in rows],
+                rows = self.db.execute(
+                    "SELECT rid, v, e.scope FROM epvec JOIN episodes e ON e.rowid = epvec.rid ORDER BY rid").fetchall()
+                self._epmat = ([r["rid"] for r in rows], [r["scope"] for r in rows],
                                np.frombuffer(b"".join(r["v"] for r in rows), dtype=np.float32).reshape(len(rows), -1)
                                if rows else None)
-            rids, mat = self._epmat
+            rids, ep_scopes, mat = self._epmat
             if mat is not None:
                 sims = mat @ semantic.embed([query])[0]
-                sem = [rids[i] for i in sims.argsort()[::-1][:limit]]
+                sem = [rids[i] for i in sims.argsort()[::-1] if not scopes or ep_scopes[i] in scopes][:limit]
         fused: dict[int, float] = {}
         for ranks in (fts, sem):
             for rank, rid in enumerate(ranks):
@@ -325,8 +340,9 @@ class Index:
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
         window = window or text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
-            f"SELECT rowid AS rid, path, date, text, first, last FROM episodes WHERE rowid IN ({','.join('?' * len(fused))})",
-            list(fused))} if fused else {}
+            f"SELECT rowid AS rid, path, date, text, first, last FROM episodes e WHERE rowid IN ({','.join('?' * len(fused))})"
+            f"{cond}", list(fused) + (scopes or []))} if fused else {}
+        fused = {rid: score for rid, score in fused.items() if rid in rows}  # seeds may point out of scope
         if window:
             for rid, r in rows.items():
                 if window[0] <= (r["date"] or "")[:10] <= window[1]:
