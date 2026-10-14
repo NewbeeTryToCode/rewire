@@ -35,11 +35,29 @@ Mode ingest:
 | **Abstention** (LongMemEval) | Persen soal tak-terjawab yang dikenali sebagai tak-terjawab | ya | run.py |
 | **Evidence turn recall** | Persen giliran bukti yang muncul di konteks hasil recall | tidak | run.py, `--retrieval-only` |
 | **All evidence** | Persen soal yang **semua** buktinya ada di konteks | tidak | run.py |
+| **MRR** | 1 / peringkat potongan pertama yang memuat bukti (0 bila tidak ada), dirata-rata: bukti ada di urutan atas atau terkubur | tidak | run.py |
+| **Context precision** | Persen potongan terambil yang memuat bukti; sisanya *noise* yang mencemari konteks (noise ratio = 1 − precision) | tidak | run.py |
 | **Context tokens** | Besar konteks memory per soal (mean, p95; ≈ karakter/4) | tidak | run.py |
+| **Compression ratio** | Token riwayat penuh ÷ token konteks rewire: berapa kali lebih hemat dari mengirim seluruh riwayat (*full-context*) | tidak | run.py |
 | **Prompt / completion / reasoning tokens per response** | Dari `usage` API, per tahap (ingest / answer / judge) | ya | run.py |
 | **Biaya (USD)** | `usage.cost` dari OpenRouter, per tahap dan per soal | ya | run.py |
-| **Latency** | Retrieval (ms, p50/p95) dan panggilan LLM (p50/p95) | — | run.py |
+| **Latency** | Retrieval (ms, p50/p95/p99) dan panggilan LLM (p50/p95) | — | run.py |
 | **Panjang jawaban** | Rata-rata kata per jawaban (jawaban panjang cenderung dinilai benar oleh judge yang longgar) | — | results JSON |
+
+Contoh dry-run (sampel kecil, hanya ilustrasi): LongMemEval MRR 0,90, context precision 20%, kompresi ≈10,7×;
+LoCoMo MRR 0,62, precision 11%, kompresi ≈5,4×. Precision rendah karena potongan berisi 6 giliran: ini sasaran
+perbaikan yang jelas (potongan lebih kecil atau pemangkasan) tanpa menurunkan recall.
+
+### Dimensi kemampuan → kategori benchmark
+
+| Dimensi | Diukur oleh |
+|---|---|
+| Fact recall (*needle-in-a-haystack*) | LoCoMo single-hop; LongMemEval single-session-user / -assistant |
+| Belief update (fakta lama diganti yang baru) | LongMemEval knowledge-update; uji unit supersede di repo |
+| Temporal reasoning | LoCoMo temporal; LongMemEval temporal-reasoning |
+| Cross-session synthesis | LoCoMo multi-hop; LongMemEval multi-session |
+| Konsistensi preferensi | LongMemEval single-session-preference; kandidat: PersonaMem |
+| Tahu kapan tidak tahu | LongMemEval abstention |
 
 Metrik produk (bukan benchmark, diukur dari pemakaian nyata): fresh-first rate (nilai terbaru dipakai
 saat fakta berubah), captured-but-not-surfaced (fakta tersimpan tapi tidak muncul saat dibutuhkan),
@@ -91,6 +109,20 @@ Sumber: [paper Mem0](https://arxiv.org/pdf/2504.19413) ·
 [ZenBrain (catatan soal angka vendor)](https://arxiv.org/pdf/2604.23878) ·
 [User as Code (reimplementasi Mem0 29,3%)](https://arxiv.org/pdf/2606.16707).
 
+### Perbandingan head-to-head (apples-to-apples)
+
+Satu-satunya cara membandingkan secara adil adalah menjalankan Mem0, Zep (Graphiti, open source) dan rewire
+**di harness yang sama**: dataset dan sampel sama, model penjawab dan judge sama, embedding lokal yang sama
+untuk sistem yang butuh embedding (mis. `bge-small-en-v1.5` atau `all-MiniLM-L6-v2`). Yang perlu diperhatikan:
+- **Biaya ingest berbeda jauh.** Mem0 dan Graphiti memanggil LLM saat menulis memory (ekstraksi per pesan /
+  per episode); rewire mode `episodes` tidak memanggil LLM sama sekali, mode `full` sekitar 2 panggilan per
+  sesi. Token ingest harus dilaporkan terpisah, bukan hanya token saat menjawab.
+- **Infrastruktur.** Graphiti butuh graph database (Neo4j/FalkorDB); Mem0 open source butuh vector store.
+  Jalankan lokal, tanpa layanan cloud mereka, supaya versinya terkunci dan bisa diulang.
+- **Mulai kecil:** 20–50 soal per benchmark untuk ketiga sistem, baru skala penuh bila selisihnya menarik.
+Belum diimplementasikan; runner sudah memisahkan token per tahap (ingest / answer / judge), jadi adaptor
+Mem0 dan Graphiti tinggal mengisi tahap ingest dan retrieval.
+
 ## 5. Token: dari mana datangnya, dan berapa
 
 Per soal ada tiga kemungkinan konsumen token:
@@ -120,7 +152,29 @@ LongMemEval membawa ≈11–22k token konteks per soal.
 5. **Variasi judge**: J bisa bergeser ±1–3 poin antar run dengan model yang sama; jangan menyimpulkan dari
    selisih kecil.
 
-## 7. Cara menjalankan
+## 7. Pilihan model
+
+| Peran | Rekomendasi | Alasan |
+|---|---|---|
+| Judge untuk angka publik | model yang sama dengan pembanding (LongMemEval: GPT-4o) | angka hanya sebanding bila judge-nya sama |
+| Judge untuk regresi | model murah yang stabil; cek dulu kecocokannya dengan judge resmi pada ~100 soal | judge hanya ~5% token, tapi harus konsisten antar run |
+| Penjawab | satu model tetap untuk semua sistem yang dibandingkan | model penjawab menggeser skor puluhan poin (Mastra: 94,9% vs 84,2% hanya karena model) |
+| Ingest (`--mode full`) | model yang andal untuk JSON schema | ekstraksi gagal = memory hilang, bukan sekadar skor turun |
+
+Model gratis (`:free`) di OpenRouter cocok untuk mencoba harness, tapi kurang cocok untuk angka resmi:
+- **Rate limit:** batas permintaannya biasanya ketat, jadi run panjang mudah terputus.
+- **Ketersediaan:** daftar model gratis bisa berubah, sehingga hasilnya sulit diulang.
+- **Privasi data:** cek kebijakan datanya sebelum mengirim riwayat chat sungguhan.
+Benchmark publik sendiri tidak berisi data pribadi.
+Kunci model (`--answer-model`, `--judge-model`, `--ingest-model`) selalu dicatat di report.
+
+Benchmark lain yang dipertimbangkan:
+- **PersonaMem**: relevan untuk preferensi pengguna.
+- **BEAM**: memory jangka sangat panjang.
+- **GAIA**: tidak cocok, karena menguji asisten umum (tools, web), bukan memory.
+- **SWE-bench**: baru relevan bila rewire diukur sebagai memory untuk agent coding jangka panjang.
+
+## 8. Cara menjalankan
 
 Prasyarat: `openrouter.ai` diizinkan di network policy environment, dan `OPENROUTER_API_KEY` dipasang sebagai
 secret environment (jangan ditempel di chat atau di-commit).
@@ -151,9 +205,11 @@ Fitur penghemat token di runner:
 Output: `OUT/report-<bench>-<label>.md` (tabel per kategori, token per tahap dan per response, biaya, latency)
 dan `OUT/results-<bench>-<label>.json` (per soal: konteks, jawaban, putusan, usage).
 
-## 8. Berikutnya
+## 9. Berikutnya
 
 - Judge alternatif yang lebih murah: Jev (keputusan ya/tidak dengan probabilitas) dengan cascade ke judge LLM
   untuk kasus ragu; perlu dikalibrasi dulu terhadap judge resmi pada ~100 soal.
-- Benchmark tambahan bila relevan: BEAM (memory jangka sangat panjang).
+- Head-to-head dengan Mem0 dan Graphiti di harness yang sama (§4).
+- Benchmark tambahan bila relevan: PersonaMem, BEAM.
+- Faithfulness (apakah jawaban hanya memakai isi konteks): judge tambahan, hanya bila halusinasi jadi masalah.
 - Metrik produk dari dogfooding (§3).

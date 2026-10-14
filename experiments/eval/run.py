@@ -84,6 +84,16 @@ def bleu1(pred: str, gold: str) -> float:
     return bp * overlap / len(p)
 
 
+def ranking(excerpts: list[str], evidence: list[str]) -> dict:
+    """Rank-aware retrieval over the ranked excerpts: reciprocal rank of the first excerpt holding an
+    evidence turn (MRR when averaged), and context precision (share of excerpts holding any evidence)."""
+    keys = [norm(t)[:50] for t in evidence]
+    holds = [any(k and k in norm(e) for k in keys) for e in excerpts]
+    first = next((i for i, h in enumerate(holds) if h), None)
+    return {"rr": 0.0 if first is None else 1.0 / (first + 1),
+            "precision": sum(holds) / len(holds) if holds else 0.0}
+
+
 def sample(items: list[dict], per_cat: int, seed: int) -> list[dict]:
     if not per_cat:
         return items
@@ -172,6 +182,7 @@ def locomo_items(args) -> list[dict]:
         dates = [LOCOMO.session_date(v) for k, v in conv["conversation"].items() if k.endswith("_date_time")]
         turns = {t["dia_id"]: t["text"] for k, v in conv["conversation"].items()
                  if re.fullmatch(r"session_\d+", k) for t in v}
+        raw_tokens = est_tokens(" ".join(turns.values()))  # the whole history, as full-context would send it
         for i, qa in enumerate(conv["qa"]):
             if qa.get("category") not in LOCOMO.CATS:  # category 5 (adversarial) excluded, as Mem0 does
                 continue
@@ -181,7 +192,8 @@ def locomo_items(args) -> list[dict]:
             ev = [turns[e] for raw in qa.get("evidence", []) for e in re.split(r"[;, ]+", raw) if e in turns]
             items.append({"bench": "locomo", "qid": f"{conv['sample_id']}-{i}", "conv": conv,
                           "category": LOCOMO.CATS[qa["category"]], "question": qa["question"], "gold": str(gold),
-                          "ref_date": max(d for d in dates if d), "evidence_turns": ev, "abstention": False})
+                          "ref_date": max(d for d in dates if d), "evidence_turns": ev, "abstention": False,
+                          "raw_tokens": raw_tokens})
     return items
 
 
@@ -197,14 +209,16 @@ def locomo_prepare(it: dict, args, provider) -> dict:
     lines = ["The following memories are presented in chronological order (oldest to newest)."]
     lines += [f"({m['created_at'] or 'unknown date'}) {m['memory']}" for m in sorted(mems, key=lambda m: m["created_at"])]
     context = "\n".join(lines) if mems else "(No relevant memories found)"
-    excerpts = norm(" ".join(m["memory"] for m in mems if m["memory"].startswith("Conversation excerpt")))
+    ranked = [m["memory"] for m in mems if m["memory"].startswith("Conversation excerpt")]
+    excerpts = norm(" ".join(ranked))
     hits = sum(norm(t)[:50] in excerpts for t in it["evidence_turns"])
     prompt = (LOCOMO_PROMPTS.ANSWER_GENERATION_PROMPT.replace("{reference_date}", it["ref_date"])
               .replace("{memories}", context).replace("{question}", it["question"]))
     return {"prompt": prompt, "context_tokens": est_tokens(context), "retrieval_ms": retrieval_ms,
             "n_memories": len(mems),
-            "evidence": {"turns": hits, "n_turns": len(it["evidence_turns"]),
-                         "all": hits == len(it["evidence_turns"])} if it["evidence_turns"] else None}
+            "raw_tokens": it["raw_tokens"],
+            "evidence": {"turns": hits, "n_turns": len(it["evidence_turns"]), "all": hits == len(it["evidence_turns"]),
+                         **ranking(ranked, it["evidence_turns"])} if it["evidence_turns"] else None}
 
 
 def locomo_answer(text: str) -> str:
@@ -247,7 +261,8 @@ def lme_items(args) -> list[dict]:
     for q in json.load(open(args.data)):
         items.append({"bench": "longmemeval", "qid": q["question_id"], "raw": q, "category": q["question_type"],
                       "question": q["question"], "gold": str(q["answer"]),
-                      "abstention": q["question_id"].endswith("_abs")})
+                      "abstention": q["question_id"].endswith("_abs"),
+                      "raw_tokens": est_tokens(" ".join(t["content"] for s in q["haystack_sessions"] for t in s))})
     return items
 
 
@@ -260,11 +275,13 @@ def lme_prepare(it: dict, args, provider) -> dict:
     retrieval_ms = (time.time() - start) * 1000
     history = LME.history_string(ctx)
     ev = LME.evidence(q, ctx)
+    evidence_turns = [t["content"] for s in q["haystack_sessions"] for t in s if t.get("has_answer")]
     return {"prompt": LME.ANSWER_TEMPLATE.format(history, q["question_date"], q["question"]),
-            "context_tokens": est_tokens(history), "retrieval_ms": retrieval_ms,
+            "context_tokens": est_tokens(history), "retrieval_ms": retrieval_ms, "raw_tokens": it["raw_tokens"],
             "n_memories": len(ctx["facts"]) + len(ctx["episodes"]),
             "evidence": {"turns": ev["turns"], "n_turns": ev["n_turns"], "all": ev["sess_all"],
-                         "session_any": ev["sess_any"]} if ev else None}
+                         "session_any": ev["sess_any"], **ranking([e["text"] for e in ctx["episodes"]], evidence_turns)}
+            if ev else None}
 
 
 def lme_judge_prompt(it: dict, response: str) -> str:
@@ -302,7 +319,11 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "context_tokens_mean": sum(r["context_tokens"] for r in g) / len(g),
                "context_tokens_p95": pct([r["context_tokens"] for r in g], 0.95),
                "retrieval_ms_p50": pct([r["retrieval_ms"] for r in g], 0.5),
-               "retrieval_ms_p95": pct([r["retrieval_ms"] for r in g], 0.95)}
+               "retrieval_ms_p95": pct([r["retrieval_ms"] for r in g], 0.95),
+               "retrieval_ms_p99": pct([r["retrieval_ms"] for r in g], 0.99),
+               "MRR": sum(e["rr"] for e in ev) / len(ev) if ev else None,
+               "context_precision": sum(e["precision"] for e in ev) / len(ev) if ev else None,
+               "compression": sum(r["raw_tokens"] for r in g) / max(1, sum(r["context_tokens"] for r in g))}
         if args.bench == "locomo" and judged:
             out["F1"] = sum(r["f1"] for r in judged) / len(judged)
             out["BLEU1"] = sum(r["bleu1"] for r in judged) / len(judged)
@@ -344,6 +365,11 @@ def write_report(summary: dict, path: str) -> None:
             f"{f(g['context_tokens_mean'])} / {f(g['context_tokens_p95'])} | "
             f"{f(g.get('answer_prompt_tokens_per_response'))} / {f(g.get('answer_completion_tokens_per_response'))} | "
             f"{g['retrieval_ms_p50']:.0f} / {g['retrieval_ms_p95']:.0f} |")
+    lines += ["", "| category | MRR (first evidence excerpt) | context precision | compression vs full history | retrieval ms p99 |",
+              "|---|---|---|---|---|"]
+    for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+        lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | {g['compression']:.1f}× | "
+                     f"{g['retrieval_ms_p99']:.0f} |")
     if "abstention_accuracy" in summary:
         lines += ["", f"Abstention accuracy: {summary['abstention_accuracy']:.1%}"]
     lines += ["", "## LLM usage this run (cached replies cost nothing)", "",
@@ -412,7 +438,7 @@ def main():
     def run_one(it: dict) -> dict:
         prep = bench["prepare"](it, args, provider)
         row = {k: it[k] for k in ("bench", "qid", "category", "question", "gold", "abstention")}
-        row.update({k: prep[k] for k in ("context_tokens", "retrieval_ms", "n_memories", "evidence")})
+        row.update({k: prep[k] for k in ("context_tokens", "raw_tokens", "retrieval_ms", "n_memories", "evidence")})
         row["answer_prompt_tokens_est"] = est_tokens(prep["prompt"])
         if no_llm:
             return row
