@@ -336,7 +336,8 @@ class Index:
             for rank, rid in enumerate(ranks):
                 fused[rid] = fused.get(rid, 0.0) + 1.0 / (self.RRF_K + rank + 1)
         scale = max(fused.values(), default=1.0 / (self.RRF_K + 1))  # bonus relative to the best match
-        for rid, bonus in self._seed_episodes(seeds or []).items():
+        seeded = self._seed_episodes(seeds or [])
+        for rid, bonus in seeded.items():
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
         window = window or text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
@@ -349,6 +350,9 @@ class Index:
                     fused[rid] += 1.0 / self.RRF_K
         best = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))[:k]
         best, texts = self._merge(best, rows)
+        for pos, rid in enumerate(best):
+            if pos >= self.EP_WHOLE and rows[rid]["first"] != 0 and rid not in seeded:
+                texts[rid] = self._trim(query, texts[rid])
         out = [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
                 "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": texts[rid]}
                for rid in best]
@@ -360,6 +364,21 @@ class Index:
             if summary:
                 out[0]["summary"] = summary[:300]
         return out
+
+    # Excerpts below the top EP_WHOLE keep only the turns that share a content word with the query, plus
+    # EP_CONTEXT turns either side: 11% fewer excerpt tokens on LoCoMo, and at the same token budget
+    # (more excerpts) +1 point of evidence recall (experiments/eval/results/2026-10-14-locomo-trim.md).
+    EP_WHOLE, EP_CONTEXT = 2, 1
+    _SPEAKER = re.compile(r"^\[[^]]*\] (?:\w+: )?")
+
+    @classmethod
+    def _trim(cls, query: str, excerpt: str) -> str:
+        lines = excerpt.splitlines()
+        hits = [i for i, line in enumerate(lines) if text.overlap(query, cls._SPEAKER.sub("", line)) > 0]
+        if not hits:  # matched through vectors or a time window: no word to anchor on, keep it whole
+            return excerpt
+        keep = sorted({j for i in hits for j in range(i - cls.EP_CONTEXT, i + cls.EP_CONTEXT + 1) if 0 <= j < len(lines)})
+        return "\n".join(lines[j] for j in keep)
 
     @staticmethod
     def _merge(best: list[int], rows: dict) -> tuple[list[int], dict[int, str]]:
