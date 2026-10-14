@@ -178,6 +178,9 @@ pub fn time_window(query: &str) -> Option<(String, String)> {
     static MDY: OnceLock<Regex> = OnceLock::new();
     static YEAR: OnceLock<Regex> = OnceLock::new();
     let q = query.to_lowercase();
+    if q.chars().filter(|c| c.is_numeric()).count() < 4 {
+        return None; // every pattern below needs a four-digit year: skip compiling them
+    }
     if let Some(c) = re(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b", &ISO).captures(&q) {
         let mo: u32 = c[2].parse().ok()?;
         if (1..=12).contains(&mo) {
@@ -210,6 +213,13 @@ pub fn time_window(query: &str) -> Option<(String, String)> {
 
 /// The question is about the past ("used to", "first", "dulu"): superseded memories are relevant.
 pub fn history_intent(query: &str) -> bool {
+    const WORDS: [&str; 14] = ["used to", "previously", "originally", "formerly", "first", "earlier", "before", "old",
+        "dulu", "sebelumnya", "awalnya", "pertama", "semula", "pernah"];
+    // (?i) also folds U+212A KELVIN SIGN to k (to_lowercase does too) and U+017F LONG S to s
+    let low = query.to_lowercase().replace('\u{17f}', "s");
+    if !WORDS.iter().any(|w| low.contains(w)) {
+        return false; // none of the words: skip compiling the pattern (most queries)
+    }
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(

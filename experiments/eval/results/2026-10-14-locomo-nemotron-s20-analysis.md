@@ -344,6 +344,22 @@ poin overall. Kedua teknik memakai LLM hanya saat ingest.
 
 Q hampir tidak menambah latency (hanya teks FTS yang lebih panjang). Angka Rust sudah termasuk startup proses.
 
+**Rust vs Python dengan cara ukur yang sama** (proses baru per query, seperti hook per prompt; conv-26, 152 soal):
+
+| | Start proses saja | recall full 30 + 20 | recall full 100 + 20 | recall bawaan (k=8, 3 potongan) |
+|---|---|---|---|---|
+| Python CLI | 18 ms | 89 ms | – | – |
+| Rust CLI, sebelum optimasi | 2 ms | 15,5 ms | 19 ms | – |
+| Rust CLI, setelah optimasi | 2 ms | 11,1 ms | 12,6 ms | 7,6 ms |
+
+Python dalam proses yang sudah panas (5,6 ms) tampak lebih cepat hanya karena regex dan koneksi sudah siap.
+Profil (callgrind) Rust sebelum optimasi: 47% instruksi untuk meng-compile regex pada setiap proses (pemindai
+rahasia/injeksi, parser waktu, `history_intent`), 24% untuk query `LIKE` per fakta seed. Perbaikan: regex hanya
+di-compile bila kata kunci wajibnya ada di teks (hasil sama, diuji), parser waktu dilewati bila query tidak
+punya 4 digit, dan baris potongan per file sesi dibaca sekali. Instruksi per recall turun dari 70 juta ke ±40
+juta; parity recall Rust–Python tidak berubah (item 304/304; urutan 302/304, sama dengan binary sebelum
+perubahan, karena aktivasi bergantung waktu).
+
 **Ingest (sekali per sesi, di latar belakang setelah sesi selesai, tidak di jalur jawaban):**
 
 | Langkah | Waktu per sesi | LoCoMo (272 sesi) |
