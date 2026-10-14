@@ -344,6 +344,23 @@ python experiments/eval/run.py ... --answer-model thinkingmachines/inkling:free 
 #   --bench beam        --data $D/BEAM/chats --beam-sizes 100K
 ```
 
+**Target multi-hop (J ≥ 80%, setara klaim CortexDB 79,8% = 225/282 soal kategori 1).** Jalankan mode `full`
+(fakta + potongan sumber) dengan gpt-4o-mini, pada dua anggaran konteks, di soal yang sama:
+
+```bash
+M=openai/gpt-4o-mini
+# ≈4,7k token konteks: bukti multi-hop lengkap 51% (tanpa LLM)
+python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --mode full --ingest-model $M \
+  --k 30 --episodes 20 --sample 40 --answer-model $M --judge-model $M --max-cost 3 --label full-30-20
+# ≈7k token, setara Mem0 2026 (200 fakta ≈7k): bukti multi-hop lengkap 64–66%
+python experiments/eval/run.py ... --k 100 --episodes 20 --label full-100-20
+```
+
+Ingest (ekstraksi fakta) dibayar sekali per brain dan dipakai ulang oleh run berikutnya. J lebih longgar dari
+"semua bukti ada": pada run Nemotron, multi-hop J 95% dengan bukti lengkap hanya 35%, jadi 80% J kemungkinan
+tercapai sebelum bukti lengkap mencapai 80%. Awasi juga hitungan yang berlebih: konteks besar pernah membuat
+jawaban "how many" kelebihan hitung (commit 084fae2).
+
 Model gratis punya batas per menit dan per hari: `--parallel 2`, dan bila run berhenti (429 / batas harian),
 jalankan perintah yang sama lagi nanti: cache melanjutkan dari titik terakhir.
 

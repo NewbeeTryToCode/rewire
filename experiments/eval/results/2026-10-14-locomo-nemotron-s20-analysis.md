@@ -188,3 +188,29 @@ sesi), bukan di query.
 2. Encoder kontekstual kecil (bge-small / e5-small, ONNX) menggantikan WordLlama, dan/atau cross-encoder kecil
    untuk mengurutkan ulang 50 kandidat teratas. Ini yang paling mungkin menutup selisih kosakata, tetapi
    modelnya tidak bisa diunduh di sesi ini (Hugging Face dan mirror GCS fastembed ditolak proxy, 403).
+
+## 9. Menuju multi-hop 80% (2026-10-14)
+
+Angka 79,8% multi-hop dari CortexDB/OpenHuman adalah **J** (jawaban LLM yang dinilai judge, klaim vendor),
+bukan "semua bukti ada di konteks". J lebih longgar: jawaban bisa benar dari bukti parsial. Di run Nemotron
+(80 soal), multi-hop J 95% padahal bukti lengkap hanya 35%; run lama mode `full` k=50 (885 soal, judge Mem0):
+multi-hop J 96,5%. Jadi target 80% harus dibuktikan dengan J gpt-4o-mini di sesi evaluasi.
+
+Untuk ukuran bukti (tanpa LLM, 1.535 soal, mode `full`, keyword kecuali disebut):
+
+| Fakta + potongan | Konteks | Multi-hop | Open-domain | Overall |
+|---|---|---|---|---|
+| 30 + 20 | 4,7k | 51,4% | 52,2% | 86,4% |
+| 30 + 20, semantic | 4,2k | 52,8% | 54,3% | 86,4% |
+| 50 + 20 | 5,3k | 56,0% | 57,6% | 87,8% |
+| 30 + 40 | 7,6k | 61,7% | 59,8% | 89,2% |
+| 100 + 20 | 7,1k | 64,2% | 68,5% | 90,3% |
+| 100 + 20, semantic | 6,8k | 66,0% | 66,3% | 90,0% |
+| 200 + 20 | 10,0k | 71,6% | 81,5% | 92,7% |
+| 100 + 40 | 10,2k | 73,8% | 71,7% | 92,7% |
+| episodes saja, 100 potongan | 17,9k | 79,8% | 78,3% | 94,5% |
+
+Per token, fakta lebih efisien daripada potongan (100+20 di 7k token mengalahkan 30+40 di 7,6k). Bukti multi-hop
+lengkap 80% butuh ±12k token; itu bukan tujuan, karena konteks besar menurunkan presisi jawaban. Konfigurasi yang
+diuji dengan J: 30+20 (≈4,7k) dan 100+20 (≈7k, setara Mem0 2026 dengan 200 fakta ≈7k token, J 91,6% pakai
+GPT-5). Perintahnya ada di runbook `docs/evaluation.md` §9.
