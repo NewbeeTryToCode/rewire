@@ -388,8 +388,11 @@ dan `OUT/results-<bench>-<label>.json` (per soal: konteks, jawaban, putusan, usa
 
 ## 10. Berikutnya
 
-- Retrieval multi-hop (32–44% bukti lengkap): hop kedua lewat entitas/fakta (mode `full`) pada anggaran token
-  tetap ≈2,5k. Unit 1 giliran, pemangkasan baris, dan pseudo-relevance feedback sudah dicoba dan tidak membantu.
+- Retrieval multi-hop (32–44% bukti lengkap pada mode `episodes`). Sudah dicoba dan tidak membantu: unit 1
+  giliran, pemangkasan baris, pseudo-relevance feedback, jalur entitas, hop kedua lewat entitas, batas potongan
+  per sesi. Yang membantu: mode `full` (30 fakta + 20 potongan: multi-hop 51%, overall 86% pada ≈4,7k token).
+  Berikutnya: encoder kontekstual kecil atau cross-encoder (perlu file model; rincian di
+  `experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md` §8).
 
 - Judge alternatif yang lebih murah: Jev (keputusan ya/tidak dengan probabilitas) dengan cascade ke judge LLM
   untuk kasus ragu; perlu dikalibrasi dulu terhadap judge resmi pada ~100 soal.
