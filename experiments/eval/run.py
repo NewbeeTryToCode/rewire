@@ -165,13 +165,61 @@ def locomo_brain(conv: dict, root: str, mode: str, provider) -> None:
     else:
         brain = Brain(root)
         con = Consolidator(brain, provider=provider, log=lambda *_: None)
+        log = os.path.join(root, ".state", "eval_ingest.jsonl")
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        done_sessions = {r["session"] for r in _jsonl(log) if r.get("ok")}  # a stopped ingest resumes here
         for key, date, turns in LOCOMO.sessions_of(conv):
-            with brain.lock(timeout=600):
-                con._consolidate("locomo", {"session": f"{conv['sample_id']}-{key}", "cwd": None, "date": date},
-                                 turns)
+            session = f"{conv['sample_id']}-{key}"
+            if session in done_sessions:
+                continue
+            bad_before, start = provider.bad_json, time.time()
+            try:
+                with brain.lock(timeout=600):
+                    r = con._consolidate("locomo", {"session": session, "cwd": None, "date": date}, turns)
+                rec = {"session": session, "ok": True, "turns": len(turns), "applied": len(r["applied"]),
+                       "queued": len(r["queued"]), "rejected": len(r["rejected"])}
+            except Exception as exc:  # recorded, then re-raised: the conversation stays unfinished until a rerun
+                rec = {"session": session, "ok": False, "error": str(exc)[:300]}
+                raise
+            finally:
+                rec.update(bad_json=provider.bad_json - bad_before, seconds=round(time.time() - start, 1))
+                with open(log, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(rec) + "\n")
         LOCOMO.approve_all(root)  # no human reviewer in a benchmark: proposals accepted in bulk
     os.makedirs(os.path.dirname(done), exist_ok=True)
     open(done, "w").close()
+
+
+def _jsonl(path: str) -> list[dict]:
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def ingest_stats(roots: list[str]) -> dict | None:
+    """What --mode full consolidation produced, over the given LoCoMo brains."""
+    recs = [r for root in roots for r in _jsonl(os.path.join(root, ".state", "eval_ingest.jsonl"))]
+    if not recs:
+        return None
+    ok = [r for r in recs if r.get("ok")]
+    types, questions = Counter(), 0
+    for root in roots:
+        brain = Brain(root)
+        types.update(n.type for n in brain.iter_nodes() if not n.meta.get("retracted_at") and not n.meta.get("valid_to"))
+        for path in glob.glob(os.path.join(root, "sessions", "*", "*.md")):
+            with open(path, encoding="utf-8") as fh:
+                part = fh.read()
+            m = re.search(r"\n## Questions\n(.*?)(?:\n## |\Z)", part, re.S)
+            questions += len(re.findall(r"(?m)^- \[\d+\] ", m.group(1))) if m else 0
+    turns = sum(r["turns"] for r in ok)
+    return {"sessions": len(ok), "failed_attempts": sum(not r.get("ok") for r in recs),
+            "bad_json_replies": sum(r.get("bad_json", 0) for r in recs),
+            "applied": sum(r["applied"] for r in ok), "queued_then_approved": sum(r["queued"] for r in ok),
+            "rejected": sum(r["rejected"] for r in ok), "nodes_by_type": dict(types.most_common()),
+            "facts_per_session": sum(r["applied"] + r["queued"] for r in ok) / max(1, len(ok)),
+            "questions": questions, "questions_per_turn": questions / max(1, turns),
+            "seconds_per_session_p50": pct([r["seconds"] for r in ok], 0.5)}
 
 
 def locomo_items(args) -> list[dict]:
@@ -613,6 +661,20 @@ def write_report(summary: dict, path: str) -> None:
         t = summary["tokens_per_question_incl_cached"]
         lines += ["", f"Per question, answer + judge, including cached replies: {t['prompt']:,.0f} prompt tokens, "
                       f"{t['completion']:,.0f} completion tokens, ${t['cost_usd']:.5f}."]
+    if summary.get("answer_model") == summary.get("judge_model"):
+        lines += ["", f"NOTE: answers are judged by the same model (`{summary['judge_model']}`); a model tends to "
+                      "accept its own answers, so J may read higher than with an independent judge."]
+    if "stopped" in summary:
+        lines += ["", f"PARTIAL RUN: {summary['stopped']}. Rerun the same command to resume from the cache."]
+    if "ingest" in summary:
+        i = summary["ingest"]
+        lines += ["", "## Ingest (mode full)", "",
+                  f"{i['sessions']} sessions consolidated ({i['failed_attempts']} failed attempts retried, "
+                  f"{i['bad_json_replies']} replies that were not JSON). Facts per session: {i['facts_per_session']:.1f} "
+                  f"({i['applied']} applied, {i['queued_then_approved']} queued then approved, {i['rejected']} rejected). "
+                  f"Hypothetical questions: {i['questions']} ({i['questions_per_turn']:.2f} per turn). "
+                  f"Seconds per session p50: {i['seconds_per_session_p50']:.0f}.", "",
+                  "Active nodes by type: " + ", ".join(f"{k} {v}" for k, v in i["nodes_by_type"].items())]
     if "dry_run_estimate" in summary:
         e = summary["dry_run_estimate"]
         lines += ["", "## Dry-run estimate (no LLM called)", "", "```", json.dumps(e, indent=1), "```"]
@@ -659,8 +721,6 @@ def main():
     args = ap.parse_args()
 
     no_llm = args.retrieval_only or args.dry_run
-    if args.mode == "full" and no_llm:
-        sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
     ledger = Ledger(args.max_cost)
     client = None if no_llm else Client(ledger, reasoning_effort=args.reasoning_effort)
     args.answer_model, args.judge_model, args.ingest_model = (
@@ -672,6 +732,15 @@ def main():
 
     items = sample(bench["items"](args), args.sample, args.seed)
     print(f"{args.bench}: {len(items)} questions ({args.sample or 'all'} per category), mode {args.mode}", flush=True)
+    all_items = items
+    brain_root = lambda conv: os.path.join(args.out, "locomo", f"brains-{args.mode}", conv["sample_id"])  # noqa: E731
+    is_done = lambda conv: os.path.exists(os.path.join(brain_root(conv), ".state", "eval_done"))  # noqa: E731
+    if args.mode == "full" and no_llm and args.bench == "locomo":  # scoring brains ingested by an earlier run
+        missing = sorted({it["conv"]["sample_id"] for it in items if not is_done(it["conv"])})
+        if missing:
+            sys.exit(f"--mode full needs the LLM for ingestion; not ingested yet: {', '.join(missing)}")
+    elif args.mode == "full" and no_llm:
+        sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
 
     def run_one(it: dict) -> dict:
         prep = bench["prepare"](it, args, provider)
@@ -698,9 +767,14 @@ def main():
     rows, stopped = [], None
     # one brain per LoCoMo conversation: ingest it once before questions run in parallel
     if args.bench == "locomo":
-        for conv in {it["conv"]["sample_id"]: it["conv"] for it in items}.values():
-            locomo_brain(conv, os.path.join(args.out, "locomo", f"brains-{args.mode}", conv["sample_id"]),
-                         args.mode, provider)
+        convs = list({it["conv"]["sample_id"]: it["conv"] for it in items}.values())
+        try:
+            for conv in convs:
+                locomo_brain(conv, brain_root(conv), args.mode, provider)
+        except Exception as exc:  # quota, budget or a failing session: questions still run on finished conversations
+            stopped = f"ingest stopped: {exc}"
+            items = [it for it in items if is_done(it["conv"])]
+            print(f"{stopped}; {len(items)} questions on finished conversations", flush=True)
     with ThreadPoolExecutor(args.parallel) as pool:
         futures = [pool.submit(run_one, it) for it in items]
         for fut in futures:
@@ -712,6 +786,8 @@ def main():
                 print(f"question failed: {exc}", flush=True)
     if stopped:
         print(f"STOPPED: {stopped}; rerun to resume from the cache", flush=True)
+    if args.bench == "locomo" and args.mode == "full":
+        ingest = ingest_stats(sorted({brain_root(it["conv"]) for it in all_items}))
 
     est = None
     if args.dry_run:
@@ -743,6 +819,10 @@ def main():
                 est[f"{stage}_cost_usd"] = round((tin * prices[model][0] + tout * prices[model][1]) / 1e6, 4)
 
     summary = summarize(rows, ledger, args, est)
+    if args.bench == "locomo" and args.mode == "full" and ingest:
+        summary["ingest"] = ingest
+    if stopped:
+        summary["stopped"] = stopped
     tag = f"{args.bench}-{args.label}"
     json.dump({"summary": summary, "rows": rows}, open(os.path.join(args.out, f"results-{tag}.json"), "w"),
               indent=1, ensure_ascii=False, default=str)
