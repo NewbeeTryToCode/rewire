@@ -200,7 +200,8 @@ pub fn format_turns(turns: &[Turn]) -> Vec<String> {
     turns
         .iter()
         .map(|t| {
-            let mut text = security::strip_private(&t.text);
+            // redacted before anything leaves the machine: these lines go to the LLM and into sessions/
+            let mut text = security::redact(&security::strip_private(&t.text));
             if t.role == "assistant" && text.chars().count() > ASSISTANT_CHARS {
                 text = format!("{} …[condensed]", take(&text, ASSISTANT_CHARS));
             }
@@ -431,7 +432,7 @@ impl<'a> Consolidator<'a> {
                 if known.is_empty() { "(empty)".to_string() } else { known.join("\n") }
             );
             let out = self.provider.complete_json(&system, &prompt, &schema_v)?;
-            summaries.push(out.get("summary").map(crate::cli::py_str).unwrap_or_default().trim().to_string());
+            summaries.push(security::redact(out.get("summary").map(crate::cli::py_str).unwrap_or_default().trim()));
             if uses_skills(&profile) {
                 if let Some(Value::Array(ps)) = out.get("skills") {
                     proposals.extend(ps.iter().filter_map(|p| p.as_object().cloned()));
@@ -488,7 +489,7 @@ impl<'a> Consolidator<'a> {
             let flags: Vec<&str> = claim.get("flags").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
             let ckey = claim["key"].as_str().unwrap_or("").to_string();
             if flags.contains(&"secret") {
-                rejected.push(obj(&[("title", claim["title"].clone()), ("why", sv("secret"))]));
+                rejected.push(obj(&[("title", sv(&security::redact(claim["title"].as_str().unwrap_or("")))), ("why", sv("secret"))]));
                 continue;
             }
             if action == "SAME" && !target.is_empty() && gate(claim, action) {
@@ -580,7 +581,7 @@ impl<'a> Consolidator<'a> {
             let description: String = get("description").trim().chars().take(300).collect();
             let flags = security::scan(&format!("{name} {description} {steps}"));
             if flags.iter().any(|f| f == "secret") {
-                rejected.push(obj(&[("title", sv(&format!("skill {name}"))), ("why", sv("secret"))]));
+                rejected.push(obj(&[("title", sv(&security::redact(&format!("skill {name}")))), ("why", sv("secret"))]));
                 continue;
             }
             let turn = p.get("evidence_turn").and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
@@ -723,7 +724,7 @@ impl<'a> Consolidator<'a> {
             return Vec::new();
         }
         let roles: &[&str] = if keep == "user" { &["user"] } else { &["user", "assistant"] };
-        turns.iter().zip(format_turns(turns)).filter(|(t, _)| roles.contains(&t.role.as_str())).map(|(_, l)| security::redact(&l)).collect()
+        turns.iter().zip(format_turns(turns)).filter(|(t, _)| roles.contains(&t.role.as_str())).map(|(_, l)| l).collect()
     }
 
     #[allow(clippy::too_many_arguments)]

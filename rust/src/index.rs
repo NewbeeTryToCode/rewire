@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
-pub const SCHEMA: &str = "8";
+pub const SCHEMA: &str = "9";
 const HOP_DECAY: f64 = 0.5;
 const ACT_MAX_AGE: f64 = 300.0;
 const SCAN_MAX_AGE: f64 = 60.0;
@@ -54,7 +54,7 @@ CREATE TABLE uses(node TEXT, key TEXT, t TEXT, w REAL, PRIMARY KEY(node, key));
 CREATE VIRTUAL TABLE fts USING fts5(id UNINDEXED, title, body, keywords,
                                   tokenize='unicode61 remove_diacritics 2');
 CREATE TABLE epfiles(path TEXT PRIMARY KEY, mtime_ns INT, size INT);
-CREATE TABLE episodes(path TEXT, date TEXT, text TEXT, first INT, last INT);
+CREATE TABLE episodes(path TEXT, date TEXT, text TEXT, first INT, last INT, scope TEXT);
 CREATE INDEX episodes_path ON episodes(path);
 CREATE VIRTUAL TABLE fts_ep USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 CREATE TABLE vec(id TEXT PRIMARY KEY, v BLOB);
@@ -72,6 +72,9 @@ fn sem_flag() -> &'static str {
 
 /// (ids, scopes, vectors) of every node with a vector.
 type NodeVectors = (Vec<String>, Vec<String>, Vec<Vec<f32>>);
+
+/// (rowids, session scopes, vectors) of every episode with a vector.
+type EpisodeVectors = (Vec<i64>, Vec<String>, Vec<Vec<f32>>);
 
 /// Indices of `sims` from the most to the least similar.
 fn by_similarity(sims: &[f32]) -> Vec<usize> {
@@ -120,6 +123,18 @@ impl NodeRow {
 }
 
 pub const SUMMARY_CHARS: usize = 600;
+
+/// Scope of the session one consolidation run belongs to ("global" when it had no project). A part
+/// without the header (a `---` rule inside a summary splits a run) keeps the scope of the part before it.
+pub fn session_scope(part: &str, previous: &str) -> String {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let re = R.get_or_init(|| Regex::new(r"(?m)^- project: (.+?)[ \t]*$").unwrap());
+    match re.captures(part) {
+        None => previous.to_string(),
+        Some(c) if &c[1] != "-" => format!("project:{}", &c[1]),
+        Some(_) => "global".into(),
+    }
+}
 
 /// "Summary: …" row text of one consolidation run in a session file ("" if none).
 pub fn session_summary(part: &str) -> String {
@@ -207,7 +222,7 @@ pub struct Index {
     pub seed_weight: f64,
     /// cached (ids, scopes, vectors) of nodes and (rowids, vectors) of episodes for semantic search
     mat: Option<NodeVectors>,
-    epmat: Option<(Vec<i64>, Vec<Vec<f32>>)>,
+    epmat: Option<EpisodeVectors>,
 }
 
 fn mtime_ns(md: &fs::Metadata) -> i64 {
@@ -478,29 +493,32 @@ impl Index {
     }
 
     /// Episode rowids most similar to the query, best first.
-    fn semantic_episode_ranks(&mut self, query: &str, limit: usize) -> Result<Vec<i64>> {
+    fn semantic_episode_ranks(&mut self, query: &str, scopes: Option<&[String]>, limit: usize) -> Result<Vec<i64>> {
         if !semantic::available() {
             return Ok(Vec::new());
         }
         if self.epmat.is_none() {
             let loaded = {
                 let db = self.db()?;
-                let mut st = db.prepare("SELECT rid, v FROM epvec")?;
-                let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
-                let (mut ids, mut vs) = (Vec::new(), Vec::new());
+                let mut st = db.prepare("SELECT rid, v, e.scope FROM epvec JOIN episodes e ON e.rowid = epvec.rid ORDER BY rid")?;
+                let rows = st.query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default()))
+                })?;
+                let (mut ids, mut scs, mut vs) = (Vec::new(), Vec::new(), Vec::new());
                 for r in rows {
-                    let (i, v) = r?;
+                    let (i, v, sc) = r?;
                     ids.push(i);
+                    scs.push(sc);
                     vs.push(semantic::from_blob(&v));
                 }
-                (ids, vs)
+                (ids, scs, vs)
             };
             self.epmat = Some(loaded);
         }
         let Some(qv) = semantic::embed(&[query.to_string()]).and_then(|mut v| v.pop()) else { return Ok(Vec::new()) };
-        let (ids, vs) = self.epmat.as_ref().unwrap();
+        let (ids, scs, vs) = self.epmat.as_ref().unwrap();
         let sims: Vec<f32> = vs.iter().map(|v| semantic::dot(v, &qv)).collect();
-        Ok(by_similarity(&sims).into_iter().take(limit).map(|i| ids[i]).collect())
+        Ok(by_similarity(&sims).into_iter().filter(|&i| scopes.is_none_or(|s| s.contains(&scs[i]))).take(limit).map(|i| ids[i]).collect())
     }
 
     fn delete_node(db: &Connection, node_id: &str) -> Result<()> {
@@ -677,12 +695,14 @@ impl Index {
             changed = true;
             let content = fs::read_to_string(path).unwrap_or_default();
             let folder = Path::new(path).parent().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().into_owned());
+            let mut scope = String::from("global");
             for part in content.split("\n---\n") {
                 let date = date_re.captures(part).map(|c| c[1].to_string()).unwrap_or_else(|| folder.clone().unwrap_or_default());
+                scope = session_scope(part, &scope);
                 let summary = session_summary(part);
                 if !summary.is_empty() {
                     // the session's goal and outcome, searchable like an excerpt (first = last = 0)
-                    db.execute("INSERT INTO episodes VALUES (?,?,?,?,?)", params![path, date, summary, 0, 0])?;
+                    db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)", params![path, date, summary, 0, 0, scope])?;
                     let rid = db.last_insert_rowid();
                     db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, summary])?;
                 }
@@ -697,8 +717,8 @@ impl Index {
                         let turns: Vec<i64> =
                             part_lines.iter().filter_map(|l| turn_re().captures(l).and_then(|c| c[1].parse().ok())).collect();
                         db.execute(
-                            "INSERT INTO episodes VALUES (?,?,?,?,?)",
-                            params![path, date, chunk, turns.iter().min().copied().unwrap_or(0), turns.iter().max().copied().unwrap_or(0)],
+                            "INSERT INTO episodes VALUES (?,?,?,?,?,?)",
+                            params![path, date, chunk, turns.iter().min().copied().unwrap_or(0), turns.iter().max().copied().unwrap_or(0), scope],
                         )?;
                         let rid = db.last_insert_rowid();
                         db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, chunk])?;
@@ -1069,19 +1089,35 @@ impl Index {
     /// Raw transcript excerpts (L1 episodic memory). `seeds` are memory hits for the same query: the
     /// excerpt each one was extracted from (its source session and turn) is boosted, so a well-matched
     /// fact brings its context.
-    pub fn search_episodes(&mut self, query: &str, k: usize, seeds: &[Hit], window: Option<&(String, String)>) -> Result<Vec<Hit>> {
+    /// `scopes` limits excerpts to sessions of those scopes, as for memories (None: every session).
+    pub fn search_episodes(
+        &mut self,
+        query: &str,
+        k: usize,
+        seeds: &[Hit],
+        window: Option<&(String, String)>,
+        scopes: Option<&[String]>,
+    ) -> Result<Vec<Hit>> {
+        let scopes = scopes.filter(|s| !s.is_empty());
+        let cond = scopes.map(|s| format!(" AND e.scope IN ({})", marks(s.len()))).unwrap_or_default();
+        let scope_params: Vec<String> = scopes.map(|s| s.to_vec()).unwrap_or_default();
         let limit = (k * 4).max(20);
         let mut fused: IndexMap<i64, f64> = IndexMap::new();
         if let Some(m) = text::match_expression(query) {
             let db = self.db()?;
-            let mut st = db.prepare("SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ? \
-                 ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?")?;
-            let ids = st.query_map(params![m, limit as i64], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut st = db.prepare(&format!(
+                "SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ?{cond} \
+                 ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?"
+            ))?;
+            let mut p: Vec<rusqlite::types::Value> = vec![m.into()];
+            p.extend(scope_params.iter().cloned().map(Into::into));
+            p.push((limit as i64).into());
+            let ids = st.query_map(params_from_iter(p), |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for (rank, rid) in ids.into_iter().enumerate() {
                 *fused.entry(rid).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
             }
         }
-        for (rank, rid) in self.semantic_episode_ranks(query, limit)?.into_iter().enumerate() {
+        for (rank, rid) in self.semantic_episode_ranks(query, scopes, limit)?.into_iter().enumerate() {
             *fused.entry(rid).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
         }
         let scale = fused.values().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -1095,9 +1131,11 @@ impl Index {
             let ids: Vec<i64> = fused.keys().cloned().collect();
             let db = self.db()?;
             for part in ids.chunks(500) {
-                let sql = format!("SELECT rowid, path, date, text, first, last FROM episodes WHERE rowid IN ({})", marks(part.len()));
+                let sql = format!("SELECT rowid, path, date, text, first, last FROM episodes e WHERE rowid IN ({}){cond}", marks(part.len()));
                 let mut st = db.prepare(&sql)?;
-                for r in st.query_map(params_from_iter(part), |r| {
+                let mut p: Vec<rusqlite::types::Value> = part.iter().map(|&i| i.into()).collect();
+                p.extend(scope_params.iter().cloned().map(Into::into));
+                for r in st.query_map(params_from_iter(p), |r| {
                     Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0), r.get::<_, Option<i64>>(5)?.unwrap_or(0))))
                 })? {
                     let (rid, v) = r?;
@@ -1105,6 +1143,7 @@ impl Index {
                 }
             }
         }
+        fused.retain(|rid, _| rows.contains_key(rid)); // seeds may point out of scope
         if let Some((start, end)) = &window {
             for (rid, (_, date, _, _, _)) in &rows {
                 let d: String = date.chars().take(10).collect();
