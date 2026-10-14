@@ -30,15 +30,21 @@ Mode ingest:
   fakta hasil ekstraksi bisa membocorkan giliran setelah pertanyaan).
 
 Sumber data:
-- LoCoMo: `locomo10.json` (repo snap-research/locomo).
+- LoCoMo: `locomo10.json`, langsung dari GitHub:
+  `https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json`.
 - LongMemEval_S: `longmemeval_s_cleaned.json` (Hugging Face; di sesi ini lewat GCS karena HF diblokir proxy).
-- BEAM: folder `chats/` di repo `github.com/mohammadtavakoli78/BEAM` (dapat di-clone lewat git). Divalidasi:
+- BEAM: folder `chats/` di repo `github.com/mohammadtavakoli78/BEAM` (di-clone lewat git; divalidasi pada
+  commit `b2da22e`). Divalidasi:
   100K/500K/1M = 20/35/35 chat dengan 400/700/700 soal (20 per chat, 10 kategori), ukuran chat ≈146k / 538k /
   1,09M token (median), cocok dengan paper; skrip `download_dataset.py` resmi mengubah data Hugging Face ke format
   yang sama. Perbandingan byte dengan salinan Hugging Face belum dilakukan (HF diblokir).
-- PersonaMem: hanya di Hugging Face (`bowen-upenn/PersonaMem`: `questions_<size>.csv` +
-  `shared_contexts_<size>.jsonl`). Loader ditulis dari skema README dan kode inferensi resmi, diuji dengan file
-  contoh berformat sama; data aslinya perlu diunduh (atau lewat GCS seperti LongMemEval).
+- PersonaMem: Hugging Face `bowen-upenn/PersonaMem`, disalin ke GCS (`bucket_for_claude`):
+  `questions_32k.csv`, `shared_contexts_32k.jsonl`, `questions_1M.csv`, `shared_contexts_1M.jsonl`.
+  Divalidasi: 32k = 589 soal, 37 konteks bersama, ≈27k token per konteks; 1M = 2.674 soal, 33 konteks,
+  ≈925k token per konteks (median); 15 kolom sesuai README, semua referensi konteks ada, kunci jawaban
+  tersebar rata (a)–(d). Nama tipe pertanyaan berbeda antara 32k dan 1M (mis. `track_full_preference_evolution`
+  vs `track_full_preference_updates`; 1M punya `acknowledge_latest_user_preferences`), jadi skor per tipe
+  32k dan 1M tidak dibandingkan langsung.
 
 ## 3. Metrik
 
@@ -59,9 +65,8 @@ Sumber data:
 | **Latency** | Retrieval (ms, p50/p95/p99) dan panggilan LLM (p50/p95) | — | run.py |
 | **Panjang jawaban** | Rata-rata kata per jawaban (jawaban panjang cenderung dinilai benar oleh judge yang longgar) | — | results JSON |
 
-Contoh dry-run (sampel kecil, hanya ilustrasi): LongMemEval MRR 0,90, context precision 20%, kompresi ≈10,7×;
-LoCoMo MRR 0,62, precision 11%, kompresi ≈5,4×. Precision rendah karena potongan berisi 6 giliran: ini sasaran
-perbaikan yang jelas (potongan lebih kecil atau pemangkasan) tanpa menurunkan recall.
+Hasil retrieval yang sudah diukur ada di §8. Context precision rendah (≈11–20%) karena satu potongan berisi
+6 giliran: ini sasaran perbaikan yang jelas (potongan lebih kecil atau pemangkasan) tanpa menurunkan recall.
 
 ### Dimensi kemampuan → kategori benchmark
 
@@ -183,6 +188,14 @@ LongMemEval membawa ≈11–22k token konteks per soal.
 | Penjawab | satu model tetap untuk semua sistem yang dibandingkan | model penjawab menggeser skor puluhan poin (Mastra: 94,9% vs 84,2% hanya karena model) |
 | Ingest (`--mode full`) | model yang andal untuk JSON schema | ekstraksi gagal = memory hilang, bukan sekadar skor turun |
 
+**Model untuk run pertama (keputusan 2026-10-14):** `nvidia/nemotron-3-ultra-550b-a55b:free` untuk penjawab
+dan judge. Bila skornya jauh di bawah batas atas retrieval (§8), atau banyak jawaban kosong / terpotong, coba
+`thinkingmachines/inkling:free` pada soal yang sama (seed sama; cache menyimpan balasan per model). Keduanya
+ada di katalog OpenRouter (gratis, konteks ±1M token) dan keduanya model *reasoning*: pakai
+`--reasoning-effort low`, karena proses berpikir ikut memakai `max_tokens` dan jawaban bisa kosong
+(report memberi peringatan bila itu terjadi). Penjawab dan judge yang sama cenderung menilai dirinya sendiri
+lebih longgar: wajar untuk regresi internal, tidak untuk angka publik.
+
 Model gratis (`:free`) di OpenRouter cocok untuk mencoba harness, tapi kurang cocok untuk angka resmi:
 - **Rate limit:** batas permintaannya biasanya ketat, jadi run panjang mudah terputus.
 - **Ketersediaan:** daftar model gratis bisa berubah, sehingga hasilnya sulit diulang.
@@ -196,10 +209,113 @@ Benchmark lain yang dipertimbangkan:
 - **GAIA**: tidak cocok, karena menguji asisten umum (tools, web), bukan memory.
 - **SWE-bench**: baru relevan bila rewire diukur sebagai memory untuk agent coding jangka panjang.
 
-## 8. Cara menjalankan
+## 8. Baseline tanpa LLM (sudah diukur)
 
-Prasyarat: `openrouter.ai` diizinkan di network policy environment, dan `OPENROUTER_API_KEY` dipasang sebagai
-secret environment (jangan ditempel di chat atau di-commit).
+Batas atas untuk run dengan LLM: bila bukti tidak ada di konteks, model penjawab tidak bisa menjawab benar
+(kecuali menebak). Semua angka: mode `episodes`, keyword (tanpa semantic), k=30, 10 potongan.
+
+**LoCoMo, 1.540 soal (2026-10-14):**
+
+| Kategori | n | Giliran bukti terambil | Semua bukti ada | MRR | Konteks / soal |
+|---|---|---|---|---|---|
+| single-hop | 841 | 94,5% | 94,5% | 0,81 | ≈2,5k token |
+| temporal | 321 | 84,0% | 83,4% | 0,68 | ≈2,5k |
+| multi-hop | 282 | 54,9% | 32,3% | 0,55 | ≈2,6k |
+| open-domain | 96 | 39,9% | 40,2% | 0,40 | ≈2,4k |
+| **overall** | 1.540 | **73,2%** | **77,5%** | 0,71 | ≈2,5k (7,4× lebih kecil dari riwayat penuh) |
+
+Retrieval p50 4 ms, p99 16 ms. Open-domain banyak butuh pengetahuan umum (tidak ada di percakapan); multi-hop
+adalah sasaran perbaikan rewire. Catatan: skor J 94% dari iterasi 6–7 memakai k=50.
+
+**LongMemEval_S, 470 soal non-abstention (iterasi 8):** sesi bukti ditemukan 97,0%, semua sesi bukti 87,9%,
+konteks ≈11,2k token dari ≈115k (≈10× lebih kecil).
+
+**PersonaMem (dry-run):** 32k, semua 589 soal: konteks ≈12,6k token, kompresi 2,8× (riwayatnya pendek),
+perkiraan $1,30 dengan GPT-4o-mini. 1M, 140 soal (20 per tipe): konteks ≈12,7k token dari ≈925k
+(kompresi ≈92×), retrieval p50 42 ms / p99 277 ms, perkiraan seluruh 2.674 soal ≈$5,90.
+
+**BEAM 100K (dry-run, 20 soal):** semua bukti ada 52,9%, MRR 0,43, konteks ≈13,4k token (kompresi ≈11×),
+judge 52 panggilan untuk 20 soal; information extraction dan preference following 0% bukti di sampel kecil ini.
+
+## 9. Runbook sesi evaluasi
+
+### Prasyarat (sekali, di pengaturan environment)
+- `openrouter.ai` di **Allowed domains** (Network access). Sudah dicek terbuka pada 2026-10-14.
+- Secret / environment variable: `OPENROUTER_API_KEY` (wajib). Opsional: `OPENROUTER_MODEL` (model default
+  untuk penjawab, judge dan ingest), `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`).
+  Secret baru terbaca di **sesi baru**. Jangan tempel key di chat atau di-commit.
+- Model ditulis sebagai id (`nvidia/nemotron-3-ultra-550b-a55b:free`); URL halaman model
+  (`openrouter.ai/<id>`) juga diterima dan dinormalisasi.
+- Python ≥ 3.11 saja; runner tidak butuh paket tambahan (semantic opsional: `pip install -e '.[semantic]'`;
+  tanpa itu recall memakai keyword, sama dengan baseline §8).
+
+### Langkah 1: data (sesi baru = container baru, scratchpad lama hilang)
+
+```bash
+D=/tmp/eval-data OUT=/tmp/eval-out && mkdir -p $D/personamem $OUT && cd $D
+curl -sSfLO https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
+# LongMemEval dan PersonaMem: signed URL baru dari GCS (berlaku 2 jam), satu URL per file
+curl -sSf -o longmemeval_s_cleaned.json             '<signed url longmemeval_s_cleaned.json>'
+curl -sSf -o personamem/questions_32k.csv           '<signed url questions_32k.csv>'
+curl -sSf -o personamem/shared_contexts_32k.jsonl   '<signed url shared_contexts_32k.jsonl>'
+curl -sSf -o personamem/questions_1M.csv            '<signed url questions_1M.csv>'
+curl -sSf -o personamem/shared_contexts_1M.jsonl    '<signed url shared_contexts_1M.jsonl>'
+# BEAM: hanya chat.json + probing_questions.json untuk 100K/500K/1M (tanpa pickle, ±263 MB)
+git clone -q --filter=blob:none --no-checkout https://github.com/mohammadtavakoli78/BEAM && cd BEAM
+git sparse-checkout init --no-cone
+for s in 100K 500K 1M; do printf '/chats/%s/*/chat.json\n/chats/%s/*/probing_questions/probing_questions.json\n' $s $s; done \
+  > .git/info/sparse-checkout
+git checkout -q main && cd /home/user/rewire
+```
+
+Jangan pakai `git ls-tree --long` pada clone `--filter=blob:none`: ia mengunduh setiap blob satu per satu.
+
+### Langkah 2: cek key tanpa menampilkannya
+
+```bash
+test -n "$OPENROUTER_API_KEY" && echo "key terbaca (${#OPENROUTER_API_KEY} karakter)"
+```
+
+### Langkah 3: run uji paling kecil (memastikan balasan model terbaca dan token tercatat)
+
+```bash
+M=nvidia/nemotron-3-ultra-550b-a55b:free
+python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --sample 2 \
+  --answer-model $M --judge-model $M --reasoning-effort low --parallel 2 --max-cost 0.10 --label smoke
+```
+
+Periksa di `report-locomo-smoke.md`: tidak ada peringatan jawaban kosong / terpotong, token per tahap terisi,
+J masuk akal dibanding §8. Buka beberapa jawaban di `results-locomo-smoke.json`.
+
+### Langkah 4: run sampel, satu benchmark per kali
+
+```bash
+# LoCoMo 20 soal per kategori (80 soal), bandingkan dengan §8
+python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --sample 20 \
+  --answer-model $M --judge-model $M --reasoning-effort low --parallel 2 --label nemotron-s20
+# bila jauh di bawah batas atas retrieval: model kedua pada soal yang sama
+python experiments/eval/run.py ... --answer-model thinkingmachines/inkling:free --judge-model thinkingmachines/inkling:free --label inkling-s20
+# lalu benchmark lain dengan flag yang sama:
+#   --bench personamem  --data $D/personamem --personamem-size 32k   (lalu 1M; tanpa judge)
+#   --bench longmemeval --data $D/longmemeval_s_cleaned.json
+#   --bench beam        --data $D/BEAM/chats --beam-sizes 100K
+```
+
+Model gratis punya batas per menit dan per hari: `--parallel 2`, dan bila run berhenti (429 / batas harian),
+jalankan perintah yang sama lagi nanti: cache melanjutkan dari titik terakhir.
+
+### Langkah 5: simpan hasil ke repo
+
+`$OUT` ada di scratchpad dan hilang bersama sesi. Salin report (bukan cache, bukan brain) ke
+`experiments/eval/results/<tanggal>-<bench>-<label>.md`, catat model, sampel, dan seed, lalu commit.
+
+### Opsi runner yang sering dipakai
+
+```bash
+# 0 token: retrieval saja
+python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 0 --retrieval-only
+# 0 token: perkiraan token dan biaya run sebelum dijalankan (--price MODEL=IN,OUT bila katalog tidak terjangkau)
+python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --sample 20 --dry-run
 
 ```bash
 # 0 token: retrieval saja
@@ -209,11 +325,7 @@ python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.
 python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --sample 20 --dry-run \
     --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini
 
-# regresi murah: 20 soal per kategori, dengan batas biaya
-python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 20 \
-    --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini --max-cost 1
-
-# BEAM (data: folder chats/ dari repo BEAM) dan PersonaMem (data: folder berisi csv + jsonl)
+# BEAM (data: folder chats/ dari repo BEAM) dan PersonaMem (data: folder berisi csv + jsonl), dry-run
 python experiments/eval/run.py --bench beam --data BEAM/chats --beam-sizes 100K,500K,1M --out OUT --sample 5 --dry-run
 python experiments/eval/run.py --bench personamem --data personamem/ --personamem-size 32k --out OUT --sample 20 --dry-run
 
@@ -231,11 +343,11 @@ Fitur penghemat token di runner:
 Output: `OUT/report-<bench>-<label>.md` (tabel per kategori, token per tahap dan per response, biaya, latency)
 dan `OUT/results-<bench>-<label>.json` (per soal: konteks, jawaban, putusan, usage).
 
-## 9. Berikutnya
+## 10. Berikutnya
 
 - Judge alternatif yang lebih murah: Jev (keputusan ya/tidak dengan probabilitas) dengan cascade ke judge LLM
   untuk kasus ragu; perlu dikalibrasi dulu terhadap judge resmi pada ~100 soal.
 - Head-to-head dengan Mem0 dan Graphiti di harness yang sama (§4).
-- BEAM 10M dan Kendall tau untuk event ordering; data PersonaMem asli (Hugging Face atau GCS).
+- BEAM 10M dan Kendall tau untuk event ordering.
 - Faithfulness (apakah jawaban hanya memakai isi konteks): judge tambahan, hanya bila halusinasi jadi masalah.
 - Metrik produk dari dogfooding (§3).
