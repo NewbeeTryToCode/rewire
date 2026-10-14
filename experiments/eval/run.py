@@ -234,7 +234,10 @@ def locomo_judge_prompt(it: dict, response: str) -> str:
 
 def locomo_verdict(text: str) -> bool:
     m = re.search(r'"label"\s*:\s*"(CORRECT|WRONG)"', text, re.I)
-    return (m.group(1) if m else ("WRONG" if "WRONG" in text.upper() else "CORRECT")).upper() == "CORRECT"
+    if m:
+        return m.group(1).upper() == "CORRECT"
+    # no JSON label: accept only a bare verdict, never reasoning cut off by max_tokens
+    return re.sub(r"[^A-Z]", "", text.upper()) == "CORRECT"
 
 
 # ---- LongMemEval ---------------------------------------------------------
@@ -548,6 +551,7 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
     if answered:  # a reasoning model that runs out of max_tokens returns no text: raise the limit or lower effort
         summary["empty_answers"] = sum(not r["response"].strip() for r in answered)
         summary["truncated_answers"] = sum((r["answer_call"].get("finish_reason") == "length") for r in answered)
+        summary["truncated_judge_calls"] = sum(r.get("judge_call", {}).get("truncated", 0) for r in answered)
     abst = [r for r in rows if r["abstention"] and r.get("correct") is not None]
     if abst:
         summary["abstention_accuracy"] = sum(r["correct"] for r in abst) / len(abst)
@@ -586,6 +590,9 @@ def write_report(summary: dict, path: str) -> None:
     if summary.get("empty_answers") or summary.get("truncated_answers"):
         lines += ["", f"WARNING: {summary['empty_answers']} empty and {summary['truncated_answers']} truncated answers "
                       "(max_tokens reached): raise --answer-max-tokens or pass --reasoning-effort low."]
+    if summary.get("truncated_judge_calls"):
+        lines += ["", f"WARNING: {summary['truncated_judge_calls']} judge calls hit max_tokens before a verdict and "
+                      "were scored as wrong: raise --judge-max-tokens."]
     lines += ["", "## LLM usage this run (cached replies cost nothing)", "",
               "| stage | calls | prompt tokens | completion tokens | reasoning tokens | tokens/call in / out | cost USD | latency p50 / p95 ms |",
               "|---|---|---|---|---|---|---|---|"]
@@ -630,7 +637,7 @@ def main():
     ap.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
                     help="for reasoning models (e.g. Nemotron 3): keeps thinking from using up max_tokens")
     ap.add_argument("--answer-max-tokens", type=int, default=1500)
-    ap.add_argument("--judge-max-tokens", type=int, default=200)
+    ap.add_argument("--judge-max-tokens", type=int, default=2000)  # reasoning models think before the verdict
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--max-cost", type=float, help="stop when this many USD were spent in this run")
     ap.add_argument("--retrieval-only", action="store_true", help="no LLM at all: evidence recall + context size")
@@ -674,6 +681,7 @@ def main():
             row["judge_call"] = {k: sum(c[k] for c in calls) for k in ("prompt_tokens", "completion_tokens",
                                                                        "reasoning_tokens", "cost", "latency_ms")}
             row["judge_call"]["cached"] = all(c["cached"] for c in calls)
+            row["judge_call"]["truncated"] = sum(c.get("finish_reason") == "length" for c in calls)
         if args.bench == "locomo":
             row["f1"] = LOCOMO.f1(row["response"], row["gold"])
             row["bleu1"] = bleu1(row["response"], row["gold"])
