@@ -533,6 +533,12 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "evidence_session_any": (sum(e["session_any"] for e in ev if "session_any" in e)
                                         / max(1, sum("session_any" in e for e in ev))) if any("session_any" in e for e in ev) else None,
                "compression": sum(r["raw_tokens"] for r in g) / max(1, sum(r["context_tokens"] for r in g))}
+        # retrieval vs answering: accuracy when every evidence turn was in the context, and when some were not
+        with_ev = [r for r in judged if r.get("evidence")]
+        hit = [r for r in with_ev if r["evidence"]["all"]]
+        miss = [r for r in with_ev if not r["evidence"]["all"]]
+        out["J_all_evidence"] = sum(r["correct"] for r in hit) / len(hit) if hit else None
+        out["J_missing_evidence"] = sum(r["correct"] for r in miss) / len(miss) if miss else None
         if args.bench == "locomo" and judged:
             out["F1"] = sum(r["f1"] for r in judged) / len(judged)
             out["BLEU1"] = sum(r["bleu1"] for r in judged) / len(judged)
@@ -584,6 +590,13 @@ def write_report(summary: dict, path: str) -> None:
         lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | "
                      f"{f(g['evidence_session_any'], True)} | {g['compression']:.1f}× | {g['retrieval_ms_p99']:.0f} | "
                      f"{f(g.get('answer_words_mean'))} |")
+    if any(g.get("J_all_evidence") is not None for g in summary["groups"].values()):
+        lines += ["", "| category | J when all evidence retrieved | J when evidence missing | share with all evidence |",
+                  "|---|---|---|---|"]
+        for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+            lines.append(f"| {name} | {f(g.get('J_all_evidence'), True)} | {f(g.get('J_missing_evidence'), True)} | "
+                         f"{f(g['evidence_all'], True)} |")
+        lines += ["", "Low J with all evidence = the answering model; low share with all evidence = retrieval."]
     if "abstention_accuracy" in summary:
         lines += ["", f"Abstention accuracy: {summary['abstention_accuracy']:.1%}"]
     if summary.get("empty_answers") or summary.get("truncated_answers"):
