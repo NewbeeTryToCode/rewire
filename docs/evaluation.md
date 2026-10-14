@@ -20,16 +20,31 @@ retrieval tidak ada padanannya di leaderboard, tapi gratis dan stabil, jadi dipa
 |---|---|---|---|
 | **LoCoMo** | 10 percakapan panjang (~27 sesi), 1.540 pertanyaan kategori 1–4 | single-hop, multi-hop, temporal, open-domain | Prompt jawaban + judge resmi Mem0 (`experiments/locomo/official_prompts.py`); kategori 5 (adversarial) dikecualikan seperti Mem0 |
 | **LongMemEval_S** | 500 pertanyaan, tiap pertanyaan punya riwayat ~50 sesi (~115k token) | single-session (user / assistant / preference), multi-session, knowledge-update, temporal-reasoning, abstention (30 soal `_abs`) | Template jawaban + prompt judge resmi per tipe (`experiments/longmemeval/lme_prompts.py`) |
+| **BEAM** (ICLR 2026) | 100 chat (100K: 20, 500K: 35, 1M: 35, 10M: 10), 2.000 soal, 10 kategori × 2 soal per chat | abstention, contradiction resolution, event ordering, information extraction, instruction following, knowledge update, multi-session reasoning, preference following, summarization, temporal reasoning | Prompt jawaban RAG + judge per butir rubrik (1 / 0,5 / 0), disalin verbatim (`experiments/eval/beam_prompts.py`, MIT); skor soal = rata-rata rubrik. Ukuran 10M belum didukung; Kendall tau untuk event ordering belum dihitung (skor rubrik saja) |
+| **PersonaMem** (COLM 2025) | 180+ riwayat persona, sampai 60 sesi; versi konteks 32k / 128k / 1M | 7 tipe pertanyaan, mis. mengingat fakta pengguna, mengikuti perubahan preferensi, rekomendasi baru yang sesuai preferensi | Pilihan ganda (a–d) dengan instruksi dan pencocokan jawaban resmi: **tanpa judge LLM**. Satu brain per konteks bersama; potongan setelah posisi pertanyaan dibuang supaya memory tidak berisi "masa depan" |
 
 Mode ingest:
 - `episodes`: transcript disimpan dan diindeks persis seperti hasil konsolidasi, **tanpa** ekstraksi LLM. Gratis.
 - `full`: setiap sesi dikonsolidasi oleh LLM (`--ingest-model`), inbox diterima semua. Paling realistis, paling mahal.
+  BEAM dan PersonaMem hanya mendukung `episodes` (konsolidasi chat 1M token terlalu mahal; untuk PersonaMem,
+  fakta hasil ekstraksi bisa membocorkan giliran setelah pertanyaan).
+
+Sumber data:
+- LoCoMo: `locomo10.json` (repo snap-research/locomo).
+- LongMemEval_S: `longmemeval_s_cleaned.json` (Hugging Face; di sesi ini lewat GCS karena HF diblokir proxy).
+- BEAM: folder `chats/` di repo `github.com/mohammadtavakoli78/BEAM` (dapat di-clone lewat git). Divalidasi:
+  100K/500K/1M = 20/35/35 chat dengan 400/700/700 soal (20 per chat, 10 kategori), ukuran chat ≈146k / 538k /
+  1,09M token (median), cocok dengan paper; skrip `download_dataset.py` resmi mengubah data Hugging Face ke format
+  yang sama. Perbandingan byte dengan salinan Hugging Face belum dilakukan (HF diblokir).
+- PersonaMem: hanya di Hugging Face (`bowen-upenn/PersonaMem`: `questions_<size>.csv` +
+  `shared_contexts_<size>.jsonl`). Loader ditulis dari skema README dan kode inferensi resmi, diuji dengan file
+  contoh berformat sama; data aslinya perlu diunduh (atau lewat GCS seperti LongMemEval).
 
 ## 3. Metrik
 
 | Metrik | Definisi | LLM? | Dilaporkan oleh |
 |---|---|---|---|
-| **J (accuracy)** | Persen jawaban yang dinilai benar oleh judge dengan prompt resmi | ya | run.py |
+| **J (accuracy)** | Persen jawaban yang dinilai benar oleh judge dengan prompt resmi (BEAM: rata-rata skor rubrik 0–1; PersonaMem: akurasi pilihan ganda tanpa judge) | ya (PersonaMem: tidak untuk penilaian) | run.py |
 | **F1** (LoCoMo) | F1 token antara jawaban dan gold (metrik asli paper LoCoMo) | jawaban saja | run.py |
 | **BLEU-1** (LoCoMo) | Presisi unigram dengan brevity penalty | jawaban saja | run.py |
 | **Abstention** (LongMemEval) | Persen soal tak-terjawab yang dikenali sebagai tak-terjawab | ya | run.py |
@@ -56,7 +71,9 @@ perbaikan yang jelas (potongan lebih kecil atau pemangkasan) tanpa menurunkan re
 | Belief update (fakta lama diganti yang baru) | LongMemEval knowledge-update; uji unit supersede di repo |
 | Temporal reasoning | LoCoMo temporal; LongMemEval temporal-reasoning |
 | Cross-session synthesis | LoCoMo multi-hop; LongMemEval multi-session |
-| Konsistensi preferensi | LongMemEval single-session-preference; kandidat: PersonaMem |
+| Konsistensi preferensi | LongMemEval single-session-preference; PersonaMem; BEAM preference following |
+| Kontradiksi, urutan kejadian, instruksi jangka panjang, ringkasan | BEAM contradiction resolution, event ordering, instruction following, summarization |
+| Skala sangat panjang (500K–10M token) | BEAM |
 | Tahu kapan tidak tahu | LongMemEval abstention |
 
 Metrik produk (bukan benchmark, diukur dari pemakaian nyata): fresh-first rate (nilai terbaru dipakai
@@ -132,6 +149,11 @@ Per soal ada tiga kemungkinan konsumen token:
 | **ingest** (`--mode full` saja) | ~2 panggilan per **sesi** transcript, bukan per soal | LoCoMo: ~272 sesi; LongMemEval: ~50 sesi × 500 soal (setiap soal punya riwayat sendiri), jadi `full` untuk LongMemEval hanya layak untuk sampel kecil |
 | **answer** | LoCoMo ≈4,4k prompt (≈1,8k instruksi Mem0 + ≈2,7k konteks); LongMemEval ≈11,4k prompt | **Tahap terbesar**; output 100–500 token (penalaran langkah demi langkah) |
 | **judge** | ≈400–600 prompt, ≈10–60 output | ±5% dari total; kandidat untuk model murah atau Jev |
+| **judge BEAM** | ≈3 panggilan per soal (satu per butir rubrik), masing-masing ≈1,3k token | judge resmi BEAM tidak murah: ≈20% dari total di dry-run |
+| **PersonaMem** | 0 | pilihan ganda, dinilai dengan pencocokan |
+
+Dry-run BEAM 100K (20 soal): ≈13,4k token konteks per soal (potongan berisi jawaban asisten yang panjang),
+≈$0,06 per 20 soal dengan harga contoh di atas. Turunkan `--episodes` bila konteks terlalu besar.
 
 Perkiraan dry-run (prompt dihitung dari teks sebenarnya, harga contoh $0,15 / $0,60 per 1M token):
 LoCoMo 8 soal ≈ $0,008; LongMemEval 6 soal ≈ $0,012, artinya 500 soal LongMemEval ≈ $1 dengan model sekelas
@@ -191,6 +213,10 @@ python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --s
 python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 20 \
     --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini --max-cost 1
 
+# BEAM (data: folder chats/ dari repo BEAM) dan PersonaMem (data: folder berisi csv + jsonl)
+python experiments/eval/run.py --bench beam --data BEAM/chats --beam-sizes 100K,500K,1M --out OUT --sample 5 --dry-run
+python experiments/eval/run.py --bench personamem --data personamem/ --personamem-size 32k --out OUT --sample 20 --dry-run
+
 # angka yang sebanding dengan publik (LongMemEval, judge resmi GPT-4o)
 python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 0 \
     --answer-model openai/gpt-4o --judge-model openai/gpt-4o --max-cost 20
@@ -210,6 +236,6 @@ dan `OUT/results-<bench>-<label>.json` (per soal: konteks, jawaban, putusan, usa
 - Judge alternatif yang lebih murah: Jev (keputusan ya/tidak dengan probabilitas) dengan cascade ke judge LLM
   untuk kasus ragu; perlu dikalibrasi dulu terhadap judge resmi pada ~100 soal.
 - Head-to-head dengan Mem0 dan Graphiti di harness yang sama (§4).
-- Benchmark tambahan bila relevan: PersonaMem, BEAM.
+- BEAM 10M dan Kendall tau untuk event ordering; data PersonaMem asli (Hugging Face atau GCS).
 - Faithfulness (apakah jawaban hanya memakai isi konteks): judge tambahan, hanya bila halusinasi jadi masalah.
 - Metrik produk dari dogfooding (§3).
