@@ -271,6 +271,25 @@ fn merge_excerpts(best: &[i64], rows: &HashMap<i64, EpRow>) -> Vec<(i64, String)
     groups.into_iter().map(|g| (g.rid, g.lines.into_values().collect::<Vec<_>>().join("\n"))).collect()
 }
 
+/// Excerpts below the top EP_WHOLE keep only the turns that share a content word with the query, plus
+/// EP_CONTEXT turns either side: 11% fewer excerpt tokens on LoCoMo, and at the same token budget (more
+/// excerpts) +1 point of evidence recall (experiments/eval/results/2026-10-14-locomo-trim.md).
+const EP_WHOLE: usize = 2;
+const EP_CONTEXT: usize = 1;
+
+fn trim_excerpt(query: &str, excerpt: &str) -> String {
+    static SPEAKER: OnceLock<Regex> = OnceLock::new();
+    let speaker = SPEAKER.get_or_init(|| Regex::new(r"^\[[^\]]*\] (?:\w+: )?").unwrap());
+    let lines: Vec<&str> = excerpt.lines().collect();
+    let hits: Vec<usize> = (0..lines.len()).filter(|&i| text::overlap(query, &speaker.replace(lines[i], "")) > 0).collect();
+    if hits.is_empty() {
+        return excerpt.to_string(); // matched through vectors or a time window: no word to anchor on, keep it whole
+    }
+    let keep: std::collections::BTreeSet<usize> =
+        hits.iter().flat_map(|&i| i.saturating_sub(EP_CONTEXT)..=(i + EP_CONTEXT).min(lines.len() - 1)).collect();
+    keep.into_iter().map(|j| lines[j]).collect::<Vec<_>>().join("\n")
+}
+
 fn turn_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"^\[(\d+) ").unwrap())
@@ -1122,8 +1141,9 @@ impl Index {
         }
         let scale = fused.values().cloned().fold(f64::NEG_INFINITY, f64::max);
         let scale = if scale.is_finite() { scale } else { 1.0 / (RRF_K + 1.0) }; // bonus relative to the best match
-        for (rid, bonus) in self.seed_episodes(seeds)? {
-            *fused.entry(rid).or_insert(0.0) += bonus * scale;
+        let seeded = self.seed_episodes(seeds)?;
+        for (rid, bonus) in &seeded {
+            *fused.entry(*rid).or_insert(0.0) += bonus * scale;
         }
         let window = window.cloned().or_else(|| text::time_window(query));
         let mut rows: HashMap<i64, EpRow> = HashMap::new();
@@ -1169,7 +1189,13 @@ impl Index {
                 }
             }
         }
-        let merged = merge_excerpts(&order.iter().map(|(rid, _)| *rid).collect::<Vec<_>>(), &rows);
+        let mut merged = merge_excerpts(&order.iter().map(|(rid, _)| *rid).collect::<Vec<_>>(), &rows);
+        for (pos, (rid, text)) in merged.iter_mut().enumerate() {
+            let first = rows.get(rid).map(|r| r.3).unwrap_or(0);
+            if pos >= EP_WHOLE && first != 0 && !seeded.contains_key(rid) {
+                *text = trim_excerpt(query, text);
+            }
+        }
         let mut out: Vec<Hit> = merged
             .into_iter()
             .filter_map(|(rid, text)| {
@@ -1253,5 +1279,21 @@ impl Index {
 impl From<Stale> for Error {
     fn from(_: Stale) -> Self {
         Error::Other("stale index".into())
+    }
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::trim_excerpt;
+
+    #[test]
+    fn trim_keeps_matching_turns_and_their_neighbours() {
+        let ex = "[1 user] Ann: hello there\n[2 user] Bob: the weather is nice\n[3 user] Ann: I adopted a dog\n\
+                  [4 user] Bob: what is its name\n[5 user] Ann: we went hiking\n[6 user] Bob: sounds fun";
+        assert_eq!(
+            trim_excerpt("Ann dog", ex),
+            "[2 user] Bob: the weather is nice\n[3 user] Ann: I adopted a dog\n[4 user] Bob: what is its name"
+        );
+        assert_eq!(trim_excerpt("kubernetes", ex), ex); // nothing to anchor on: kept whole
     }
 }

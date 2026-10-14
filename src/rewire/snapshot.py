@@ -54,10 +54,19 @@ def _line(row) -> str:
     return f"- {date + ' · ' if date else ''}{text} [{row['id'][-8:].lower()}]"
 
 
+_LINE_EXTRA = len("- ") + len(" [12345678]")
+_MIN_TEXT = 50  # shorter than "[BLOCKED: …; check this note with `rewire doctor`]" and the 380-char cap
+
+
 def _fill(rows, budget: int) -> tuple[list[str], int]:
     """Lines that fit the budget, and how many rows did not."""
     out, used, left = [], 0, 0
     for row in rows:
+        # a line is never shorter than its title or the BLOCKED notice (capped at 380) plus "- " and " [id8]":
+        # rows that cannot fit are counted without formatting and scanning them (most rows once the budget is full)
+        if used + min(len(row["title"]), _MIN_TEXT) + _LINE_EXTRA + 1 > budget:
+            left += 1
+            continue
         line = _line(row)
         if used + len(line) + 1 > budget:
             left += 1
