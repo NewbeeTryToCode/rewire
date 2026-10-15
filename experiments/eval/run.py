@@ -304,7 +304,9 @@ def locomo_verdict(text: str) -> bool | None:
 def gold_items(gold: str) -> list[str]:
     """The items of a list answer ("a, b and c"); one item for anything else."""
     parts = [p for p in re.split(r",|;|\band\b", str(gold)) if norm(p)]
-    return parts if len(parts) > 1 else [str(gold)]
+    # a list is short items without numbers; dates ("24 June, 2022") and sentences stay one item
+    is_list = len(parts) > 1 and not re.search(r"\d", str(gold)) and all(len(norm(p).split()) <= 4 for p in parts)
+    return parts if is_list else [str(gold)]
 
 
 def item_coverage(gold: str, response: str) -> float:
