@@ -176,12 +176,13 @@ class JsonProvider:
     def complete_json(self, system: str, prompt: str, schema: dict, attempts: int = 3) -> dict:
         from rewire.llm import LLMError, extract_json
 
-        instruction = ("\n\nReturn ONLY a JSON object that matches this JSON schema, with no other text:\n"
-                       + json.dumps(schema))
+        instruction = ("\n\nReturn ONLY a JSON object that matches this JSON schema, with no other text and no "
+                       "indentation (one line):\n" + json.dumps(schema))
+        max_tokens = 16000
         for attempt in range(attempts):  # a reasoning model sometimes returns no or broken JSON: ask again
             call = self.client.chat(self.model, [{"role": "system", "content": system},
                                                  {"role": "user", "content": prompt + instruction}],
-                                    stage=self.stage, max_tokens=8000)
+                                    stage=self.stage, max_tokens=max_tokens)
             try:
                 return extract_json(call["text"])
             except LLMError:
@@ -191,5 +192,7 @@ class JsonProvider:
                     with self._lock, open(self.bad_log, "a", encoding="utf-8") as fh:
                         fh.write(json.dumps({"finish_reason": call.get("finish_reason"), "text_tail": call["text"][-300:],
                                              "completion_tokens": call.get("completion_tokens")}) + "\n")
+                if call.get("finish_reason") == "length":  # cut off mid-answer: the same limit would cut it again
+                    max_tokens *= 2
                 if attempt == attempts - 1:
                     raise
