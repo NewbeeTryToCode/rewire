@@ -837,6 +837,7 @@ def main():
     ap.add_argument("--mode", choices=["episodes", "full"], default="episodes",
                     help="episodes: transcripts only (no LLM ingest); full: real consolidation through --ingest-model")
     ap.add_argument("--sample", type=int, default=20, help="questions per category (0 = all)")
+    ap.add_argument("--categories", default="all", help="only these categories (comma-separated, e.g. multi-hop)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--convs", default="all", help="LoCoMo conversations (comma-separated sample ids or all)")
     ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
@@ -876,7 +877,10 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     cache = Cache(os.path.join(args.out, "cache", "llm.jsonl"))
 
-    items = sample(bench["items"](args), args.sample, args.seed)
+    items = bench["items"](args)
+    if args.categories != "all":
+        items = [it for it in items if it["category"] in args.categories.split(",")]
+    items = sample(items, args.sample, args.seed)
     print(f"{args.bench}: {len(items)} questions ({args.sample or 'all'} per category), mode {args.mode}", flush=True)
     all_items = items
     brain_root = lambda conv: os.path.join(args.out, "locomo", f"brains-{args.mode}", conv["sample_id"])  # noqa: E731
