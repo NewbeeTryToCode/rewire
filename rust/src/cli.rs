@@ -67,6 +67,9 @@ pub enum Cmd {
         since: Option<String>,
         #[arg(long = "to", value_name = "YYYY-MM-DD")]
         until: Option<String>,
+        /// an extra query searched too and merged by rank (repeatable, up to 4)
+        #[arg(long, value_name = "QUERY")]
+        also: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -249,13 +252,13 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("{}", snap.text);
             }
         }
-        Cmd::Recall { query, k, episodes, scope, since, until, json: as_json } => {
+        Cmd::Recall { query, k, episodes, scope, since, until, also, json: as_json } => {
             let brain = open_brain(bp);
             let mut index = Index::new(&brain);
             index.refresh()?;
             let here = cwd();
             let refers_to = (since.is_some() || until.is_some()).then(|| json!({"from": since, "to": until}));
-            let hits = match ops::recall(&brain, &mut index, &query.join(" "), k, Some(&here), scope.as_deref(), None, episodes, refers_to.as_ref()) {
+            let hits = match ops::recall(&brain, &mut index, &query.join(" "), k, Some(&here), scope.as_deref(), None, episodes, refers_to.as_ref(), &also) {
                 Err(Error::Op(e)) => fail(&e),
                 other => other?,
             };

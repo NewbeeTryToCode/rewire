@@ -16,6 +16,8 @@ pub const QUERY_GUIDE: &str = "Write the query as keywords, not a sentence: the 
 
 pub const REFERS_TO_GUIDE: &str = "When the question is about a time ('last week', 'in March', 'kemarin'), resolve it to ISO dates {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}; when a word is ambiguous, cover both readings. Notes and excerpts from that period rank higher (nothing is filtered out).";
 
+pub const ALSO_GUIDE: &str = "Up to 4 extra keyword queries, searched too and merged by rank. When the question names a category ('desserts', 'cities', 'hobbies', 'pets') or asks for a list, add queries naming likely specific instances ('ice cream cake pie', 'Paris Tokyo trip'): memories name the instances, not the category.";
+
 pub fn tools() -> Value {
     json!([
         {
@@ -32,6 +34,7 @@ pub fn tools() -> Value {
                     "refers_to": {"type": "object", "description": REFERS_TO_GUIDE,
                                   "properties": {"from": {"type": "string"}, "to": {"type": "string"}},
                                   "additionalProperties": false},
+                    "also": {"type": "array", "items": {"type": "string"}, "maxItems": 4, "description": ALSO_GUIDE},
                 },
                 "required": ["query"],
                 "additionalProperties": false,
@@ -100,7 +103,12 @@ impl<'a> Server<'a> {
                 let k = int_arg(args, "k", 8)?.max(1) as usize;
                 let episodes = int_arg(args, "episodes", 3)?.clamp(0, 30) as usize;
                 let scope = args.get("scope").and_then(Value::as_str);
-                let hits = ops::recall(self.brain, &mut self.index, query, k, Some(&self.cwd), scope, None, episodes, args.get("refers_to"))?;
+                let also: Vec<String> = match args.get("also") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(Value::Array(a)) => a.iter().filter_map(|q| q.as_str().map(String::from)).collect(),
+                    Some(_) => return Err(Error::Op("also must be a list of queries".into())),
+                };
+                let hits = ops::recall(self.brain, &mut self.index, query, k, Some(&self.cwd), scope, None, episodes, args.get("refers_to"), &also)?;
                 Ok(Value::Array(hits.iter().map(|h| h.to_json()).collect()))
             }
             "get" => {
