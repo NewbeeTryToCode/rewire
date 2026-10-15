@@ -768,11 +768,16 @@ def main():
     # one brain per LoCoMo conversation: ingest it once before questions run in parallel
     if args.bench == "locomo":
         convs = list({it["conv"]["sample_id"]: it["conv"] for it in items}.values())
-        try:
-            for conv in convs:
-                locomo_brain(conv, brain_root(conv), args.mode, provider)
-        except Exception as exc:  # quota, budget or a failing session: questions still run on finished conversations
-            stopped = f"ingest stopped: {exc}"
+        with ThreadPoolExecutor(args.parallel) as pool:  # conversations are independent brains
+            futures = [pool.submit(locomo_brain, conv, brain_root(conv), args.mode, provider) for conv in convs]
+            errors = []
+            for fut in futures:
+                try:
+                    fut.result()
+                except Exception as exc:  # quota, budget or a failing session
+                    errors.append(str(exc))
+        if errors:  # questions still run on the conversations whose ingest finished
+            stopped = f"ingest stopped: {errors[0]}"
             items = [it for it in items if is_done(it["conv"])]
             print(f"{stopped}; {len(items)} questions on finished conversations", flush=True)
     with ThreadPoolExecutor(args.parallel) as pool:
