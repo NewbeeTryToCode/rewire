@@ -411,6 +411,8 @@ impl Brain {
             .arg("-C")
             .arg(&self.root)
             .args(["-c", "user.name=rewire", "-c", "user.email=rewire@localhost"])
+            // auto maintenance in the foreground: a detached git left running races the next writer (and cleanup)
+            .args(["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"])
             .args(args)
             .stdin(Stdio::null())
             .output()

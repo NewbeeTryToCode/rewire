@@ -253,7 +253,9 @@ class Brain:
     # ---- git -------------------------------------------------------------
 
     def git(self, *args: str, check: bool = False) -> subprocess.CompletedProcess:
-        cmd = ["git", "-C", self.root, "-c", "user.name=rewire", "-c", "user.email=rewire@localhost", *args]
+        # auto maintenance in the foreground: a detached git left running races the next writer (and cleanup)
+        cmd = ["git", "-C", self.root, "-c", "user.name=rewire", "-c", "user.email=rewire@localhost",
+               "-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false", *args]
         return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
     def commit(self, message: str) -> bool:
