@@ -177,7 +177,9 @@ def _claude_cli(self, model: str, messages: list[dict], stage: str, attempts: in
             if out.get("is_error"):
                 raise RuntimeError(str(out.get("result"))[:300])
             usage = out.get("usage") or {}
-            served = next(iter(out.get("modelUsage") or {}), model)
+            # modelUsage can also list a small side call by another model; the answer is the one with most output
+            served = max((out.get("modelUsage") or {model: {}}).items(),
+                         key=lambda kv: (kv[1] or {}).get("outputTokens") or 0)[0]
             call = {"stage": stage, "model": served,
                     "prompt_tokens": sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
                                                                      "cache_read_input_tokens")),
@@ -190,6 +192,8 @@ def _claude_cli(self, model: str, messages: list[dict], stage: str, attempts: in
             return {**call, "text": out.get("result") or ""}
         except (json.JSONDecodeError, RuntimeError) as exc:
             err = (str(exc) or proc.stderr)[:300]
+            if "hit your session limit" in err or "hit your weekly limit" in err:
+                raise QuotaExhausted(f"{model}: {err}") from None  # stop the run; rerun after the reset resumes
         time.sleep(min(5 * 2 ** attempt, 120))  # usually a rate limit on the subscription
     raise RuntimeError(f"{model}: failed after {attempts} attempts: {err}")
 
