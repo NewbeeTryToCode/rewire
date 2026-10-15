@@ -172,7 +172,7 @@ def locomo_brain(conv: dict, root: str, mode: str, provider) -> None:
             session = f"{conv['sample_id']}-{key}"
             if session in done_sessions:
                 continue
-            bad_before, start = provider.bad_json, time.time()
+            bad_before, start = provider.bad_count(), time.time()
             try:
                 with brain.lock(timeout=600):
                     r = con._consolidate("locomo", {"session": session, "cwd": None, "date": date}, turns)
@@ -182,7 +182,7 @@ def locomo_brain(conv: dict, root: str, mode: str, provider) -> None:
                 rec = {"session": session, "ok": False, "error": str(exc)[:300]}
                 raise
             finally:
-                rec.update(bad_json=provider.bad_json - bad_before, seconds=round(time.time() - start, 1))
+                rec.update(bad_json=provider.bad_count() - bad_before, seconds=round(time.time() - start, 1))
                 with open(log, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(rec) + "\n")
         LOCOMO.approve_all(root)  # no human reviewer in a benchmark: proposals accepted in bulk
@@ -726,6 +726,8 @@ def main():
     args.answer_model, args.judge_model, args.ingest_model = (
         normalize_model(m) for m in (args.answer_model, args.judge_model, args.ingest_model))
     provider = JsonProvider(client, args.ingest_model) if client else None
+    if provider:
+        provider.bad_log = os.path.join(args.out, "bad_json.jsonl")
     bench = BENCH[args.bench]
     os.makedirs(args.out, exist_ok=True)
     cache = Cache(os.path.join(args.out, "cache", "llm.jsonl"))
