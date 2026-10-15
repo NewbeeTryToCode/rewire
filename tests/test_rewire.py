@@ -55,6 +55,15 @@ class BrainCase(unittest.TestCase):
         return node
 
 
+class TestStems(unittest.TestCase):
+    def test_plural_and_verb_forms_reach_the_base_word(self):
+        from rewire.text import overlap, stems
+        self.assertEqual(sorted(stems("hikes")), ["hik", "hike"])
+        self.assertEqual(sorted(stems("hiking")), ["hik", "hike"])
+        self.assertIn("movie", stems("movies"))
+        self.assertEqual(overlap("How many hikes?", "We went for a hike"), 1)
+
+
 class TestFrontmatter(unittest.TestCase):
     def test_roundtrip(self):
         meta = {"id": "X", "edges": [{"rel": "about", "to": "Y"}], "valid_to": None, "title": "Ünïcode: yes"}
