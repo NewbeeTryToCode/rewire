@@ -1,4 +1,4 @@
-<!-- seed 0, REWIRE_SEMANTIC=0, jam recall dikunci; brain Haiku dari run penuh -->
+<!-- seed 0, REWIRE_SEMANTIC=0, recall clock frozen; Haiku brains from the full run -->
 # locomo · mode full · k=30 · episodes=20
 answer model `claude-cli/haiku` · judge model `claude-cli/haiku`
 
