@@ -102,6 +102,8 @@ class Client:
     def chat(self, model: str, messages: list[dict], stage: str, max_tokens: int = 2000,
              temperature: float = 0.0, attempts: int = 8) -> dict:
         """One chat completion -> the ledger record plus "text". Retries 429/5xx/network errors."""
+        if model.startswith(CLAUDE_CLI):
+            return _claude_cli(self, model, messages, stage)
         if not self.api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not set")
         self.ledger.check_budget()
@@ -150,6 +152,47 @@ class Client:
                 err = str(exc)[:300]
             time.sleep(min(2 ** attempt + random.random(), 120))
         raise RuntimeError(f"{model}: failed after {attempts} attempts: {err}")
+
+
+CLAUDE_CLI = "claude-cli/"  # "claude-cli/haiku": the local Claude Code CLI on its subscription, not OpenRouter
+CLI_SYSTEM = "You are a helpful assistant. Follow the user's instructions exactly."
+
+
+def _claude_cli(self, model: str, messages: list[dict], stage: str, attempts: int = 4) -> dict:
+    """One answer from `claude -p`: no tools, no session saved, an empty working dir (no CLAUDE.md)."""
+    import subprocess
+    import tempfile
+
+    prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
+    system = next((m["content"] for m in messages if m["role"] == "system"), CLI_SYSTEM)
+    argv = ["claude", "-p", "--model", model[len(CLAUDE_CLI):], "--system-prompt", system, "--tools", "",
+            "--no-session-persistence", "--output-format", "json"]
+    err = ""
+    for attempt in range(attempts):
+        start = time.time()
+        with tempfile.TemporaryDirectory() as cwd:
+            proc = subprocess.run(argv, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=600)
+        try:
+            out = json.loads(proc.stdout)
+            if out.get("is_error"):
+                raise RuntimeError(str(out.get("result"))[:300])
+            usage = out.get("usage") or {}
+            served = next(iter(out.get("modelUsage") or {}), model)
+            call = {"stage": stage, "model": served,
+                    "prompt_tokens": sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
+                                                                     "cache_read_input_tokens")),
+                    "completion_tokens": usage.get("output_tokens") or 0,
+                    "reasoning_tokens": (usage.get("output_tokens_details") or {}).get("thinking_tokens") or 0,
+                    "cost": 0.0,  # billed to the subscription; total_cost_usd is the API-price equivalent
+                    "api_equivalent_usd": out.get("total_cost_usd") or 0.0,
+                    "latency_ms": int((time.time() - start) * 1000), "finish_reason": out.get("stop_reason") or ""}
+            self.ledger.add(call)
+            return {**call, "text": out.get("result") or ""}
+        except (json.JSONDecodeError, RuntimeError) as exc:
+            err = (str(exc) or proc.stderr)[:300]
+        time.sleep(min(5 * 2 ** attempt, 120))  # usually a rate limit on the subscription
+    raise RuntimeError(f"{model}: failed after {attempts} attempts: {err}")
+
 
 
 def model_prices(client: Client) -> dict[str, tuple[float, float]]:

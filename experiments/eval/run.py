@@ -702,7 +702,8 @@ def main():
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
-    ap.add_argument("--answer-model", default=default_model, help="default: $OPENROUTER_MODEL or openai/gpt-4o-mini")
+    ap.add_argument("--answer-model", default=default_model,
+                    help="default: $OPENROUTER_MODEL or openai/gpt-4o-mini; claude-cli/haiku = local Claude Code CLI")
     ap.add_argument("--judge-model", default=default_model)
     ap.add_argument("--ingest-model", default=default_model, help="consolidation model for --mode full")
     ap.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
@@ -711,6 +712,7 @@ def main():
     ap.add_argument("--judge-max-tokens", type=int, default=200)
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--max-cost", type=float, help="stop when this many USD were spent in this run")
+    ap.add_argument("--skip-judge", action="store_true", help="answer only; rerun without it to judge the cached answers")
     ap.add_argument("--retrieval-only", action="store_true", help="no LLM at all: evidence recall + context size")
     ap.add_argument("--dry-run", action="store_true", help="no LLM at all: estimate tokens and cost of the run")
     ap.add_argument("--est-answer-out", type=int, default=400, help="dry-run: expected answer completion tokens")
@@ -755,6 +757,8 @@ def main():
         row["response"] = bench["answer"](a["text"])
         row["answer_call"] = {k: a.get(k) for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cost",
                                                     "latency_ms", "cached", "finish_reason")}
+        if args.skip_judge:  # answers only (cached); a later run with the judge reuses them
+            return row
         judge = lambda prompt: ask(client, cache, "judge", args.judge_model, prompt, args.judge_max_tokens)  # noqa: E731
         row["correct"], calls = bench["judge"](it, row["response"], judge)  # score in [0, 1]
         if calls:  # several calls for rubric judges (BEAM); none for multiple choice (PersonaMem)
