@@ -22,7 +22,8 @@ class SyncError(Exception):
 
 
 def _git(brain, *args, timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
-    cmd = ["git", "-C", brain.root, "-c", "user.name=rewire", "-c", "user.email=rewire@localhost", *args]
+    cmd = ["git", "-C", brain.root, "-c", "user.name=rewire", "-c", "user.email=rewire@localhost",
+           "-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false", *args]
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}  # never hang on a credential prompt in a hook
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
