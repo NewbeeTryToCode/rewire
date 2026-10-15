@@ -1019,3 +1019,13 @@ fn cli_end_to_end() {
     let hook = run(&["hook", "session-start"], Some(&json!({"cwd": tmp.path()}).to_string()));
     assert!(out(hook).contains("SQLite"));
 }
+
+#[test]
+fn plural_and_verb_forms_reach_the_base_word() {
+    use rewire::text::{overlap, stems};
+    let v = |w: &str| stems(w).into_iter().collect::<Vec<_>>();
+    assert_eq!(v("hikes"), ["hik", "hike"]);
+    assert_eq!(v("hiking"), ["hik", "hike"]);
+    assert!(stems("movies").contains("movie"));
+    assert_eq!(overlap("How many hikes?", "We went for a hike"), 1);
+}

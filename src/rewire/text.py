@@ -26,6 +26,10 @@ def _en(term: str) -> set[str]:
     for suffix, repl in (("ies", "y"), ("ing", ""), ("ed", ""), ("es", ""), ("s", ""), ("ly", "")):
         if term.endswith(suffix) and len(term) - len(suffix) >= 3:
             out.add(term[: -len(suffix)] + repl)
+            if suffix in ("ies", "es"):  # movies -> movie, hikes -> hike
+                out.add(term[:-1])
+            elif suffix in ("ing", "ed"):  # hiking -> hike, liked -> like
+                out.add(term[: -len(suffix)] + "e")
             break
     return out
 

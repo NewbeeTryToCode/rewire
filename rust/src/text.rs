@@ -36,7 +36,14 @@ fn clen(s: &str) -> usize {
 fn en(term: &str) -> Vec<String> {
     for (suffix, repl) in [("ies", "y"), ("ing", ""), ("ed", ""), ("es", ""), ("s", ""), ("ly", "")] {
         if term.ends_with(suffix) && clen(term) - clen(suffix) >= 3 {
-            return vec![format!("{}{}", &term[..term.len() - suffix.len()], repl)];
+            let base = &term[..term.len() - suffix.len()];
+            let mut out = vec![format!("{base}{repl}")];
+            match suffix {
+                "ies" | "es" => out.push(term[..term.len() - 1].to_string()), // movies -> movie, hikes -> hike
+                "ing" | "ed" => out.push(format!("{base}e")),                  // hiking -> hike, liked -> like
+                _ => {}
+            }
+            return out;
         }
     }
     Vec::new()
