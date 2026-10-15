@@ -63,6 +63,8 @@ Sumber data:
 | **Prompt / completion / reasoning tokens per response** | Dari `usage` API, per tahap (ingest / answer / judge) | ya | run.py |
 | **Biaya (USD)** | `usage.cost` dari OpenRouter, per tahap dan per soal | ya | run.py |
 | **Latency** | Retrieval (ms, p50/p95/p99) dan panggilan LLM (p50/p95) | — | run.py |
+| **J tanpa gold bermasalah** (LoCoMo) | J setelah membuang soal di `experiments/eval/locomo_errata.json`: pembicara tertukar di pertanyaan, gold bertentangan dengan percakapan, atau jawaban hanya ada di foto. J resmi tetap angka yang dibandingkan | ya | run.py |
+| **Strict J / list items named** (LoCoMo) | Untuk soal yang gold-nya daftar, juri daftar (model sama dengan judge) memecah gold dan menghitung item yang disebut jawaban, parafrase dihitung. Strict J: jawaban daftar benar hanya bila judge menerima **dan** semua item disebut | ya | run.py |
 | **Panjang jawaban** | Rata-rata kata per jawaban (jawaban panjang cenderung dinilai benar oleh judge yang longgar) | — | results JSON |
 
 Hasil retrieval yang sudah diukur ada di §8. Context precision rendah (≈11–20%) karena satu potongan berisi
@@ -208,7 +210,10 @@ LongMemEval membawa ≈11–22k token konteks per soal.
 3. **Subset sama**: LoCoMo kategori 1–4; LongMemEval_S (bukan M, bukan versi penuh).
 4. **Ukuran sampel**: interval kepercayaan 95% ≈ ±1,96·√(p(1−p)/n). Untuk p≈0,85: n=120 → ±6,4 poin;
    n=500 → ±3,1 poin. Sampel 20/kategori cukup untuk regresi kasar, bukan untuk klaim publik.
-5. **Variasi judge**: J bisa bergeser ±1–3 poin antar run dengan model yang sama; jangan menyimpulkan dari
+5. **Jam recall dikunci.** Aktivasi meluruh menurut umur memori, jadi run.py me-recall tiap soal pada saat brain
+   selesai di-ingest (waktu di `.state/eval_done`). Run ulang memberi konteks yang sama persis dan memakai cache
+   jawaban, kapan pun dijalankan. Run sebelum 2026-10-15 belum mengunci jam ini.
+6. **Variasi judge**: J bisa bergeser ±1–3 poin antar run dengan model yang sama; jangan menyimpulkan dari
    selisih kecil.
 
 ## 7. Pilihan model
