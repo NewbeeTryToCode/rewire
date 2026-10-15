@@ -1,71 +1,71 @@
-# LoCoMo: memangkas potongan transcript dan mempercepat jalur panas
+# LoCoMo: trimming transcript excerpts and speeding up the hot path
 
-Tanggal 2026-10-14 · LoCoMo 10 percakapan, 1.540 soal kategori 1–4 · mode `episodes`, `--retrieval-only`
-(tanpa LLM), kata kunci saja (`REWIRE_SEMANTIC=0`), k=30. Sumber ide: review performa
-[styler-ai/ProjectAtlas](https://github.com/styler-ai/ProjectAtlas) (MIT) dan
-[Bpolat0/atlasmemory](https://github.com/Bpolat0/atlasmemory) (GPL-3.0, hanya ide yang diambil, tanpa kode).
+Date 2026-10-14 · LoCoMo 10 conversations, 1,540 questions in categories 1–4 · mode `episodes`, `--retrieval-only`
+(no LLM), keywords only (`REWIRE_SEMANTIC=0`), k=30. Source of the ideas: a performance review of
+[styler-ai/ProjectAtlas](https://github.com/styler-ai/ProjectAtlas) (MIT) and
+[Bpolat0/atlasmemory](https://github.com/Bpolat0/atlasmemory) (GPL-3.0; only ideas were taken, no code).
 
 ```bash
 python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --sample 0 --retrieval-only \
   --episodes 10 --label trim-e10
 ```
 
-## 1. Potongan transcript hanya menyimpan giliran yang relevan
+## 1. Transcript excerpts keep only the relevant turns
 
-Ide dari atlasmemory (snippet per file diurutkan menurut kata kueri, sisanya dibuang). Di rewire: dua
-potongan teratas tetap utuh; potongan berikutnya hanya menyimpan giliran yang punya kata isi yang sama dengan
-pertanyaan (tanpa awalan pembicara `Nama:`), plus satu giliran di kiri-kanannya. Potongan tanpa kata yang cocok
-(datang lewat vektor, jendela waktu, atau sumber fakta) tetap utuh.
+The idea comes from atlasmemory (per-file snippets are ranked by query words and the rest is dropped). In rewire: the top two
+excerpts stay whole; the following excerpts keep only the turns that share a content word with the
+question (ignoring the `Name:` speaker prefix), plus one turn on each side. Excerpts with no matching word
+(those that arrive via vectors, a time window, or a fact source) stay whole.
 
-| konfigurasi | evidence turns | semua bukti | MRR | token konteks (mean / p95) | retrieval p50 / p95 ms |
+| configuration | evidence turns | all evidence | MRR | context tokens (mean / p95) | retrieval p50 / p95 ms |
 |---|---|---|---|---|---|
-| sebelum, 8 potongan | 70.6% | 75.2% | 0.745 | 1.816 / 2.295 | 3 / 8 |
-| **sebelum, 10 potongan (baseline)** | 73.1% | 77.3% | 0.750 | 2.238 / 2.822 | 4 / 9 |
-| sebelum, 12 potongan | 75.5% | 79.1% | 0.754 | 2.655 / 3.301 | 6 / 12 |
-| sebelum, 15 potongan | 77.4% | 80.1% | 0.755 | 3.274 / 4.052 | 7 / 16 |
-| **trim, 10 potongan** | 72.5% | 77.0% | 0.749 | **1.993** / 2.652 | 6 / 14 |
-| **trim, 12 potongan** | **74.7%** | **78.7%** | 0.753 | 2.332 / 3.084 | 8 / 16 |
+| before, 8 excerpts | 70.6% | 75.2% | 0.745 | 1,816 / 2,295 | 3 / 8 |
+| **before, 10 excerpts (baseline)** | 73.1% | 77.3% | 0.750 | 2,238 / 2,822 | 4 / 9 |
+| before, 12 excerpts | 75.5% | 79.1% | 0.754 | 2,655 / 3,301 | 6 / 12 |
+| before, 15 excerpts | 77.4% | 80.1% | 0.755 | 3,274 / 4,052 | 7 / 16 |
+| **trim, 10 excerpts** | 72.5% | 77.0% | 0.749 | **1,993** / 2,652 | 6 / 14 |
+| **trim, 12 excerpts** | **74.7%** | **78.7%** | 0.753 | 2,332 / 3,084 | 8 / 16 |
 
-- Dengan jumlah potongan sama (10): token −11%, evidence −0,6 poin, semua bukti −0,3 poin.
-- Dengan **anggaran token sama** (≈2.330 token; kurva "sebelum" diinterpolasi = 73,6% / 77,7%): trim + 12
-  potongan **+1,1 poin evidence turns, +1,0 poin semua bukti**. Multi-hop semua bukti 32,3% → 34,0%.
-- Biaya: retrieval p50 Python naik ~2 ms (cek kata per baris).
+- With the same number of excerpts (10): tokens −11%, evidence −0.6 points, all evidence −0.3 points.
+- With the **same token budget** (≈2,330 tokens; the "before" curve interpolated = 73.6% / 77.7%): trim + 12
+  excerpts gives **+1.1 points evidence turns, +1.0 points all evidence**. Multi-hop all evidence 32.3% → 34.0%.
+- Cost: Python retrieval p50 rises by ~2 ms (word check per line).
 
-Yang **dicoba dan tidak dipakai**: bonus koordinasi (berapa kata pertanyaan yang ada di potongan, ide dari
-query frasa + OR atlasmemory): bobot 0,1 / 0,3 / 0,6 memberi +0,1–0,4 poin evidence dan +0,01 MRR, hilang saat
-digabung dengan trim, dan menggandakan latensi. Trim dengan 2 giliran konteks: sama dengan 1 giliran, token lebih
-banyak.
+**Tried and not used**: a coordination bonus (how many question words appear in the excerpt; the idea comes from
+atlasmemory's phrase + OR query): weights 0.1 / 0.3 / 0.6 gave +0.1–0.4 points evidence and +0.01 MRR, which vanished when
+combined with trim, and doubled latency. Trim with 2 context turns: the same as 1 turn, with more
+tokens.
 
-## 2. Latensi jalur panas
+## 2. Hot-path latency
 
-`python experiments/perf/bench.py 2000 10000` (Python, median ms, container cloud, 3 ulangan; angka CLI
-termasuk startup Python):
+`python experiments/perf/bench.py 2000 10000` (Python, median ms, cloud container, 3 repetitions; CLI numbers
+include Python startup):
 
-| operasi | 2.000 node sebelum → sesudah | 10.000 node sebelum → sesudah |
+| operation | 2,000 nodes before → after | 10,000 nodes before → after |
 |---|---|---|
-| hook session-start (CLI) | 200 → **155** | 491 → **331** |
+| session-start hook (CLI) | 200 → **155** | 491 → **331** |
 | prime (CLI) | 101 → **90** | 271 → **235** |
 | recall (CLI) | 108 → **60** | 68 → 67 |
-| recall (MCP, server hangat) | 6 → **3** | 14 → **10** |
+| recall (MCP, warm server) | 6 → **3** | 14 → **10** |
 
-Perubahan:
-- **Snapshot tidak memformat baris yang pasti tidak muat** (ide ProjectAtlas: setiap baca punya batas). Profil
-  hook di 2.000 node: 60% waktu habis memformat dan memindai ±1.600 baris yang tidak pernah tampil. Sekarang baris
-  yang judulnya (batas bawah panjang baris) sudah melebihi sisa anggaran dihitung tanpa diformat. Output identik
-  byte per byte (dicek dengan `prime` sebelum/sesudah).
-- **Cache git per cwd selama 60 detik**: dua proses `git` (toplevel + remote) per recall memakan ~3 ms, sebagian
-  besar waktu recall MCP yang hangat.
+Changes:
+- **The snapshot does not format lines that certainly will not fit** (ProjectAtlas idea: every read has a limit). Profiling the
+  hook at 2,000 nodes: 60% of the time was spent formatting and scanning ±1,600 lines that were never shown. Now lines
+  whose title (a lower bound on line length) already exceeds the remaining budget are counted without being formatted. Output is identical
+  byte for byte (checked with `prime` before/after).
+- **Git cache per cwd for 60 seconds**: the two `git` processes (toplevel + remote) per recall took ~3 ms, most
+  of the time of a warm MCP recall.
 
-## 3. Paritas
+## 3. Parity
 
-`experiments/conformance/recall_parity.py` pada conv-26 dan conv-30 (233 soal, k=50, 10 potongan): hasil Python
-dan Rust identik 233/233 (item dan urutan sama).
+`experiments/conformance/recall_parity.py` on conv-26 and conv-30 (233 questions, k=50, 10 excerpts): Python and Rust
+results are identical 233/233 (same items and order).
 
-## Kandidat lain dari review (belum dikerjakan)
+## Other candidates from the review (not yet done)
 
-- Spreading activation hanya lewat tetangga yang relevan dengan kueri, dengan batas bonus graf (ProjectAtlas
-  `projectatlas-service/src/lib.rs` ~2451). Perlu mode `full` (fakta) untuk diukur; mode `episodes` tidak punya
-  graf.
-- Output recall MCP berbentuk tabel (gaya TOON) dan tanpa `score`/`b`: perkiraan −8–15% token.
-- Hash isi file di samping mtime, supaya `git checkout`/sync tidak memicu parse dan embedding ulang.
-- Klasifikasi tiap soal yang meleset: tidak jadi kandidat, terpotong di k, atau hilang saat merge/trim.
+- Spreading activation only through neighbors relevant to the query, with a cap on the graph bonus (ProjectAtlas
+  `projectatlas-service/src/lib.rs` ~2451). Needs `full` mode (facts) to measure; `episodes` mode has no
+  graph.
+- Tabular MCP recall output (TOON style) without `score`/`b`: an estimated −8–15% tokens.
+- File content hash alongside mtime, so that `git checkout`/sync does not trigger re-parsing and re-embedding.
+- Classification of each missed question: not a candidate, cut off at k, or lost during merge/trim.

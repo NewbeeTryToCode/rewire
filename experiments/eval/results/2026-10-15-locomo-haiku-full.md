@@ -1,4 +1,4 @@
-<!-- LoCoMo penuh (1.540 soal, kategori 1-4), mode full, k=30, episodes=20, ingest/jawab/juri claude-cli/haiku (Haiku 5.5), seed 0, sebelum jam recall dikunci -->
+<!-- Full LoCoMo (1,540 questions, categories 1-4), mode full, k=30, episodes=20, ingest/answer/judge claude-cli/haiku (Haiku 5.5), seed 0, before the recall clock was pinned -->
 # locomo · mode full · k=30 · episodes=20
 answer model `claude-cli/haiku` · judge model `claude-cli/haiku`
 
@@ -67,13 +67,13 @@ Active nodes by type: fact 2401, preference 553, decision 449, person 35, concep
 
 Published scores of other memory systems, and why they are not directly comparable: docs/evaluation.md.
 
-## Juri kedua: Haiku 4.5 (jawaban yang sama)
+## Second judge: Haiku 4.5 (same answers)
 
-| kategori | n | J (juri Haiku 5.5) | J (juri Haiku 4.5) | kedua juri sepakat | J ketat (daftar harus lengkap) | J tanpa 29 gold bermasalah (juri 4.5) |
+| category | n | J (Haiku 5.5 judge) | J (Haiku 4.5 judge) | both judges agree | strict J (list must be complete) | J without the 29 disputed gold (4.5 judge) |
 |---|---|---|---|---|---|---|
-| multi-hop | 282 | 92,2% | 92,2% | 99,3% | 79,4% | 93,2% |
-| open-domain | 96 | 66,7% | 71,9% | 94,8% | 61,5% | 73,4% |
-| single-hop | 841 | 95,8% | 96,0% | 99,2% | 94,2% | 98,1% |
-| temporal | 321 | 94,1% | 95,0% | 97,2% | 94,1% | 96,5% |
-| overall | 1.540 | 93,0% | 93,6% | 98,5% | 89,4% | 95,3% |
+| multi-hop | 282 | 92.2% | 92.2% | 99.3% | 79.4% | 93.2% |
+| open-domain | 96 | 66.7% | 71.9% | 94.8% | 61.5% | 73.4% |
+| single-hop | 841 | 95.8% | 96.0% | 99.2% | 94.2% | 98.1% |
+| temporal | 321 | 94.1% | 95.0% | 97.2% | 94.1% | 96.5% |
+| overall | 1,540 | 93.0% | 93.6% | 98.5% | 89.4% | 95.3% |
 

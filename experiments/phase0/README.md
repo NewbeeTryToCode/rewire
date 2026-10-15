@@ -1,36 +1,36 @@
-# Fase 0 — Simulasi model activation
+# Phase 0 — Activation model simulation
 
-Script: [`sim.py`](sim.py) · Hasil mentah: [`results.md`](results.md) · Jalankan: `python3 experiments/phase0/sim.py` (stdlib saja)
+Script: [`sim.py`](sim.py) · Raw results: [`results.md`](results.md) · Run: `python3 experiments/phase0/sim.py` (stdlib only)
 
 ## Setup
 
-- 180 hari, satu sesi per hari, **ganti proyek di hari 90** (proyek A → B).
-- 65 node: 5 constraint (importance 5), 10 preference, 25 node proyek A, 25 node proyek B.
-- Setiap sesi membutuhkan ~6 node proyek (distribusi Zipf), kadang preference, constraint sangat jarang (2%).
-- Core snapshot = 15 slot. Metrik utama: **hit rate** = porsi kebutuhan sesi yang sudah ada di core.
-- Skenario 2: fokus di dalam proyek bergeser tiap 15 hari (fitur/modul berganti).
-- 20 seed, dirata-rata.
+- 180 days, one session per day, **project switch on day 90** (project A → B).
+- 65 nodes: 5 constraints (importance 5), 10 preferences, 25 project A nodes, 25 project B nodes.
+- Each session needs ~6 project nodes (Zipf distribution), sometimes a preference, and very rarely a constraint (2%).
+- Core snapshot = 15 slots. Main metric: **hit rate** = the share of a session's needs that are already in core.
+- Scenario 2: the focus within a project shifts every 15 days (features/modules change).
+- 20 seeds, averaged.
 
-**Batasan:** data sintetis. Ini membuktikan *perilaku* matematika sesuai klaim desain, bukan kualitas di dunia nyata. Angka absolut tidak bermakna; yang bermakna adalah perbandingan antar kebijakan.
+**Limitations:** synthetic data. This proves that the *behavior* of the math matches the design's claims, not real-world quality. The absolute numbers are not meaningful; what is meaningful is the comparison between policies.
 
-## Temuan
+## Findings
 
-| # | Hipotesis | Hasil | Konsekuensi desain |
+| # | Hypothesis | Result | Design consequence |
 |---|---|---|---|
-| H1 | Menghitung eksposur sebagai "pakai" menyebabkan rich-get-richer | **Terbukti, parah.** Hit rate setelah ganti proyek jatuh ke **1.6%**; core membeku selamanya | Eksposur = 0 adalah aturan wajib (sudah di desain) |
-| H2 | Tanpa pengecualian decay, constraint hilang | **Terbukti.** 0 dari 5 constraint tersisa di core hari 180 | Pengecualian decay wajib (rev 1) |
-| H3 | ACT-R beradaptasi ke pergantian proyek | **Gagal pada desain rev 1.** ACT-R global butuh ~80 hari dan di 9/20 seed tidak pernah beradaptasi; node proyek lama terlalu kuat | **Workaround: scope proyek aktif** → adaptasi 1 hari |
-| — | Constraint memakan slot konteks kerja | Constraint tetap menempati 5/15 slot → hit rate turun | **Workaround: budget constraint terpisah** → hit rate 60% → 73% |
-| H4 | ACT-R model terbaik | **Tidak ada pemenang mutlak.** Fokus stabil: frekuensi menang tipis (74.7% vs 72.9%). Fokus bergeser: recency menang tipis (63.2% vs 61.4%). ACT-R **tidak pernah jauh dari yang terbaik**, sedangkan frekuensi (57%) dan recency (65%) masing-masing kalah jelas di satu skenario | ACT-R dipertahankan sebagai pilihan *robust*, bukan karena optimal |
-| — | Parameter decay `d` | Stabil: d=0.3 terbaik (73.3%); bergeser: d=1.0 terbaik (63.9%). **d≈0.7** berada dalam ~1.5 poin dari yang terbaik di kedua skenario | Default `d = 0.7`, bisa di-tuning dari event log nyata |
-| H5 | Spacing effect | **Lemah.** ACT-R standar hanya membedakan sedikit (B −2.02 massal vs −1.88 tersebar) | Jangan klaim spacing effect di v0.1. Jika dibutuhkan: decay Pavlik & Anderson (2005), di mana `d` bergantung pada aktivasi saat pemakaian |
+| H1 | Counting exposure as "use" causes rich-get-richer | **Confirmed, severely.** The hit rate after the project switch drops to **1.6%**; core freezes forever | Exposure = 0 is a mandatory rule (already in the design) |
+| H2 | Without decay exemptions, constraints disappear | **Confirmed.** 0 of 5 constraints remain in core on day 180 | Decay exemption is mandatory (rev 1) |
+| H3 | ACT-R adapts to project switches | **Failed with design rev 1.** Global ACT-R needs ~80 days and in 9/20 seeds never adapts; old project nodes are too strong | **Workaround: active project scope** → adaptation in 1 day |
+| — | Constraints take up working-context slots | Constraints still occupy 5/15 slots → the hit rate drops | **Workaround: a separate constraint budget** → hit rate 60% → 73% |
+| H4 | ACT-R is the best model | **No absolute winner.** Stable focus: frequency wins narrowly (74.7% vs 72.9%). Shifting focus: recency wins narrowly (63.2% vs 61.4%). ACT-R is **never far from the best**, whereas frequency (57%) and recency (65%) each clearly lose in one scenario | ACT-R is kept as the *robust* choice, not because it is optimal |
+| — | Decay parameter `d` | Stable: d=0.3 is best (73.3%); shifting: d=1.0 is best (63.9%). **d≈0.7** is within ~1.5 points of the best in both scenarios | Default `d = 0.7`, can be tuned from real event logs |
+| H5 | Spacing effect | **Weak.** Standard ACT-R distinguishes only slightly (B −2.02 massed vs −1.88 spaced) | Do not claim a spacing effect in v0.1. If needed: Pavlik & Anderson (2005) decay, where `d` depends on the activation at the time of use |
 
-## Ringkasan konfigurasi yang dipilih untuk MVP
+## Summary of the configuration chosen for the MVP
 
 ```
-activation:   ACT-R base-level, d = 0.7, eksposur = 0
-scope:        node proyek difilter ke proyek aktif (dari repo/cwd)
-budget:       constraint & preference punya budget sendiri, di luar slot konteks kerja
+activation:   ACT-R base-level, d = 0.7, exposure = 0
+scope:        project nodes filtered to the active project (from repo/cwd)
+budget:       constraints & preferences have their own budget, outside the working-context slots
 decay exempt: constraint, preference
-hebbian:      off (belum diuji; ditunda ke v0.2)
+hebbian:      off (not yet tested; deferred to v0.2)
 ```

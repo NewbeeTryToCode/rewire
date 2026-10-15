@@ -1,30 +1,30 @@
-# Performa jalur kritis
+# Critical path performance
 
-Script: [`bench.py`](bench.py) · Jalankan: `python experiments/perf/bench.py [ukuran...]`
+Script: [`bench.py`](bench.py) · Run: `python experiments/perf/bench.py [size...]`
 
-Brain sintetis dengan N node dan ~10 event pemakaian per node (10.000 node = 100.000 event). Median dalam milidetik, diukur di container cloud (Python 3.13). Angka CLI termasuk ~70 ms startup Python.
+A synthetic brain with N nodes and ~10 usage events per node (10,000 nodes = 100,000 events). Medians in milliseconds, measured in a cloud container (Python 3.13). CLI numbers include ~70 ms of Python startup.
 
-| Operasi | 500 node (sebelum → sesudah) | 2.000 node | 10.000 node |
+| Operation | 500 nodes (before → after) | 2,000 nodes | 10,000 nodes |
 |---|---|---|---|
-| **hook session-start (CLI)** — yang ditunggu harness | 197 → **77** | 359 → **83** | 1.240 → **168** |
-| prime (CLI) | 209 → **72** | 266 → **84** | 1.099 → **140** |
+| **session-start hook (CLI)** — what the harness waits for | 197 → **77** | 359 → **83** | 1,240 → **168** |
+| prime (CLI) | 209 → **72** | 266 → **84** | 1,099 → **140** |
 | recall (CLI) | 190 → **87** | 268 → **81** | 999 → **95** |
-| recall (MCP, server hangat) | 94 → **6** | 188 → **8** | 908 → **34** |
-| get dengan ID pendek (MCP) | 61 → **3** | 176 → **5** | 910 → **25** |
-| rebuild penuh (sekali, saat init/clone) | 48 → 76 | 177 → 281 | 907 → 1.300–1.600 |
-| konsolidasi tanpa waktu LLM | — | — | 385 (500 node: 140) |
+| recall (MCP, warm server) | 94 → **6** | 188 → **8** | 908 → **34** |
+| get with a short ID (MCP) | 61 → **3** | 176 → **5** | 910 → **25** |
+| full rebuild (once, at init/clone) | 48 → 76 | 177 → 281 | 907 → 1,300–1,600 |
+| consolidation excluding LLM time | — | — | 385 (500 nodes: 140) |
 
-## Yang diubah
+## What was changed
 
-1. **Index inkremental** (penyebab utama). Sebelumnya setiap `prime`/`recall`/hook membangun ulang index dari nol. Sekarang hanya file node yang mtime/ukurannya berubah yang dibaca ulang, hanya byte baru di event log yang diproses (offset + verifikasi 64 byte terakhir; file yang ditulis ulang, misalnya oleh `git revert`, memicu rebuild penuh), dan activation dihitung ulang hanya untuk node yang tersentuh (penuh setiap 5 menit, karena activation berubah dalam satuan jam).
-2. **Lewati scan direktori** bila mtime folder tidak berubah dan scan penuh terakhir < 60 detik (rewire selalu menulis dengan rename atomik, yang mengubah mtime folder).
-3. **ID pendek → glob nama file** (`*-<8 karakter>.md`), bukan parse semua node.
-4. **Frontmatter diparse sekali per file** (bukan satu `json.loads` per baris); event diparse dari string, bukan bytes, dan disisipkan dengan `executemany`.
-5. **Konsolidasi tanpa scan penuh**: hub proyek dicari di `nodes/project/` saja; ID memory yang dipakai di-resolve satu per satu.
-6. `importlib.resources` hanya diimport saat `install` (−16 ms startup).
+1. **Incremental index** (the main cause). Previously every `prime`/`recall`/hook rebuilt the index from scratch. Now only node files whose mtime/size changed are reread, only new bytes in the event log are processed (offset + verification of the last 64 bytes; a rewritten file, e.g. by `git revert`, triggers a full rebuild), and activation is recomputed only for touched nodes (in full every 5 minutes, because activation changes on the scale of hours).
+2. **Skip the directory scan** when the folder mtime has not changed and the last full scan was < 60 seconds ago (rewire always writes with an atomic rename, which changes the folder mtime).
+3. **Short ID → file name glob** (`*-<8 characters>.md`), instead of parsing all nodes.
+4. **Frontmatter is parsed once per file** (not one `json.loads` per line); events are parsed from strings, not bytes, and inserted with `executemany`.
+5. **Consolidation without a full scan**: project hubs are looked up in `nodes/project/` only; used memory IDs are resolved one by one.
+6. `importlib.resources` is imported only on `install` (−16 ms startup).
 
-## Trade-off
+## Trade-offs
 
-- Rebuild penuh ~1,6× lebih lambat dari sebelumnya (WAL + upsert per event). Terjadi sekali per mesin; dipilih karena semua operasi harian jadi 3–30× lebih cepat.
-- Edit manual *in-place* pada file node (tanpa rename) bisa terlambat terlihat hingga 60 detik. Editor biasa dan rewire sendiri menulis dengan rename, jadi langsung terlihat.
-- Biaya dominan konsolidasi tetap panggilan LLM (~10–17 detik per sesi, berjalan di background setelah sesi selesai).
+- A full rebuild is ~1.6× slower than before (WAL + upsert per event). It happens once per machine; this was chosen because all daily operations became 3–30× faster.
+- Manual *in-place* edits to a node file (without a rename) may take up to 60 seconds to become visible. Ordinary editors and rewire itself write with a rename, so those are visible immediately.
+- The dominant cost of consolidation is still the LLM call (~10–17 seconds per session, running in the background after a session ends).
