@@ -83,7 +83,8 @@ def cmd_recall(args):
     try:
         hits = ops.recall(brain, index, " ".join(args.query), k=args.k, cwd=os.getcwd(), scope=args.scope,
                           episodes=args.episodes,
-                          refers_to={"from": args.since, "to": args.until} if args.since or args.until else None)
+                          refers_to={"from": args.since, "to": args.until} if args.since or args.until else None,
+                          also=args.also)
     except ops.OpError as exc:
         sys.exit(str(exc))
     _print(hits, args.json)
@@ -291,6 +292,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--scope", help="global | project:<slug> | all")
     s.add_argument("--from", dest="since", metavar="YYYY-MM-DD", help="the question is about this period: boost it")
     s.add_argument("--to", dest="until", metavar="YYYY-MM-DD")
+    s.add_argument("--also", action="append", default=[], metavar="QUERY",
+                   help="an extra query searched too and merged by rank (repeatable, up to 4)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_recall)
 

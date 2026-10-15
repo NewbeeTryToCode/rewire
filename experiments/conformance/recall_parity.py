@@ -39,8 +39,10 @@ def main():
     ap.add_argument("--k", type=int, default=50)
     ap.add_argument("--episodes", type=int, default=10)
     ap.add_argument("--semantic", action="store_true")
+    ap.add_argument("--expansions", help="JSON {question: [extra queries]}: also compare recall with `also`")
     args = ap.parse_args()
     data = {c["sample_id"]: c for c in json.load(open(args.data))}
+    expansions = json.load(open(args.expansions)) if args.expansions else {}
     total = same_order = same_set = facts_equal = 0
     examples = []
     for conv in args.convs.split(","):
@@ -52,9 +54,13 @@ def main():
             if qa.get("category") not in (1, 2, 3, 4):
                 continue
             q = qa["question"]
-            py = ops.recall(py_brain, index, q, k=args.k, scope="all", episodes=args.episodes)
+            also = expansions.get(q, []) if expansions else []
+            if expansions and not also:
+                continue
+            py = ops.recall(py_brain, index, q, k=args.k, scope="all", episodes=args.episodes, also=also)
             out = subprocess.run([args.rust, "--brain", rs_root, "recall", "--json", "-k", str(args.k),
-                                  "--episodes", str(args.episodes), "--scope", "all", "--", q],
+                                  "--episodes", str(args.episodes), "--scope", "all",
+                                  *[a for e in also for a in ("--also", e)], "--", q],
                                  capture_output=True, text=True, check=True).stdout
             rs = json.loads(out)
             pk, rk = [key(h) for h in py], [key(h) for h in rs]

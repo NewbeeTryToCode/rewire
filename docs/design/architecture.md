@@ -41,7 +41,8 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
   most 5 notes clearly related to it (two content words in common) that the session has not seen yet.
   During the session the agent calls `recall` (facts, plus raw excerpts and session summaries; facts pull in
   the excerpt they were extracted from, the top excerpt carries its session's summary; `refers_to` boosts a
-  period the model resolved) and `get` for full notes or `skill:<name>`. Using a note appends an event,
+  period the model resolved; `also` adds up to 4 queries the model writes for a category question, such as
+  instances for "desserts", fused by rank) and `get` for full notes or `skill:<name>`. Using a note appends an event,
   which raises its activation.
 - **Safety at load time**: all injected text is fenced (`<rewire-memory>`), notes and transcript excerpts are
   re-scanned when shown (`[BLOCKED]` instead of a secret or an injection), excerpts follow the same project
