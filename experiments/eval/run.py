@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +46,7 @@ from rewire import ops  # noqa: E402
 from rewire.brain import Brain  # noqa: E402
 from rewire.consolidate import Consolidator  # noqa: E402
 from rewire.index import Index  # noqa: E402
+from rewire import activation as rewire_activation, index as rewire_index  # noqa: E402
 
 
 def _load(name: str, path: str):
@@ -149,6 +151,34 @@ def ask(client: Client | None, cache: Cache, stage: str, model: str, prompt: str
     return {**call, "cached": False}
 
 
+# ---- clock ---------------------------------------------------------------
+# Recall ranks by activation, which decays with the time since each memory was written. Questions answered hours
+# or days after ingest would see different rankings (and miss the answer cache), so each question is recalled as
+# of the moment its brain finished ingesting. Only rewire's index and activation read this clock.
+
+_now = threading.local()
+_act_lock, _act_fresh = threading.Lock(), set()
+
+
+class _Clock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        at = getattr(_now, "at", None)
+        if at is None:
+            return datetime.now(tz)
+        return at.astimezone(tz) if tz else at.replace(tzinfo=None)
+
+
+def frozen_now(root: str) -> datetime:
+    """When the brain at root finished ingesting: the time written in eval_done, else its mtime."""
+    done = os.path.join(root, ".state", "eval_done")
+    text = open(done).read().strip()
+    return datetime.fromisoformat(text) if text else datetime.fromtimestamp(os.path.getmtime(done), timezone.utc)
+
+
+rewire_index.datetime = rewire_activation.datetime = _Clock
+
+
 # ---- LoCoMo --------------------------------------------------------------
 
 def locomo_brain(conv: dict, root: str, mode: str, provider) -> None:
@@ -187,7 +217,8 @@ def locomo_brain(conv: dict, root: str, mode: str, provider) -> None:
                     fh.write(json.dumps(rec) + "\n")
         LOCOMO.approve_all(root)  # no human reviewer in a benchmark: proposals accepted in bulk
     os.makedirs(os.path.dirname(done), exist_ok=True)
-    open(done, "w").close()
+    with open(done, "w") as fh:  # the brain's clock for recall (frozen_now)
+        fh.write(datetime.now(timezone.utc).isoformat())
 
 
 def _jsonl(path: str) -> list[dict]:
@@ -227,6 +258,7 @@ def locomo_items(args) -> list[dict]:
     if args.convs != "all":
         want = set(args.convs.split(","))
         data = [c for c in data if c["sample_id"] in want]
+    errata = json.load(open(os.path.join(HERE, "locomo_errata.json")))["questions"]
     items = []
     for conv in data:
         dates = [LOCOMO.session_date(v) for k, v in conv["conversation"].items() if k.endswith("_date_time")]
@@ -244,7 +276,7 @@ def locomo_items(args) -> list[dict]:
             items.append({"bench": "locomo", "qid": f"{conv['sample_id']}-{i}", "conv": conv,
                           "category": LOCOMO.CATS[qa["category"]], "question": qa["question"], "gold": str(gold),
                           "ref_date": max(d for d in dates if d), "evidence_turns": ev, "evidence_ids": ev_ids,
-                          "abstention": False,
+                          "abstention": False, "errata": errata.get(f"{conv['sample_id']}-{i}"),
                           "raw_tokens": raw_tokens})
     return items
 
@@ -252,12 +284,19 @@ def locomo_items(args) -> list[dict]:
 def locomo_prepare(it: dict, args, provider) -> dict:
     root = os.path.join(args.out, "locomo", f"brains-{args.mode}", it["conv"]["sample_id"])
     locomo_brain(it["conv"], root, args.mode, provider)
-    index = Index(Brain(root))
-    index.refresh()
-    start = time.time()
-    mems = LOCOMO.memories_for(index, it["question"], args.k, args.episodes)
-    retrieval_ms = (time.time() - start) * 1000
-    index.close()
+    _now.at = frozen_now(root)
+    try:
+        index = Index(Brain(root))
+        with _act_lock:  # activation recomputed once per brain as of the frozen clock, not left from an earlier run
+            if root not in _act_fresh:
+                index.refresh(max_age=0)
+                _act_fresh.add(root)
+        start = time.time()
+        mems = LOCOMO.memories_for(index, it["question"], args.k, args.episodes)
+        retrieval_ms = (time.time() - start) * 1000
+        index.close()
+    finally:
+        _now.at = None
     lines = ["The following memories are presented in chronological order (oldest to newest)."]
     lines += [f"({m['created_at'] or 'unknown date'}) {m['memory']}" for m in sorted(mems, key=lambda m: m["created_at"])]
     context = "\n".join(lines) if mems else "(No relevant memories found)"
@@ -304,11 +343,37 @@ def locomo_verdict(text: str) -> bool | None:
     return None
 
 
+LIST_JUDGE_PROMPT = """The gold answer to a question is a list. Split the gold answer into its items, then count how
+many of them the response names. A paraphrase, a synonym or a more specific term counts as named; a vaguer term,
+a different item or an item only hinted at does not. Extra items in the response do not matter.
+
+Question: {question}
+Gold answer: {gold}
+Response: {response}
+
+Reply with one line of JSON and nothing else: {"items": <number of gold items>, "named": <number named>}"""
+
+
+def list_judge_prompt(it: dict, response: str) -> str:
+    return (LIST_JUDGE_PROMPT.replace("{question}", it["question"]).replace("{gold}", it["gold"])
+            .replace("{response}", response))
+
+
+def list_coverage(text: str) -> float | None:
+    """Share of the gold list the response names, from the list judge's reply; None when unreadable."""
+    m = re.search(r'"items"\s*:\s*(\d+)\s*,\s*"named"\s*:\s*(\d+)', text)
+    if not m or int(m.group(1)) == 0:
+        return None
+    return min(1.0, int(m.group(2)) / int(m.group(1)))
+
+
 def gold_items(gold: str) -> list[str]:
     """The items of a list answer ("a, b and c"); one item for anything else."""
     parts = [p for p in re.split(r",|;|\band\b", str(gold)) if norm(p)]
-    # a list is short items without numbers; dates ("24 June, 2022") and sentences stay one item
-    is_list = len(parts) > 1 and not re.search(r"\d", str(gold)) and all(len(norm(p).split()) <= 4 for p in parts)
+    # a list is short items without numbers; dates ("24 June, 2022") and sentences stay one item, including
+    # short reasons and purposes ("because it relaxes and calms him", "to help others and grow")
+    is_list = (len(parts) > 1 and not re.search(r"\d", str(gold)) and all(len(norm(p).split()) <= 4 for p in parts)
+               and not re.match(r"(?i)\s*(because|since|so|to|by|for|that|when|if)\b", str(gold)))
     return parts if is_list else [str(gold)]
 
 
@@ -622,11 +687,22 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
         miss = [r for r in with_ev if not r["evidence"]["all"]]
         out["J_all_evidence"] = sum(r["correct"] for r in hit) / len(hit) if hit else None
         out["J_missing_evidence"] = sum(r["correct"] for r in miss) / len(miss) if miss else None
+        clean = [r for r in judged if not r.get("errata")]
+        out["errata_n"] = len(judged) - len(clean)
+        out["J_clean"] = sum(r["correct"] for r in clean) / len(clean) if clean and out["errata_n"] else None
         listed = [r for r in judged if "item_coverage" in r]
         if listed:  # list answers: the judge accepts one right item, this is the share of items found
             out["list_n"] = len(listed)
             out["list_J"] = sum(r["correct"] for r in listed) / len(listed)
             out["list_item_coverage"] = sum(r["item_coverage"] for r in listed) / len(listed)
+            llm = [r for r in listed if r.get("list_items_llm") is not None]
+            if llm:
+                out["list_items_llm"] = sum(r["list_items_llm"] for r in llm) / len(llm)
+                out["list_complete"] = sum(r["list_items_llm"] == 1 for r in llm) / len(llm)
+                # strict J: a list answer is right only when the judge accepts it and it names every gold item
+                strict = [bool(r["correct"]) and (r.get("list_items_llm") in (None, 1.0)) if "item_coverage" in r
+                          else bool(r["correct"]) for r in judged]
+                out["J_strict"] = sum(strict) / len(strict)
         if args.bench == "locomo" and judged:
             out["F1"] = sum(r["f1"] for r in judged) / len(judged)
             out["BLEU1"] = sum(r["bleu1"] for r in judged) / len(judged)
@@ -680,6 +756,12 @@ def write_report(summary: dict, path: str) -> None:
         lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | "
                      f"{f(g['evidence_session_any'], True)} | {g['compression']:.1f}× | {g['retrieval_ms_p99']:.0f} | "
                      f"{f(g.get('answer_words_mean'))} |")
+    if any(g.get("J_clean") is not None for g in summary["groups"].values()):
+        lines += ["", "| category | J | disputed gold excluded | J without them |", "|---|---|---|---|"]
+        for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+            lines.append(f"| {name} | {f(g['J'], True)} | {g['errata_n']} | {f(g.get('J_clean'), True)} |")
+        lines += ["", "Disputed gold: experiments/eval/locomo_errata.json (speaker swapped in the question, gold "
+                      "contradicts the conversation, answer only in a photo). J is the official, comparable number."]
     if any(g.get("J_all_evidence") is not None for g in summary["groups"].values()):
         lines += ["", "| category | J when all evidence retrieved | J when evidence missing | share with all evidence |",
                   "|---|---|---|---|"]
@@ -695,6 +777,14 @@ def write_report(summary: dict, path: str) -> None:
                          f"{g.get('list_n', '-')} | {f(g.get('list_J'), True)} | {f(g.get('list_item_coverage'), True)} |")
         lines += ["", "List J follows the official judge (one right item is enough); list items found is the share of "
                       "gold items present in the answer, without an LLM."]
+    if any(g.get("J_strict") is not None for g in summary["groups"].values()):
+        lines += ["", "| category | J | strict J (lists must be complete) | list answers n | list items named (LLM) | "
+                      "list answers complete |", "|---|---|---|---|---|---|"]
+        for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+            lines.append(f"| {name} | {f(g['J'], True)} | {f(g.get('J_strict', g['J']), True)} | {g.get('list_n', 0)} | "
+                         f"{f(g.get('list_items_llm'), True)} | {f(g.get('list_complete'), True)} |")
+        lines += ["", "The list judge (same model as the judge) splits the gold list and counts the items the answer "
+                      "names, paraphrases included."]
     if summary.get("judge_unparsed"):
         lines += ["", f"WARNING: {summary['judge_unparsed']} judge replies had no CORRECT/WRONG label (counted as wrong)."]
     if "abstention_accuracy" in summary:
@@ -801,6 +891,8 @@ def main():
     def run_one(it: dict) -> dict:
         prep = bench["prepare"](it, args, provider)
         row = {k: it[k] for k in ("bench", "qid", "category", "question", "gold", "abstention")}
+        if it.get("errata"):
+            row["errata"] = it["errata"]
         row.update({k: prep[k] for k in ("context_tokens", "raw_tokens", "retrieval_ms", "n_memories", "evidence")})
         row["answer_prompt_tokens_est"] = est_tokens(prep["prompt"])
         if no_llm:
@@ -823,6 +915,9 @@ def main():
             row["judge_unparsed"] = locomo_verdict(calls[0]["text"]) is None
             if len(gold_items(row["gold"])) > 1:
                 row["item_coverage"] = item_coverage(row["gold"], row["response"])
+                c = ask(client, cache, "list_judge", args.judge_model, list_judge_prompt(it, row["response"]),
+                        args.judge_max_tokens)
+                row["list_items_llm"] = list_coverage(c["text"])
         return row
 
     rows, stopped = [], None
