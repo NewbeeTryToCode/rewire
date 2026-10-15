@@ -275,6 +275,9 @@ def locomo_prepare(it: dict, args, provider) -> dict:
             "raw_tokens": it["raw_tokens"],
             "evidence": {"turns": hits, "n_turns": len(it["evidence_turns"]), "all": hits == len(it["evidence_turns"]),
                          "turns_with_facts": with_facts, "all_with_facts": with_facts == len(it["evidence_turns"]),
+                         "ids": it["evidence_ids"],  # per turn: found as an excerpt, as a fact, or missing
+                         "via": ["excerpt" if f else "fact" if i in sources else "missing"
+                                 for f, i in zip(found, it["evidence_ids"])],
                          **ranking(ranked, it["evidence_turns"])} if it["evidence_turns"] else None}
 
 
