@@ -1,24 +1,24 @@
-# LoCoMo, Nemotron 3 Ultra (free), 80 soal, 2026-10-14
+# LoCoMo, Nemotron 3 Ultra (free), 80 questions, 2026-10-14
 
-Run dari runbook `docs/evaluation.md` §9, langkah 4.
+Run from the runbook `docs/evaluation.md` §9, step 4.
 
-- Perintah: `run.py --bench locomo --sample 20 --answer-model M --judge-model M --reasoning-effort low --answer-max-tokens 4000 --parallel 2 --label nemotron-s20`,
-  M = `nvidia/nemotron-3-ultra-550b-a55b:free`. Seed default runner; 20 soal per kategori (stratified).
-- Mode `episodes`, keyword (tanpa semantic), k=30, 10 potongan: sama dengan baseline retrieval §8.
-- `--answer-max-tokens 4000` (bukan default 1500): pada smoke test 2 dari 8 jawaban terpotong karena
-  reasoning menghabiskan batas, walaupun `--reasoning-effort low`. Di run ini masih 1 dari 80 terpotong.
-- Biaya $0; ±5,1k prompt + 1,1k completion token per soal; jawaban p50 ≈27 s, p95 ≈99 s. Durasi total ≈25 menit.
+- Command: `run.py --bench locomo --sample 20 --answer-model M --judge-model M --reasoning-effort low --answer-max-tokens 4000 --parallel 2 --label nemotron-s20`,
+  M = `nvidia/nemotron-3-ultra-550b-a55b:free`. Default runner seed; 20 questions per category (stratified).
+- Mode `episodes`, keyword only (no semantic), k=30, 10 excerpts: the same as the retrieval baseline in §8.
+- `--answer-max-tokens 4000` (not the default 1500): in the smoke test, 2 of 8 answers were truncated because
+  reasoning used up the limit, even with `--reasoning-effort low`. In this run, 1 of 80 was still truncated.
+- Cost $0; ±5.1k prompt + 1.1k completion tokens per question; answer p50 ≈27 s, p95 ≈99 s. Total duration ≈25 minutes.
 
-## Catatan pembacaan
+## Reading notes
 
-- **J 88,8% lebih tinggi dari "semua bukti ada" (67,5%).** Dari 80 soal, 19 dinilai benar walaupun tidak
-  semua bukti terambil (multi-hop 12, open-domain 6). Sebagian memang benar dari bukti parsial atau
-  pengetahuan umum (open-domain), sebagian karena judge longgar: mis. "Where has Evan been on roadtrips with
-  his family?" (gold: Rockies, Jasper) dijawab "Banff" dan dinilai benar. Penjawab dan judge model yang sama
-  (§7): angka ini untuk regresi internal, bukan klaim publik.
-- Interval kepercayaan 95% untuk n=80, p≈0,89: ±6,9 poin; per kategori (n=20) ±13–18 poin.
-- Model kedua (`thinkingmachines/inkling:free`) tidak bisa dipakai: OpenRouter membalas 403, model itu hanya
-  dibuka untuk "agentic harness" yang terdaftar, bukan panggilan API langsung.
+- **J of 88.8% is higher than "all evidence present" (67.5%).** Of the 80 questions, 19 were judged correct even though
+  not all evidence was retrieved (multi-hop 12, open-domain 6). Some are genuinely correct from partial evidence or
+  general knowledge (open-domain), and some are due to a lenient judge: e.g. "Where has Evan been on roadtrips with
+  his family?" (gold: Rockies, Jasper) was answered "Banff" and judged correct. The answerer and the judge are the same model
+  (§7): this number is for internal regression tracking, not a public claim.
+- 95% confidence interval for n=80, p≈0.89: ±6.9 points; per category (n=20) ±13–18 points.
+- The second model (`thinkingmachines/inkling:free`) could not be used: OpenRouter returned 403, because that model is only
+  open to registered "agentic harnesses", not to direct API calls.
 
 ## Report runner
 

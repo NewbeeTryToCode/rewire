@@ -1,313 +1,313 @@
-# Analisis kesalahan dan rekomendasi: LoCoMo penuh, Haiku (mode full)
+# Error analysis and recommendations: full LoCoMo, Haiku (full mode)
 
-## Ringkasan
+## Summary
 
-- Ada 111 soal yang salah (7,2%). Sekitar 33 di antaranya (30%) bukan kesalahan sistem. Penyebabnya: pembicara tertukar di pertanyaan (17), gold yang keliru (8), info yang hanya ada di gambar (4), dan juri yang tidak menerapkan aturannya sendiri (4). Kalau soal-soal ini dikoreksi, J kira-kira naik dari 92,8% ke ≈94,8% (inferensi).
-- Kesalahan sistem yang sebenarnya terbagi rata. Ada 26 di sisi penjawab: menolak menyebut nama atau menyimpulkan (7), salah memilih detail (13), dan salah menghitung (6). Ada 26 di retrieval: kata kategori di pertanyaan tidak cocok dengan nama spesifik di memori (12), bukti nyaris lolos k (9), dan parafrase atau ejaan (5). Ada 11 di ingest: durasi relatif, keterangan foto, dan nama panggilan tidak diekstrak.
-- Open-domain (J 66,7%) paling lemah karena dua hal. Pertama, 51% giliran buktinya tidak berbagi satu pun kata isi dengan pertanyaan. Run ini memakai BM25 saja (semantic = 0 di semua indeks). Kedua, 15 dari 32 soal OD yang salah punya gold spekulatif, sehingga jawaban yang masuk akal tetap dinilai salah.
-- Juri longgar untuk daftar. Dari 130 `ok_list_part`, sampel manual 40 soal menunjukkan hanya sekitar 30% (≈39 soal) yang benar-benar kurang item. Sisanya adalah alarm palsu dari metrik leksikal: `gold_items` memecah kalimat pada kata "and" dan parafrase tidak dikenali. Inflasi J dari daftar kira-kira 2,5 poin (inferensi). Angka 68,8% item ditemukan terlalu rendah sebagai ukuran.
-- Lima prioritas: (1) errata gold, juri independen, dan metrik daftar yang ketat; (2) anggaran retrieval k=50/episode=30, yang memulihkan bukti untuk 14 dari 51 soal yang buktinya hilang; (3) varian prompt jawab yang berani menyebut nama yang dikenali dan berani menyimpulkan; (4) kata kategori di keyword dan pertanyaan hipotetis saat ingest; (5) ekspansi kueri multi-query.
+- There are 111 wrong questions (7.2%). About 33 of them (30%) are not system errors. The causes: speakers swapped in the question (17), wrong gold answers (8), information that exists only in an image (4), and a judge that does not apply its own rules (4). If these questions were corrected, J would rise from about 92.8% to ≈94.8% (inferred).
+- The real system errors are spread evenly. There are 26 on the answerer side: refusing to name something or to draw a conclusion (7), picking the wrong detail (13), and miscounting (6). There are 26 in retrieval: category words in the question do not match the specific names in memory (12), evidence just missed the k cutoff (9), and paraphrase or spelling (5). There are 11 in ingest: relative durations, photo captions, and nicknames were not extracted.
+- Open-domain (J 66.7%) is the weakest, for two reasons. First, 51% of its evidence turns do not share a single content word with the question. This run used BM25 only (semantic = 0 in every index). Second, 15 of the 32 wrong OD questions have speculative gold answers, so reasonable answers are still judged wrong.
+- The judge is lenient on lists. Of 130 `ok_list_part`, a manual sample of 40 questions shows that only about 30% (≈39 questions) are genuinely missing items. The rest are false alarms from the lexical metric: `gold_items` splits sentences on the word "and", and paraphrases are not recognized. J inflation from lists is about 2.5 points (inferred). The 68.8% items-found figure is too low as a measure.
+- Five priorities: (1) gold errata, an independent judge, and a strict list metric; (2) a retrieval budget of k=50/episodes=30, which recovers evidence for 14 of the 51 questions with missing evidence; (3) an answer-prompt variant that dares to name recognized entities and dares to draw conclusions; (4) category words in keywords and hypothetical questions at ingest; (5) multi-query query expansion.
 
-## 1. Cara analisis dan batasannya
+## 1. Analysis method and its limitations
 
-- Saya membaca ke-111 baris salah (wrong_answer 60, wrong_retrieval 37, wrong_ingest 13, wrong_abstain 1) bersama giliran bukti asli di dataset: pembicara, tanggal sesi, dan keterangan foto (`blip_caption`).
-- Konteks yang dikirim ke penjawab tidak disimpan di results JSON, jadi saya merekonstruksinya. Caranya: `locomo_prepare` dijalankan ulang pada salinan brain (bukan aslinya), dengan k=30 dan episodes=20. Untuk 233 dari 300 soal yang saya periksa, hash prompt-nya persis sama dengan kunci cache jawaban asli, jadi konteksnya terverifikasi identik. Untuk 66 dari 67 sisanya, status bukti (excerpt/fact/missing) tetap sama. Bedanya kemungkinan dari aktivasi yang bergantung waktu (`recall_beta`) (inferensi).
-- Rekonstruksi cocok dengan report: semua bukti ada 84,5% (excerpt) dan 87,2% (excerpt atau fakta), sedangkan report menulis 87,3%.
-- Peringkat bukti yang hilang dihitung dengan dua cara. Pertama, peringkat potongan mentah: tanpa penggabungan dan tanpa trim, dengan seed dari 30 fakta yang sama. Kedua, peringkat fakta dengan k=300.
-- Tingkat kesalahan sebenarnya di `ok_list_part` diperkirakan dari sampel acak 40 baris (seed 7) yang saya nilai manual. Selang ketidakpastiannya lebar, kira-kira 17–45%.
-- Pengelompokan ke klaster adalah penilaian saya per soal. Beberapa soal bisa masuk dua klaster, dan saya memilih penyebab yang paling menentukan.
+- I read all 111 wrong rows (wrong_answer 60, wrong_retrieval 37, wrong_ingest 13, wrong_abstain 1) together with the original evidence turns in the dataset: speaker, session date, and photo caption (`blip_caption`).
+- The context sent to the answerer is not stored in the results JSON, so I reconstructed it. Method: `locomo_prepare` was rerun on a copy of the brain (not the original), with k=30 and episodes=20. For 233 of the 300 questions I checked, the prompt hash exactly matches the original answer cache key, so the context is verified to be identical. For 66 of the remaining 67, the evidence status (excerpt/fact/missing) stays the same. The difference likely comes from time-dependent activation (`recall_beta`) (inferred).
+- The reconstruction matches the report: all evidence present is 84.5% (excerpt) and 87.2% (excerpt or fact), while the report says 87.3%.
+- The rank of missing evidence was computed in two ways. First, the raw excerpt rank: no merging and no trim, seeded from the same 30 facts. Second, the fact rank with k=300.
+- The true error rate within `ok_list_part` was estimated from a random sample of 40 rows (seed 7) that I graded manually. The uncertainty interval is wide, roughly 17–45%.
+- Assigning questions to clusters is my per-question judgment. Some questions could fit two clusters, and I chose the most decisive cause.
 
-## 2. Tabel klaster akar masalah (111 soal salah)
+## 2. Root-cause cluster table (111 wrong questions)
 
-| # | Klaster | n | single / multi / temporal / OD | Pemilik masalah | Contoh qid |
+| # | Cluster | n | single / multi / temporal / OD | Problem owner | Example qids |
 |---|---|---|---|---|---|
-| A | Pertanyaan menukar pembicara: detail diucapkan orang lain, gold mengikuti pertanyaan yang keliru | 17 | 16 / 0 / 1 / 0 | dataset | conv-43-136, conv-50-151, conv-48-123 |
-| B | Gold salah: tahun, tanggal, durasi, fakta, atau film dianggap buku | 8 | 1 / 3 / 4 / 0 | dataset | conv-49-80, conv-47-31, conv-43-6 |
-| C | Jawaban hanya ada di gambar, sedangkan caption BLIP tidak memuatnya | 4 | 2 / 0 / 0 / 2 | dataset | conv-42-92, conv-42-91 |
-| D | Juri (Haiku) melanggar aturan toleransinya sendiri (tanggal ±14 hari, durasi ±50%) | 4 | 2 / 0 / 2 / 0 | juri | conv-48-101, conv-42-24, conv-41-63 |
-| E | Open-domain dengan gold spekulatif atau pengetahuan dunia; jawaban masuk akal tapi berbeda | 15 | 0 / 0 / 0 / 15 | dataset/juri (sebagian penjawab) | conv-43-51, conv-44-53, conv-26-69 |
-| F | Penjawab menolak menyebut nama atau menarik kesimpulan padahal bukti ada (konflik di prompt) | 7 | 0 / 2 / 1 / 4 | prompt jawab | conv-47-16, conv-43-8, conv-44-18 |
-| G | Penjawab salah memilih atau membaca detail; bukti ada di konteks (termasuk caption dan aritmetika waktu) | 13 | 11 / 0 / 2 / 0 | penjawab | conv-30-73, conv-43-76, conv-49-106 |
-| H | Salah hitung atau agregasi (dobel hitung, rencana ikut dihitung) | 6 | 0 / 6 / 0 / 0 | penjawab | conv-42-79, conv-42-19, conv-50-47 |
-| I | Kata kategori vs nama spesifik ("state" vs Tampa, "countries" vs Rio, "religious" vs church) | 12 | 0 / 5 / 1 / 6 | retrieval/ingest | conv-42-87, conv-47-6, conv-48-19 |
-| J | Bukti nyaris lolos: peringkat tepat di bawah batas k atau episodes | 9 | 0 / 4 / 2 / 3 | retrieval (anggaran) | conv-42-53, conv-44-16, conv-49-43 |
-| K | Parafrase atau ejaan tanpa kata bersama ("imposter" vs "impostors", "kid" vs "with my dad") | 5 | 0 / 3 / 1 / 1 | retrieval | conv-47-17, conv-50-40, conv-47-11 |
-| L | Ekstraksi melewatkan detail: durasi relatif, rujukan ke foto, nama panggilan, sentimen kecil | 11 | 3 / 3 / 4 / 1 | ingest | conv-42-8, conv-49-95, conv-42-14 |
+| A | The question swaps speakers: the detail was said by someone else, and the gold follows the mistaken question | 17 | 16 / 0 / 1 / 0 | dataset | conv-43-136, conv-50-151, conv-48-123 |
+| B | Wrong gold: year, date, duration, fact, or a film treated as a book | 8 | 1 / 3 / 4 / 0 | dataset | conv-49-80, conv-47-31, conv-43-6 |
+| C | The answer exists only in the image, and the BLIP caption does not contain it | 4 | 2 / 0 / 0 / 2 | dataset | conv-42-92, conv-42-91 |
+| D | The judge (Haiku) violates its own tolerance rules (dates ±14 days, durations ±50%) | 4 | 2 / 0 / 2 / 0 | judge | conv-48-101, conv-42-24, conv-41-63 |
+| E | Open-domain with speculative or world-knowledge gold; the answer is reasonable but different | 15 | 0 / 0 / 0 / 15 | dataset/judge (partly answerer) | conv-43-51, conv-44-53, conv-26-69 |
+| F | The answerer refuses to name something or draw a conclusion even though the evidence is present (conflict in the prompt) | 7 | 0 / 2 / 1 / 4 | answer prompt | conv-47-16, conv-43-8, conv-44-18 |
+| G | The answerer picks or reads the wrong detail; the evidence is in context (including captions and date arithmetic) | 13 | 11 / 0 / 2 / 0 | answerer | conv-30-73, conv-43-76, conv-49-106 |
+| H | Counting or aggregation errors (double counting, plans counted as done) | 6 | 0 / 6 / 0 / 0 | answerer | conv-42-79, conv-42-19, conv-50-47 |
+| I | Category word vs specific name ("state" vs Tampa, "countries" vs Rio, "religious" vs church) | 12 | 0 / 5 / 1 / 6 | retrieval/ingest | conv-42-87, conv-47-6, conv-48-19 |
+| J | Evidence just missed: ranked right below the k or episodes cutoff | 9 | 0 / 4 / 2 / 3 | retrieval (budget) | conv-42-53, conv-44-16, conv-49-43 |
+| K | Paraphrase or spelling with no shared word ("imposter" vs "impostors", "kid" vs "with my dad") | 5 | 0 / 3 / 1 / 1 | retrieval | conv-47-17, conv-50-40, conv-47-11 |
+| L | Extraction misses details: relative durations, references to photos, nicknames, small sentiments | 11 | 3 / 3 / 4 / 1 | ingest | conv-42-8, conv-49-95, conv-42-14 |
 
-Jumlahnya adalah 111. Sebagai perbandingan dengan label diagnosis: semua 17 soal di A dan 7 dari 8 soal di B berlabel `wrong_answer`. Artinya, 24 dari 60 `wrong_answer` (40%) sebenarnya adalah gold yang bermasalah, bukan kegagalan penjawab.
+The total is 111. Compared with the diagnosis labels: all 17 questions in A and 7 of the 8 questions in B are labeled `wrong_answer`. This means 24 of the 60 `wrong_answer` (40%) are actually problematic gold answers, not answerer failures.
 
-Pengelompokan yang lebih kasar:
+A coarser grouping:
 
-| Kelompok | Klaster | n | Bagian dari salah |
+| Group | Clusters | n | Share of wrong |
 |---|---|---|---|
-| Bukan kesalahan sistem (dataset atau juri) | A, B, C, D | 33 | 30% |
-| Subjektif (OD spekulatif) | E | 15 | 14% |
-| Penjawab | F, G, H | 26 | 23% |
+| Not a system error (dataset or judge) | A, B, C, D | 33 | 30% |
+| Subjective (speculative OD) | E | 15 | 14% |
+| Answerer | F, G, H | 26 | 23% |
 | Retrieval | I, J, K | 26 | 23% |
 | Ingest | L | 11 | 10% |
 
-### 2.1 Di mana bukti yang hilang berada (51 soal: wrong_retrieval, wrong_ingest, wrong_abstain)
+### 2.1 Where the missing evidence is (51 questions: wrong_retrieval, wrong_ingest, wrong_abstain)
 
-Peringkat potongan mentah terburuk per soal:
+Worst raw excerpt rank per question:
 
-| Peringkat | Soal |
+| Rank | Questions |
 |---|---|
 | ≤ 20 | 2 |
 | 21–40 | 14 |
 | 41–80 | 13 |
 | > 80 | 22 |
 
-Sebagian besar soal di kelompok > 80 punya overlap kata isi 0 dengan pertanyaan.
+Most questions in the > 80 group have a content-word overlap of 0 with the question.
 
-Simulasi anggaran retrieval (tanpa LLM, 1.535 soal yang punya bukti, brain yang sama):
+Retrieval budget simulation (no LLM, 1,535 questions that have evidence, same brain):
 
-| k fakta / episode | Semua bukti (excerpt) | Semua bukti (excerpt atau fakta) | Token konteks (perkiraan) | Soal hilang-bukti yang pulih (dari 51) |
+| k facts / episodes | All evidence (excerpt) | All evidence (excerpt or fact) | Context tokens (estimate) | Missing-evidence questions recovered (of 51) |
 |---|---|---|---|---|
-| 30 / 20 (run ini) | 84,5% | 87,2% | 4,8k | 0 |
-| 50 / 20 | 84,8% | 88,3% | 5,6k | 5 |
-| 30 / 30 | 86,6% | 88,8% | 6,5k | 8 |
-| 50 / 30 | 87,4% | 90,0% | 7,3k | 14 |
-| 50 / 40 | 88,5% | 90,7% | 8,9k | 16 |
-| 100 / 40 | 88,5% | 91,7% | 10,9k | 21 |
-| 30 / 20 tanpa trim | 84,6% | 87,4% | 5,0k | 2 |
+| 30 / 20 (this run) | 84.5% | 87.2% | 4.8k | 0 |
+| 50 / 20 | 84.8% | 88.3% | 5.6k | 5 |
+| 30 / 30 | 86.6% | 88.8% | 6.5k | 8 |
+| 50 / 30 | 87.4% | 90.0% | 7.3k | 14 |
+| 50 / 40 | 88.5% | 90.7% | 8.9k | 16 |
+| 100 / 40 | 88.5% | 91.7% | 10.9k | 21 |
+| 30 / 20 without trim | 84.6% | 87.4% | 5.0k | 2 |
 
-Trim excerpt hampir tidak merugikan (hanya 2 soal). Batas k dan kosakata yang jadi masalah utama.
+Excerpt trimming does almost no harm (only 2 questions). The k cutoff and vocabulary are the main problems.
 
-### 2.2 Inflasi juri pada daftar (130 `ok_list_part`)
+### 2.2 Judge inflation on lists (130 `ok_list_part`)
 
-- Report menunjukkan list J 95,4% tetapi item ditemukan hanya 68,8%. Jika setiap jawaban daftar diberi nilai sebesar porsi item yang ditemukan secara leksikal, J total turun ke 87,5%. Ini batas bawah yang terlalu pesimis.
-- 36 baris dinilai benar oleh juri tetapi punya 0% item leksikal, dan kebanyakan sebenarnya jawaban lengkap dengan kata lain. Contoh: conv-26-78 (gold "Figurines, shoes", jawaban "pink running sneakers … wooden figurine dolls"). Contoh lain adalah conv-26-87 dan conv-50-15. Pada keduanya, `gold_items` memecah kalimat alasan pada kata "and" menjadi dua item.
-- Sampel manual 40 baris `ok_list_part`: 12 benar-benar kurang item (30%). Dari 12 itu, 9 karena bukti item yang hilang tidak terambil (conv-43-35 surfing, conv-41-25 Spain, conv-43-7 Smoky Mountains). Tiga sisanya karena penjawab melewatkan item yang ada di konteks (conv-42-61, conv-48-84, conv-41-74).
-- Dari sampel ini, perkiraan saya (inferensi): sekitar 39 dari 130 soal (rentang kasar 22–59) diterima hanya karena aturan "satu item cukup". Nilai J yang ketat untuk daftar kira-kira 2,5 poin di bawah J resmi, yaitu ≈90,3% secara keseluruhan.
-- Aturan "satu item cukup" adalah bagian dari juri resmi Mem0, jadi J resmi tetap perlu dilaporkan supaya bisa dibandingkan. Yang perlu ditambahkan adalah metrik daftar yang ketat dan berbasis LLM, bukan menggantikan J resmi.
+- The report shows list J at 95.4%, but items found at only 68.8%. If every list answer were scored by the share of items found lexically, total J would drop to 87.5%. That is an overly pessimistic lower bound.
+- 36 rows were judged correct by the judge but have 0% lexical items, and most of them are actually complete answers in different words. Example: conv-26-78 (gold "Figurines, shoes", answer "pink running sneakers … wooden figurine dolls"). Other examples are conv-26-87 and conv-50-15. In both, `gold_items` splits a reason sentence on the word "and" into two items.
+- Manual sample of 40 `ok_list_part` rows: 12 are genuinely missing items (30%). Of those 12, 9 are because the evidence for the missing item was not retrieved (conv-43-35 surfing, conv-41-25 Spain, conv-43-7 Smoky Mountains). The other three are because the answerer skipped an item that was in context (conv-42-61, conv-48-84, conv-41-74).
+- From this sample, my estimate (inferred): about 39 of the 130 questions (rough range 22–59) were accepted only because of the "one item is enough" rule. A strict J for lists is about 2.5 points below the official J, i.e. ≈90.3% overall.
+- The "one item is enough" rule is part of the official Mem0 judge, so the official J still needs to be reported for comparability. What needs to be added is a strict, LLM-based list metric, not a replacement for the official J.
 
-### 2.3 Open-domain (96 soal, J 66,7%)
+### 2.3 Open-domain (96 questions, J 66.7%)
 
-- Dari 32 soal OD yang salah: 15 punya gold spekulatif (E), 6 masalah kategori vs nama spesifik (I), 4 penjawab menolak menyebut nama (F), 3 nyaris lolos k (J), 2 hanya di gambar (C), 1 parafrase (K), dan 1 ingest (L).
-- Masalah kosakata: 51% giliran bukti OD tidak punya kata isi yang sama dengan pertanyaan. Angkanya 38% untuk multi-hop, 19% untuk temporal, dan 15% untuk single-hop. Dengan BM25 saja, kesenjangan ini hanya bisa ditutup oleh keyword dan pertanyaan hipotetis dari ingest, dan keduanya belum memuat kata kategori.
-  - Contoh: fakta "Nate's turtles at Tampa beach" punya keyword `florida`, tetapi tidak punya `state`. Pertanyaan "What state did Nate visit?" menempatkannya di peringkat fakta 95.
-  - Contoh lain: fakta "Deborah's earlier Rio trip" tidak punya `brazil`, `country`, atau `travel`.
-- Penjawab terlalu patuh pada satu aturan di prompt resmi: "NEVER generate specific names … that do not appear in any memory". Aturan ini mengalahkan Misc 2 ("you may name it"). Bukti dari teks jawaban di cache:
+- Of the 32 wrong OD questions: 15 have speculative gold (E), 6 are category vs specific name problems (I), 4 are the answerer refusing to name something (F), 3 just missed k (J), 2 are image-only (C), 1 is paraphrase (K), and 1 is ingest (L).
+- The vocabulary problem: 51% of OD evidence turns share no content word with the question. The figure is 38% for multi-hop, 19% for temporal, and 15% for single-hop. With BM25 only, this gap can only be closed by keywords and hypothetical questions from ingest, and neither contains category words yet.
+  - Example: the fact "Nate's turtles at Tampa beach" has the keyword `florida`, but not `state`. The question "What state did Nate visit?" puts it at fact rank 95.
+  - Another example: the fact "Deborah's earlier Rio trip" has no `brazil`, `country`, or `travel`.
+- The answerer is too obedient to one rule in the official prompt: "NEVER generate specific names … that do not appear in any memory". This rule overrides Misc 2 ("you may name it"). Evidence from the cached answer text:
   - conv-47-16: "No memory gives a name for this game, so I won't supply one" (gold: UNO).
   - conv-48-75: gold Exploding Kittens.
-  - conv-43-66: menolak menyebut buku Star Wars.
-  - conv-43-8: "No candidate name appears", padahal excerpt D3:15 tentang Under Armour ada di konteks.
-- Gold OD dipotong pada ";" (`run.py`), sesuai harness Mem0, dan ini menyangkut 11 soal. Pemotongan membuang alasannya, yang kadang memuat kata kunci yang membuat jawaban bisa diterima juri. Dampaknya belum diukur.
-- Bahkan saat semua bukti ada, J OD hanya 86,0%, karena banyak soal yang memang menuntut tebakan pengetahuan dunia: Hatha yoga (conv-43-51), park ranger (conv-44-53), Voyageurs (conv-44-44).
+  - conv-43-66: refuses to name the Star Wars book.
+  - conv-43-8: "No candidate name appears", even though excerpt D3:15 about Under Armour is in context.
+- OD gold is cut at ";" (`run.py`), following the Mem0 harness, and this affects 11 questions. The cut drops the reason, which sometimes contains the keyword that would make an answer acceptable to the judge. The impact has not been measured.
+- Even when all evidence is present, OD J is only 86.0%, because many questions really demand a world-knowledge guess: Hatha yoga (conv-43-51), park ranger (conv-44-53), Voyageurs (conv-44-44).
 
-## 3. Rekomendasi berperingkat
+## 3. Ranked recommendations
 
-Perkiraan soal pulih adalah inferensi. Dasarnya: J naik dari 75,6% (bukti hilang) ke 95,9% (bukti lengkap), dan klaster di atas. Angka ini belum diverifikasi lewat run ulang.
+The estimated questions recovered are inferred. The basis: J rises from 75.6% (evidence missing) to 95.9% (evidence complete), plus the clusters above. These numbers have not been verified by a rerun.
 
-| # | Rekomendasi | Jenis | Perkiraan soal pulih | Biaya | Parity Py+Rust | Aman sekarang? | Bukti qid |
+| # | Recommendation | Type | Estimated questions recovered | Cost | Py+Rust parity | Safe now? | Evidence qids |
 |---|---|---|---|---|---|---|---|
-| 1 | Errata gold, juri independen, dan metrik daftar ketat | eval | 0 soal sistem; J bersih ≈ +2 poin, J ketat ≈ −2,5 poin | rendah (juri ~3M token prompt) | tidak (eval Python saja) | ya | conv-43-136, conv-49-80, conv-48-101 |
-| 2 | Anggaran retrieval k=50, episodes=30 | query-time | 6–10 | +50% token konteks, ≈ +20% token jawab | tidak, selama hanya flag eval; ya jika default `ops.recall` atau MCP berubah | ya (sebagai flag eval) | conv-42-53, conv-47-6, conv-49-43 |
-| 3 | Varian prompt jawab: boleh menyebut nama yang dikenali, wajib berkomitmen pada kesimpulan | prompt jawab | 5–9 | rendah (jawab ulang ~1.176 panggilan) | tidak | ya, sebagai varian terpisah dari prompt resmi | conv-47-16, conv-43-8, conv-44-18 |
-| 4 | Kata kategori dan hipernim di `KEYWORDS_RULE` dan `QUESTIONS_RULE` | ingest | 5–9 | sedang (ingest ulang 272 sesi) | ya (`consolidate.py` + `consolidate.rs`, tes kesamaan prompt) | belum (perlu anggaran ingest ulang) | conv-42-87, conv-48-19, conv-44-20 |
-| 5 | Ekspansi kueri multi-query oleh model pemanggil | query-time | 6–12 | sedang (1 panggilan LLM kecil per soal) | ya jika masuk `ops.recall` atau MCP; tidak jika prototipe di eval | prototipe eval: ya | conv-50-56, conv-26-59, conv-50-40 |
-| 6 | Aturan ekstraksi untuk durasi relatif, caption, dan nama panggilan | ingest | 4–7 | sedang (ingest ulang) | ya | belum | conv-42-8, conv-49-95, conv-42-14 |
-| 7 | Aturan hitung dan agregasi di prompt jawab | prompt jawab | 2–3 | rendah | tidak | ya, sebagai varian | conv-42-79, conv-42-19, conv-50-47 |
-| 8 | Varian ejaan dan kata majemuk di stemming | query-time | 1–2 | rendah | ya (`text.py` + `text.rs`) | ya, dengan tes | conv-47-17, conv-49-95 |
-| 9 | Kebersihan eval: hapus nama dan pertanyaan LoCoMo dari contoh prompt ingest, catat konfigurasi retrieval di report, perbaiki 11 approve yang gagal | eval/ingest | 0–1 | rendah | ya untuk prompt; tidak untuk report | ya | conv-48-87, log `approve failed` |
-| ✗ | Jangan: aturan "jawab saja untuk pembicara lain" agar klaster A lolos | — | (≈17 di LoCoMo) | — | — | tidak | conv-43-136, conv-50-151 |
+| 1 | Gold errata, independent judge, and strict list metric | eval | 0 system questions; clean J ≈ +2 points, strict J ≈ −2.5 points | low (judge ~3M prompt tokens) | no (Python eval only) | yes | conv-43-136, conv-49-80, conv-48-101 |
+| 2 | Retrieval budget k=50, episodes=30 | query-time | 6–10 | +50% context tokens, ≈ +20% answer tokens | no, as long as it is only an eval flag; yes if the `ops.recall` or MCP default changes | yes (as an eval flag) | conv-42-53, conv-47-6, conv-49-43 |
+| 3 | Answer-prompt variant: may name recognized entities, must commit to conclusions | answer prompt | 5–9 | low (re-answer ~1,176 calls) | no | yes, as a variant separate from the official prompt | conv-47-16, conv-43-8, conv-44-18 |
+| 4 | Category words and hypernyms in `KEYWORDS_RULE` and `QUESTIONS_RULE` | ingest | 5–9 | medium (re-ingest 272 sessions) | yes (`consolidate.py` + `consolidate.rs`, prompt equality test) | not yet (needs a re-ingest budget) | conv-42-87, conv-48-19, conv-44-20 |
+| 5 | Multi-query query expansion by the calling model | query-time | 6–12 | medium (1 small LLM call per question) | yes if it goes into `ops.recall` or MCP; no if prototyped in eval | eval prototype: yes | conv-50-56, conv-26-59, conv-50-40 |
+| 6 | Extraction rules for relative durations, captions, and nicknames | ingest | 4–7 | medium (re-ingest) | yes | not yet | conv-42-8, conv-49-95, conv-42-14 |
+| 7 | Counting and aggregation rules in the answer prompt | answer prompt | 2–3 | low | no | yes, as a variant | conv-42-79, conv-42-19, conv-50-47 |
+| 8 | Spelling variants and compound words in stemming | query-time | 1–2 | low | yes (`text.py` + `text.rs`) | yes, with tests | conv-47-17, conv-49-95 |
+| 9 | Eval hygiene: remove LoCoMo names and questions from ingest prompt examples, record the retrieval configuration in the report, fix the 11 failed approves | eval/ingest | 0–1 | low | yes for the prompt; no for the report | yes | conv-48-87, `approve failed` log |
+| ✗ | Don't: a rule to "just answer for the other speaker" so that cluster A passes | — | (≈17 on LoCoMo) | — | — | no | conv-43-136, conv-50-151 |
 
-### Rincian per rekomendasi
+### Details per recommendation
 
-**1. Errata gold, juri independen, dan metrik daftar ketat (eval, aman sekarang, tanpa parity).**
+**1. Gold errata, independent judge, and strict list metric (eval, safe now, no parity).**
 
-Langkahnya:
-- Simpan daftar qid yang gold-nya bermasalah (klaster A, B, C; 29 soal) di `experiments/eval/` lengkap dengan alasan. Laporkan J resmi dan J tanpa errata secara berdampingan.
-- Jalankan ulang juri dengan model dari keluarga lain, misalnya gpt-4o-mini seperti Mem0, atau Sonnet. Ini cukup dengan cache jawaban, tanpa menjawab ulang. Ukur tingkat kesepakatan dengan juri Haiku.
-- Tambahkan metrik daftar berbasis LLM: berapa item gold yang tercakup, dengan parafrase dihitung.
-- Perbaiki `gold_items` supaya gold berbentuk kalimat tidak dipecah pada kata "and" (contoh conv-26-87, conv-50-15).
+Steps:
+- Store the list of qids with problematic gold (clusters A, B, C; 29 questions) in `experiments/eval/` together with the reasons. Report the official J and J without errata side by side.
+- Rerun the judge with a model from another family, for example gpt-4o-mini as Mem0 does, or Sonnet. This works from the answer cache, without re-answering. Measure the agreement rate with the Haiku judge.
+- Add an LLM-based list metric: how many gold items are covered, with paraphrases counted.
+- Fix `gold_items` so that gold answers in sentence form are not split on the word "and" (examples conv-26-87, conv-50-15).
 
-Alasannya: juri sama dengan penjawab (report sudah memberi peringatan), dan 4 soal di D menunjukkan juri tidak konsisten. Contohnya conv-48-101: "a year ago", dihitung dari Januari 2023, menjadi "Januari 2022", tetapi dinilai salah. Contoh lain conv-42-24: 18 Juni vs "weekend after 3 June" masih dalam 14 hari. Tanpa langkah ini, perbaikan 2–8 tidak bisa diukur dengan andal, karena noise label (≈33 soal) lebih besar daripada gain yang diharapkan dari tiap perbaikan.
+Why: the judge is the same as the answerer (the report already warns about this), and the 4 questions in D show the judge is inconsistent. For example conv-48-101: "a year ago", counted from January 2023, becomes "January 2022", but it was judged wrong. Another example, conv-42-24: 18 June vs "weekend after 3 June" is still within 14 days. Without this step, improvements 2–8 cannot be measured reliably, because the label noise (≈33 questions) is larger than the gain expected from each improvement.
 
-**2. Anggaran retrieval k=50 fakta, episodes=30 (query-time, aman sebagai flag).**
+**2. Retrieval budget k=50 facts, episodes=30 (query-time, safe as a flag).**
 
-Pada simulasi, setelan ini menaikkan "semua bukti (excerpt atau fakta)" dari 87,2% ke 90,0%. Bukti juga pulih untuk 14 dari 51 soal yang buktinya hilang. Contohnya conv-42-53 (potongan D5:4 di peringkat 23), conv-49-43 (fakta D7:2 di peringkat 45), dan conv-47-6 (fakta Stamford di peringkat 34).
+In the simulation, this setting raises "all evidence (excerpt or fact)" from 87.2% to 90.0%. Evidence is also recovered for 14 of the 51 questions with missing evidence. Examples are conv-42-53 (excerpt D5:4 at rank 23), conv-49-43 (fact D7:2 at rank 45), and conv-47-6 (Stamford fact at rank 34).
 
-Biayanya: token konteks naik dari ≈4,8k ke ≈7,3k. Risikonya: konteks yang lebih panjang bisa sedikit menurunkan ketelitian penjawab (inferensi). Karena itu, jalankan A/B pada sampel stratified sebelum mengganti default.
+The cost: context tokens rise from ≈4.8k to ≈7.3k. The risk: a longer context may slightly reduce the answerer's precision (inferred). So run an A/B test on a stratified sample before changing the default.
 
-Ada alternatif yang lebih murah: k=50 dengan episodes=20 hanya menambah ≈0,8k token dan memulihkan 5 soal. Jika default produk (`ops.recall` atau MCP) ikut diubah, Python dan Rust harus disamakan, karena recall saat ini identik 304/304.
+There is a cheaper alternative: k=50 with episodes=20 adds only ≈0.8k tokens and recovers 5 questions. If the product default (`ops.recall` or MCP) also changes, Python and Rust must be kept in sync, because recall is currently identical 304/304.
 
-**3. Varian prompt jawab (prompt jawab, Python saja, aman sebagai varian).**
+**3. Answer-prompt variant (answer prompt, Python only, safe as a variant).**
 
-Penjawab menafsirkan aturan "NEVER generate specific names" sebagai larangan menyebut nama yang dikenali dari deskripsi. Contohnya conv-47-16 (UNO dari deskripsi aturan main) dan conv-48-75 (Exploding Kittens). Penjawab juga menolak menghubungkan dua memori, seperti pada conv-43-8 dan conv-44-18 (breeder). Selain itu, penjawab berhenti di "the memories don't give an exact date" padahal tanggal bisa dihitung (conv-50-62, conv-43-48).
+The answerer interprets the "NEVER generate specific names" rule as a ban on naming things recognized from a description. Examples are conv-47-16 (UNO from a description of the game rules) and conv-48-75 (Exploding Kittens). The answerer also refuses to connect two memories, as in conv-43-8 and conv-44-18 (breeder). In addition, the answerer stops at "the memories don't give an exact date" even when the date can be computed (conv-50-62, conv-43-48).
 
-Usulan:
-- Tambahkan pengecualian eksplisit: nama terkenal yang cocok dengan deskripsi (permainan, buku, merek) boleh disebut.
-- Untuk "likely/might", berikan tebakan terbaik dengan kata "likely".
-- Selalu ubah rentang tanggal menjadi durasi.
+Proposal:
+- Add an explicit exception: well-known names that match the description (games, books, brands) may be named.
+- For "likely/might", give the best guess with the word "likely".
+- Always convert date ranges into durations.
 
-Penting: `ANSWER_GENERATION_PROMPT` adalah salinan verbatim prompt Mem0. Mengubahnya membuat skor tidak bisa dibandingkan lagi dengan Mem0. Jadi laporkan sebagai kolom terpisah ("prompt rewire"), jangan menggantikan prompt resmi.
+Important: `ANSWER_GENERATION_PROMPT` is a verbatim copy of the Mem0 prompt. Changing it makes scores no longer comparable with Mem0. So report it as a separate column ("rewire prompt"), and do not replace the official prompt.
 
-**4. Kata kategori di keyword dan pertanyaan hipotetis (ingest, perlu parity, belum aman tanpa anggaran ingest ulang).**
+**4. Category words in keywords and hypothetical questions (ingest, needs parity, not safe without a re-ingest budget).**
 
-Tambahkan instruksi berikut ke `KEYWORDS_RULE` dan `QUESTIONS_RULE`:
-- Untuk tempat, tulis juga kota, negara bagian, dan negara, beserta kata kategorinya ("city", "state", "country", "travel").
-- Untuk makanan, olahraga, permainan, dan agama, tulis kata kategorinya ("meat", "sport", "console", "religion", "church").
+Add the following instructions to `KEYWORDS_RULE` and `QUESTIONS_RULE`:
+- For places, also write the city, state, and country, along with their category words ("city", "state", "country", "travel").
+- For food, sports, games, and religion, write the category words ("meat", "sport", "console", "religion", "church").
 
-Bukti:
-- conv-42-87: fakta Tampa punya `florida`, tetapi tidak punya `state`, sehingga ada di peringkat 95.
-- conv-48-87 dan conv-48-19: Rio dan Paris tanpa `brazil`, `france`, atau `country`.
-- conv-44-20: "Chicken Pot Pie" tanpa `meat`.
-- conv-26-59: "made for a local church" tanpa `religious`.
+Evidence:
+- conv-42-87: the Tampa fact has `florida`, but not `state`, so it is at rank 95.
+- conv-48-87 and conv-48-19: Rio and Paris without `brazil`, `france`, or `country`.
+- conv-44-20: "Chicken Pot Pie" without `meat`.
+- conv-26-59: "made for a local church" without `religious`.
 
-Konstanta prompt ini ada di `src/rewire/consolidate.py` dan `rust/src/consolidate.rs`, dan ada tes yang memeriksa prompt konsolidasi identik. Keduanya harus diubah bersamaan, lalu brain di-ingest ulang (272 sesi, p50 42 detik per sesi).
+These prompt constants live in `src/rewire/consolidate.py` and `rust/src/consolidate.rs`, and there is a test that checks the consolidation prompts are identical. Both must be changed together, and then the brain must be re-ingested (272 sessions, p50 42 seconds per session).
 
-**5. Ekspansi kueri multi-query (query-time).**
+**5. Multi-query query expansion (query-time).**
 
-Model pemanggil membuat 2–4 kueri tambahan berisi contoh konkret. Contohnya, "Which cities did Dave travel to?" diperluas menjadi "trip San Francisco Detroit workshop". Hasilnya digabung dengan RRF.
+The calling model generates 2–4 additional queries containing concrete examples. For example, "Which cities did Dave travel to?" is expanded into "trip San Francisco Detroit workshop". The results are fused with RRF.
 
-Ini menyasar I, K, dan sebagian E: conv-50-56 (peringkat potongan 129 dan 98), conv-50-40 (Tupac di "used to rock a song", peringkat 75), dan conv-26-69. Bentuknya sejalan dengan parameter `refers_to` yang sudah ada, yaitu konteks yang diselesaikan oleh model pemanggil.
+This targets I, K, and part of E: conv-50-56 (excerpt ranks 129 and 98), conv-50-40 (Tupac in "used to rock a song", rank 75), and conv-26-69. Its shape is consistent with the existing `refers_to` parameter, i.e. context resolved by the calling model.
 
-Buat prototipe dulu di `experiments/eval` (tanpa parity). Kalau terbukti membantu, baru jadikan parameter `ops.recall` atau MCP di kedua implementasi.
+Prototype it first in `experiments/eval` (no parity). Only if it proves helpful, make it an `ops.recall` or MCP parameter in both implementations.
 
-**6. Aturan ekstraksi untuk detail yang terlewat (ingest, parity).**
+**6. Extraction rules for missed details (ingest, parity).**
 
-Kasus yang terlewat:
-- conv-42-8: "I've had them for 3 years" tidak menjadi fakta, padahal seharusnya menjadi fakta bertanggal "sejak ±2019".
+Missed cases:
+- conv-42-8: "I've had them for 3 years" did not become a fact, although it should have become a dated fact "since ±2019".
 - conv-49-25: "working on it for two years".
-- conv-49-95: kata "smart watch" hanya ada di caption, dan teksnya hanya berbunyi "it tracks my progress".
-- conv-42-14: fakta dari "Hey Jo, …" tidak menyimpan nama panggilan.
+- conv-49-95: the words "smart watch" appear only in the caption, and the text only says "it tracks my progress".
+- conv-42-14: the fact from "Hey Jo, …" does not keep the nickname.
 
-Tambahkan aturan:
-- Ubah durasi relatif menjadi tanggal mulai.
-- Gabungkan caption ke klaim jika teks merujuk "this" atau "it".
-- Simpan nama panggilan.
+Add rules:
+- Convert relative durations into a start date.
+- Merge the caption into the claim when the text refers to "this" or "it".
+- Keep nicknames.
 
-Catatan metodologi: diagnosis menghitung bukti "ada lewat fakta" walaupun fakta itu kehilangan detail yang ditanyakan. Contohnya conv-42-14 (berlabel `wrong_answer`, padahal "Jo" tidak ada di konteks). Jadi angka `wrong_answer` sedikit terlalu tinggi, dan masalah ingest terlalu rendah.
+Methodology note: the diagnosis counts evidence as "present via a fact" even when that fact lost the detail being asked about. For example conv-42-14 (labeled `wrong_answer`, even though "Jo" is not in the context). So the `wrong_answer` count is slightly too high, and ingest problems are undercounted.
 
-**7. Aturan hitung (prompt jawab, varian).**
+**7. Counting rules (answer prompt, variant).**
 
-Kasusnya:
-- conv-42-79: 4 vs 3 skenario; "started writing another one" lalu "wrapped up my second" dihitung dua kali.
-- conv-42-19: trail yang baru direncanakan ikut dihitung.
-- conv-50-47: kunjungan masa kecil ikut dihitung.
+Cases:
+- conv-42-79: 4 vs 3 screenplays; "started writing another one" and then "wrapped up my second" were counted twice.
+- conv-42-19: a trail that was only planned was counted.
+- conv-50-47: childhood visits were counted.
 
-Usulan: tambahkan aturan "gabungkan laporan dari peristiwa yang sama; hitung yang sudah terjadi saja". Gain-nya kecil, dan aturan ini juga mengubah prompt resmi.
+Proposal: add the rule "merge reports of the same event; count only what has already happened". The gain is small, and this rule also changes the official prompt.
 
-**8. Ejaan dan kata majemuk (query-time, parity `text.py` dan `text.rs`).**
+**8. Spelling and compound words (query-time, parity `text.py` and `text.rs`).**
 
-Kasusnya: "imposter" vs "impostors" (conv-47-17, fakta di peringkat 59, lalu penjawab abstain) dan "smartwatch" vs "smart watch" (conv-49-95). Ini perbaikan kecil yang murah, tetapi rawan overfitting. Uji di LongMemEval juga.
+Cases: "imposter" vs "impostors" (conv-47-17, fact at rank 59, and then the answerer abstained) and "smartwatch" vs "smart watch" (conv-49-95). This is a small, cheap fix, but prone to overfitting. Test it on LongMemEval too.
 
-**9. Kebersihan eval.**
+**9. Eval hygiene.**
 
-- `QUESTIONS_RULE` memakai nama dari LoCoMo (Deborah, Jon, Caroline) dan contoh "Which countries has Deborah visited?". Contoh itu hampir sama dengan soal uji conv-48-87 ("Which countries has Deborah traveled to?"). Ini kebocoran kecil dari set uji ke prompt produk. Ganti dengan nama dan contoh netral (parity di `consolidate.rs`).
-- Report tidak menyebut bahwa semantic search mati. Meta indeks menunjukkan `semantic = 0`, karena `wordllama` tidak terpasang. Catat ini bersama `SEED_WEIGHT`, `EP_WHOLE`, dan SHA commit di summary.
-- `run.log` mencatat 11 "approve failed" (proposal yang note-nya berubah sebelum di-approve), jadi perubahan itu tidak masuk brain. Dampaknya belum diukur.
+- `QUESTIONS_RULE` uses names from LoCoMo (Deborah, Jon, Caroline) and the example "Which countries has Deborah visited?". That example is almost the same as test question conv-48-87 ("Which countries has Deborah traveled to?"). This is a small leak from the test set into the product prompt. Replace them with neutral names and examples (parity in `consolidate.rs`).
+- The report does not mention that semantic search was off. The index meta shows `semantic = 0`, because `wordllama` is not installed. Record this together with `SEED_WEIGHT`, `EP_WHOLE`, and the commit SHA in the summary.
+- `run.log` records 11 "approve failed" (proposals whose note changed before being approved), so those changes did not make it into the brain. The impact has not been measured.
 
-**Yang tidak disarankan.** Haiku sering sudah mengenali bahwa pertanyaan menukar pembicara (conv-50-151: "photography was Dave's, not Calvin's"). Menambah aturan "jawab saja dengan detail pembicara lain" akan menaikkan skor LoCoMo sampai ≈17 soal, tetapi itu sama dengan menyetel sistem pada label yang keliru. Di pemakaian nyata, aturan itu justru menimbulkan atribusi yang salah. Lebih baik masukkan soal-soal ini ke errata (rekomendasi 1).
+**Not recommended.** Haiku often already recognizes that the question swaps speakers (conv-50-151: "photography was Dave's, not Calvin's"). Adding a rule to "just answer with the other speaker's detail" would raise the LoCoMo score by up to ≈17 questions, but that amounts to tuning the system on wrong labels. In real use, such a rule would actually cause wrong attributions. It is better to put these questions in the errata (recommendation 1).
 
-## 4. Contoh bukti per klaster
+## 4. Evidence examples per cluster
 
-Setiap entri memuat qid, pertanyaan, gold, jawaban (diringkas), dan alasan.
+Each entry contains the qid, question, gold, answer (summarized), and reason.
 
-### A. Pembicara tertukar di pertanyaan (17)
+### A. Speakers swapped in the question (17)
 
-- **conv-43-136**: "What did Tim say about his injury on 16 November, 2023?" Gold: "The doctor said it's not too serious". Jawaban: Tim tidak cedera; ia menanggapi cedera John. Alasan: D18:10 diucapkan oleh **John**, jadi jawabannya benar secara substansi.
-- **conv-50-151**: "What hobby did Calvin take up recently?" Gold: Photography. Jawaban: memperbaiki mobil, dengan catatan "photography was Dave's, not Calvin's". Alasan: D30:1 diucapkan **Dave**.
-- **conv-48-123**: "What did Jolene and Anna discuss while watching the sunset?" Jawaban: itu Deborah dan Anna, dan mereka sadar saling menginspirasi. Alasan: D10:17 diucapkan **Deborah**. Soal kembarannya, conv-48-75 dan conv-48-179, menyebut giliran yang sama (D27:12) sebagai milik Deborah sekaligus milik Jolene.
+- **conv-43-136**: "What did Tim say about his injury on 16 November, 2023?" Gold: "The doctor said it's not too serious". Answer: Tim was not injured; he was responding to John's injury. Reason: D18:10 was said by **John**, so the answer is substantively correct.
+- **conv-50-151**: "What hobby did Calvin take up recently?" Gold: Photography. Answer: fixing cars, with the note "photography was Dave's, not Calvin's". Reason: D30:1 was said by **Dave**.
+- **conv-48-123**: "What did Jolene and Anna discuss while watching the sunset?" Answer: it was Deborah and Anna, and they realized they inspire each other. Reason: D10:17 was said by **Deborah**. Its twin questions, conv-48-75 and conv-48-179, attribute the same turn (D27:12) to Deborah and to Jolene respectively.
 
-Soal lain di klaster ini: conv-26-94, conv-42-119, conv-42-195, conv-43-86, conv-43-135, conv-43-164, conv-43-166, conv-48-116, conv-48-188, conv-49-24, conv-49-144, conv-50-137, conv-50-147.
+Other questions in this cluster: conv-26-94, conv-42-119, conv-42-195, conv-43-86, conv-43-135, conv-43-164, conv-43-166, conv-48-116, conv-48-188, conv-49-24, conv-49-144, conv-50-137, conv-50-147.
 
-### B. Gold salah (8)
+### B. Wrong gold (8)
 
-- **conv-49-80**: "When did Evan have a drunken night?" Gold: 9 Januari 2023. Jawaban: 9 Januari 2024. Alasan: sesi D24 bertanggal 10 Januari 2024 dan teksnya "Yesterday", jadi jawabannya benar.
-- **conv-47-31**: "How many days did James plan to spend in Canada?" Gold: 19 hari. Jawaban: 9 hari. Alasan: berangkat "day after tomorrow" dari 9 Juli (berarti 11 Juli), pulang 20 Juli, jadi 9 hari benar.
-- **conv-43-6**: "In which month's game did John achieve a career-high?" Gold: Juni 2023. Jawaban: Juli 2023. Alasan: sesi 16 Juli 2023 dan teksnya "Last week I scored 40", jadi Juli benar.
-- Juga: conv-41-48 (gold salah ketik "3` July", padahal sesinya 31 Juli), conv-30-47 (giliran bukti menyebut wholesaler, bukan "spot"), conv-42-34 ("Little Women" adalah film), conv-48-77 (Phuket adalah retret, bukan tempat menyelam), dan conv-48-87 (gold "Thailand" padahal buktinya Bali di Indonesia).
+- **conv-49-80**: "When did Evan have a drunken night?" Gold: 9 January 2023. Answer: 9 January 2024. Reason: session D24 is dated 10 January 2024 and the text says "Yesterday", so the answer is correct.
+- **conv-47-31**: "How many days did James plan to spend in Canada?" Gold: 19 days. Answer: 9 days. Reason: he left the "day after tomorrow" from 9 July (meaning 11 July) and returned on 20 July, so 9 days is correct.
+- **conv-43-6**: "In which month's game did John achieve a career-high?" Gold: June 2023. Answer: July 2023. Reason: the session is 16 July 2023 and the text says "Last week I scored 40", so July is correct.
+- Also: conv-41-48 (gold typo "3` July", while the session is 31 July), conv-30-47 (the evidence turn mentions a wholesaler, not a "spot"), conv-42-34 ("Little Women" is a film), conv-48-77 (Phuket was a retreat, not a diving spot), and conv-48-87 (gold "Thailand", while the evidence is Bali in Indonesia).
 
-### C. Hanya di gambar (4)
+### C. Image only (4)
 
-- **conv-42-92**: "What kind of lighting does Nate's gaming room have?" Gold: red and purple lighting. Jawaban: tidak tercatat. Alasan: caption BLIP hanya "a gaming room with a computer and a gaming chair".
-- **conv-42-91**: "favorite book series about?" Gold: dragons. Alasan: teks hanya "adventures, magic", dan caption hanya "bunch of books".
+- **conv-42-92**: "What kind of lighting does Nate's gaming room have?" Gold: red and purple lighting. Answer: not recorded. Reason: the BLIP caption is only "a gaming room with a computer and a gaming chair".
+- **conv-42-91**: "favorite book series about?" Gold: dragons. Reason: the text only says "adventures, magic", and the caption is only "bunch of books".
 
-Juga: conv-44-43 (peta trail) dan conv-47-33 (foto SD).
+Also: conv-44-43 (trail map) and conv-47-33 (SD photo).
 
-### D. Juri tidak konsisten (4)
+### D. Inconsistent judge (4)
 
-- **conv-48-101**: "When did Jolene buy her pet snake?" Gold: "A year ago". Jawaban: "around January 2022". Alasan: sesi Januari 2023, dan aturan juri no. 4 menerima "last year" yang diubah menjadi tahun.
-- **conv-42-24**: Gold: "weekend after 3 June". Jawaban: "weekend of June 18". Alasan: teksnya "two weekends later"; selisihnya ≤14 hari dan jawaban lebih tepat dari gold.
-- **conv-41-63**: Gold: dua minggu. Jawaban: ≈9 hari. Alasan: masih dalam toleransi durasi ±50%.
+- **conv-48-101**: "When did Jolene buy her pet snake?" Gold: "A year ago". Answer: "around January 2022". Reason: the session is January 2023, and judge rule no. 4 accepts "last year" converted into a year.
+- **conv-42-24**: Gold: "weekend after 3 June". Answer: "weekend of June 18". Reason: the text says "two weekends later"; the difference is ≤14 days and the answer is more precise than the gold.
+- **conv-41-63**: Gold: two weeks. Answer: ≈9 days. Reason: still within the ±50% duration tolerance.
 
-Juga: conv-47-80.
+Also: conv-47-80.
 
-### E. Open-domain spekulatif (15)
+### E. Speculative open-domain (15)
 
-- **conv-43-51**: "What kind of yoga for building core strength might John benefit from?" Gold: Hatha Yoga. Alasan: tidak ada di percakapan; murni pengetahuan dunia.
-- **conv-26-69**: "What personality traits might Melanie say Caroline has?" Gold: thoughtful, authentic, driven. Jawaban: empathetic, caring, courageous, yang didukung kutipan. Alasan: gold memilih kata yang sewenang-wenang.
-- **conv-44-53**: Gold: park ranger. Jawaban: wildlife biologist. Alasan: keduanya masuk akal.
+- **conv-43-51**: "What kind of yoga for building core strength might John benefit from?" Gold: Hatha Yoga. Reason: not in the conversation; pure world knowledge.
+- **conv-26-69**: "What personality traits might Melanie say Caroline has?" Gold: thoughtful, authentic, driven. Answer: empathetic, caring, courageous, supported by quotes. Reason: the gold picks arbitrary words.
+- **conv-44-53**: Gold: park ranger. Answer: wildlife biologist. Reason: both are reasonable.
 
-### F. Menolak menyebut nama atau menyimpulkan (7)
+### F. Refusing to name something or draw a conclusion (7)
 
-- **conv-47-16**: "the game with different colored cards". Gold: UNO. Jawaban: tidak menyebut nama. Teks penalaran: "No memory gives a name for this game, so I won't supply one".
-- **conv-43-8**: "Which outdoor gear company likely signed up John?" Gold: Under Armour. Jawaban: "The memories don't name the company". Alasan: excerpt D3:15 "I've always liked Under Armour" ada di konteks.
-- **conv-44-18**: "Where did Audrey get Pixie from?" Gold: breeder. Jawaban: menolak mengaitkan "found a breeder nearby" dengan Pixie.
+- **conv-47-16**: "the game with different colored cards". Gold: UNO. Answer: does not give a name. Reasoning text: "No memory gives a name for this game, so I won't supply one".
+- **conv-43-8**: "Which outdoor gear company likely signed up John?" Gold: Under Armour. Answer: "The memories don't name the company". Reason: excerpt D3:15 "I've always liked Under Armour" is in context.
+- **conv-44-18**: "Where did Audrey get Pixie from?" Gold: breeder. Answer: refuses to connect "found a breeder nearby" with Pixie.
 
-Juga: conv-48-75, conv-43-66, conv-43-48, conv-50-62.
+Also: conv-48-75, conv-43-66, conv-43-48, conv-50-62.
 
-### G. Salah memilih atau membaca detail (13)
+### G. Picking or reading the wrong detail (13)
 
-- **conv-30-73**: "How does Gina describe the feeling that dance brings?" Gold: magical. Jawaban: stress relief dan joy. Alasan: D15:8 "…it's magical!" ada di konteks.
-- **conv-43-76**: Gold: MinaLima. Jawaban: "a photo of a collection of Harry Potter books". Alasan: penjawab memilih caption daripada pernyataan langsung.
-- **conv-49-106**: "What did Evan start painting…?" Gold: forest scene. Jawaban: watercolors. Alasan: "forest scene" ada di caption D8:14 di konteks.
+- **conv-30-73**: "How does Gina describe the feeling that dance brings?" Gold: magical. Answer: stress relief and joy. Reason: D15:8 "…it's magical!" is in context.
+- **conv-43-76**: Gold: MinaLima. Answer: "a photo of a collection of Harry Potter books". Reason: the answerer chose the caption over the direct statement.
+- **conv-49-106**: "What did Evan start painting…?" Gold: forest scene. Answer: watercolors. Reason: "forest scene" is in the D8:14 caption in context.
 
-Juga: conv-26-85, conv-30-43, conv-41-85, conv-43-87, conv-43-152, conv-44-55, conv-47-53 (aritmetika: April→Oktober dijawab "sebulan"), conv-47-147, conv-48-115, conv-49-103.
+Also: conv-26-85, conv-30-43, conv-41-85, conv-43-87, conv-43-152, conv-44-55, conv-47-53 (arithmetic: April→October answered as "a month"), conv-47-147, conv-48-115, conv-49-103.
 
-### H. Hitung atau agregasi (6)
+### H. Counting or aggregation (6)
 
-- **conv-42-79**: "How many screenplays has Joanna written?" Gold: 3. Jawaban: 4. Alasan: "started writing another" dan "wrapped up my second" adalah naskah yang sama.
-- **conv-42-19**: Gold: 2 trail. Jawaban: 3. Alasan: trail air terjun di D14:19 baru rencana.
-- **conv-50-47**: Gold: 2 car show. Jawaban: 4. Alasan: memasukkan kunjungan masa kecil; gold juga bisa diperdebatkan.
+- **conv-42-79**: "How many screenplays has Joanna written?" Gold: 3. Answer: 4. Reason: "started writing another" and "wrapped up my second" are the same script.
+- **conv-42-19**: Gold: 2 trails. Answer: 3. Reason: the waterfall trail in D14:19 was only a plan.
+- **conv-50-47**: Gold: 2 car shows. Answer: 4. Reason: it included childhood visits; the gold is also debatable.
 
-Juga: conv-41-62, conv-42-78, conv-42-52.
+Also: conv-41-62, conv-42-78, conv-42-52.
 
-### I. Kata kategori vs nama spesifik (12)
+### I. Category word vs specific name (12)
 
-- **conv-42-87**: "What state did Nate visit?" Gold: Florida. Jawaban: tidak ada negara bagian. Alasan: fakta Tampa punya keyword `florida` tetapi tidak punya `state`; peringkat fakta 95, potongan 77.
-- **conv-47-6**: "Does James live in Connecticut?" Gold: likely yes. Jawaban: tidak. Alasan: "shelter in Stamford" ada di peringkat fakta 34 dan pulih dengan k=50.
-- **conv-48-19**: "How many times has Jolene been to France?" Gold: 2. Jawaban: 1. Alasan: "a year ago in Paris" tidak berkaitan dengan "France", peringkat 104.
+- **conv-42-87**: "What state did Nate visit?" Gold: Florida. Answer: no state. Reason: the Tampa fact has the keyword `florida` but not `state`; fact rank 95, excerpt rank 77.
+- **conv-47-6**: "Does James live in Connecticut?" Gold: likely yes. Answer: no. Reason: "shelter in Stamford" is at fact rank 34 and is recovered with k=50.
+- **conv-48-19**: "How many times has Jolene been to France?" Gold: 2. Answer: 1. Reason: "a year ago in Paris" is not linked to "France", rank 104.
 
-Juga: conv-26-59 (church vs religious), conv-42-60 (Xenoblade vs console), conv-43-11 (surfing vs sports), conv-43-25, conv-43-40 (Smoky Mountains vs NC/TN), conv-44-20 (chicken vs meat), conv-49-64, conv-50-56, conv-47-0.
+Also: conv-26-59 (church vs religious), conv-42-60 (Xenoblade vs console), conv-43-11 (surfing vs sports), conv-43-25, conv-43-40 (Smoky Mountains vs NC/TN), conv-44-20 (chicken vs meat), conv-49-64, conv-50-56, conv-47-0.
 
-### J. Nyaris lolos k (9)
+### J. Just missed k (9)
 
-- **conv-42-53**: "How many times has Nate taken his turtles on a walk?" Gold: 2. Jawaban: 1. Alasan: D5:4 ada di peringkat potongan 23, sedangkan batasnya 20.
-- **conv-44-16**: "When is Andrew going to go hiking with Audrey?" Gold: August. Alasan: D11:7 ada di peringkat 38, sehingga penjawab memilih rencana November yang lain.
-- **conv-49-43**: "How often does Sam get health checkups?" Alasan: fakta D7:2 di peringkat 45.
+- **conv-42-53**: "How many times has Nate taken his turtles on a walk?" Gold: 2. Answer: 1. Reason: D5:4 is at excerpt rank 23, while the cutoff is 20.
+- **conv-44-16**: "When is Andrew going to go hiking with Audrey?" Gold: August. Reason: D11:7 is at rank 38, so the answerer picked the other, November plan.
+- **conv-49-43**: "How often does Sam get health checkups?" Reason: fact D7:2 at rank 45.
 
-Juga: conv-26-66, conv-43-5, conv-43-17, conv-44-48, conv-44-59, conv-50-4.
+Also: conv-26-66, conv-43-5, conv-43-17, conv-44-48, conv-44-59, conv-50-4.
 
-### K. Parafrase atau ejaan (5)
+### K. Paraphrase or spelling (5)
 
-- **conv-47-17** (abstain): "the board game where you have to find the imposter". Gold: Mafia. Alasan: teksnya "impostors", jadi stem tidak cocok; fakta di peringkat 59.
-- **conv-50-40**: "artists Calvin used to listen to when he was a kid". Gold: Tupac dan Dr. Dre. Alasan: tidak ada kata "kid" atau "artist" di D20:8; peringkat 75.
+- **conv-47-17** (abstain): "the board game where you have to find the imposter". Gold: Mafia. Reason: the text says "impostors", so the stems do not match; fact at rank 59.
+- **conv-50-40**: "artists Calvin used to listen to when he was a kid". Gold: Tupac and Dr. Dre. Reason: there is no "kid" or "artist" in D20:8; rank 75.
 
-Juga: conv-47-11, conv-47-24, conv-49-11.
+Also: conv-47-11, conv-47-24, conv-49-11.
 
-### L. Ekstraksi melewatkan detail (11)
+### L. Extraction misses details (11)
 
-- **conv-42-8**: "When did Nate get his first two turtles?" Gold: 2019. Alasan: "I've had them for 3 years" tidak menjadi fakta, dan potongannya di peringkat 25.
-- **conv-49-95**: "What does the smartwatch help Evan with?" Alasan: "smart watch" hanya ada di caption, tidak ada fakta, dan potongan di peringkat 139.
-- **conv-42-14**: "What nickname does Nate use for Joanna?" Gold: Jo. Alasan: fakta dari D7:1 hanya "Nate dyed his hair purple", jadi nama panggilan hilang.
+- **conv-42-8**: "When did Nate get his first two turtles?" Gold: 2019. Reason: "I've had them for 3 years" did not become a fact, and its excerpt is at rank 25.
+- **conv-49-95**: "What does the smartwatch help Evan with?" Reason: "smart watch" appears only in the caption, there is no fact, and the excerpt is at rank 139.
+- **conv-42-14**: "What nickname does Nate use for Joanna?" Gold: Jo. Reason: the fact from D7:1 is only "Nate dyed his hair purple", so the nickname is lost.
 
-Juga: conv-30-44, conv-42-51, conv-43-49, conv-44-39, conv-49-25, conv-50-31, conv-50-61, conv-50-140.
+Also: conv-30-44, conv-42-51, conv-43-49, conv-44-39, conv-49-25, conv-50-31, conv-50-61, conv-50-140.
 
-## 5. Catatan dari sudut rubrik reviewer
+## 5. Notes from the reviewer-rubric perspective
 
 - **RAG (rag-pipeline-reviewer):**
-  - Retrieval hanya BM25 dan graph spreading, dengan seed excerpt dari fakta. Tidak ada reranker.
-  - Context precision rendah (8,5%). Wajar untuk k=30 + 20, tetapi itu tanda konteks penuh noise.
-  - Fallback "not enough context" justru dilarang oleh prompt resmi (Step 7), dan itu ikut mendorong klaster F ke arah sebaliknya: model abstain dengan cara lain.
-  - Baseline dan threshold sudah ada di `docs/evaluation.md` §8. Yang belum ada: delta regresi yang diizinkan dan slice "gold bermasalah".
+  - Retrieval is only BM25 and graph spreading, with excerpts seeded from facts. There is no reranker.
+  - Context precision is low (8.5%). That is expected for k=30 + 20, but it is a sign that the context is full of noise.
+  - A "not enough context" fallback is actually forbidden by the official prompt (Step 7), and that pushes cluster F in the opposite direction: the model abstains in other ways.
+  - Baselines and thresholds already exist in `docs/evaluation.md` §8. What is still missing: an allowed regression delta and a "problematic gold" slice.
 - **MLE (mle-reviewer):**
-  - Juri sama dengan penjawab: risiko self-preference.
-  - Ada contoh soal uji di prompt produk (kebocoran kecil).
-  - Prompt jawab resmi tidak boleh disetel pada set uji yang sama tanpa held-out. Sarannya: setel di 3–4 percakapan, lalu laporkan di sisanya.
-  - Konfigurasi retrieval (semantic off) tidak tercatat di report.
-  - Noise label (≈30% dari kesalahan) lebih besar daripada gain tiap perbaikan, jadi errata dan juri independen perlu didahulukan.
+  - The judge is the same as the answerer: risk of self-preference.
+  - There is a test-question example in the product prompt (a small leak).
+  - The official answer prompt must not be tuned on the same test set without a held-out set. Suggestion: tune on 3–4 conversations, then report on the rest.
+  - The retrieval configuration (semantic off) is not recorded in the report.
+  - Label noise (≈30% of the errors) is larger than the gain from each improvement, so errata and an independent judge need to come first.
 
-Berkas kerja analisis (rekonstruksi konteks, peringkat, klaster) dibuat di scratchpad sesi dan tidak disimpan; tabel per soal ada di `diagnosis-haiku-full.csv` di folder proyek.
+The analysis working files (context reconstruction, ranks, clusters) were created in the session scratchpad and were not saved; the per-question table is in `diagnosis-haiku-full.csv` in the project folder.

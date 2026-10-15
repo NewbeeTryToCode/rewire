@@ -1,314 +1,314 @@
-# Evaluasi rewire
+# Evaluating rewire
 
-Dokumen ini menetapkan **apa yang kita ukur, bagaimana, dengan biaya berapa**, dan bagaimana angka rewire
-dibandingkan dengan sistem memory lain. Runner-nya: [`experiments/eval/run.py`](../experiments/eval/run.py)
-(OpenRouter, atau endpoint lain yang kompatibel dengan OpenAI).
+This document defines **what we measure, how, and at what cost**, and how rewire's numbers compare with
+other memory systems. The runner is [`experiments/eval/run.py`](../experiments/eval/run.py)
+(OpenRouter, or any other OpenAI-compatible endpoint).
 
-## 1. Dua tingkat evaluasi
+## 1. Two levels of evaluation
 
-| Tingkat | Kapan | LLM | Biaya | Yang dijawab |
+| Level | When | LLM | Cost | Question answered |
 |---|---|---|---|---|
-| **Regresi retrieval** | setiap perubahan recall/index | tidak ada | 0 token | Apakah bukti jawaban ikut terambil, dan berapa besar konteksnya? |
-| **Skor end-to-end (J)** | milestone, atau sebelum klaim angka publik | penjawab + judge (+ ingest bila `--mode full`) | lihat §5 | Apakah jawaban akhir benar, dan bisa dibandingkan dengan sistem lain? |
+| **Retrieval regression** | every recall/index change | none | 0 tokens | Is the evidence for the answer retrieved, and how large is the context? |
+| **End-to-end score (J)** | milestones, or before claiming a public number | answerer + judge (+ ingest with `--mode full`) | see §5 | Is the final answer correct, and can it be compared with other systems? |
 
-Skor publik (Mem0, Zep, dll.) selalu **end-to-end**: retrieval → LLM menjawab → LLM judge menilai. Metrik
-retrieval tidak ada padanannya di leaderboard, tapi gratis dan stabil, jadi dipakai sehari-hari.
+Public scores (Mem0, Zep, etc.) are always **end-to-end**: retrieval → an LLM answers → an LLM judge grades. Retrieval
+metrics have no equivalent on leaderboards, but they are free and stable, so they are used day to day.
 
-## 2. Benchmark yang dipakai
+## 2. Benchmarks used
 
-| Benchmark | Isi | Yang dinilai | Protokol kita |
+| Benchmark | Contents | What is graded | Our protocol |
 |---|---|---|---|
-| **LoCoMo** | 10 percakapan panjang (~27 sesi), 1.540 pertanyaan kategori 1–4 | single-hop, multi-hop, temporal, open-domain | Prompt jawaban + judge resmi Mem0 (`experiments/locomo/official_prompts.py`); kategori 5 (adversarial) dikecualikan seperti Mem0 |
-| **LongMemEval_S** | 500 pertanyaan, tiap pertanyaan punya riwayat ~50 sesi (~115k token) | single-session (user / assistant / preference), multi-session, knowledge-update, temporal-reasoning, abstention (30 soal `_abs`) | Template jawaban + prompt judge resmi per tipe (`experiments/longmemeval/lme_prompts.py`) |
-| **BEAM** (ICLR 2026) | 100 chat (100K: 20, 500K: 35, 1M: 35, 10M: 10), 2.000 soal, 10 kategori × 2 soal per chat | abstention, contradiction resolution, event ordering, information extraction, instruction following, knowledge update, multi-session reasoning, preference following, summarization, temporal reasoning | Prompt jawaban RAG + judge per butir rubrik (1 / 0,5 / 0), disalin verbatim (`experiments/eval/beam_prompts.py`, MIT); skor soal = rata-rata rubrik. Ukuran 10M belum didukung; Kendall tau untuk event ordering belum dihitung (skor rubrik saja) |
-| **PersonaMem** (COLM 2025) | 180+ riwayat persona, sampai 60 sesi; versi konteks 32k / 128k / 1M | 7 tipe pertanyaan, mis. mengingat fakta pengguna, mengikuti perubahan preferensi, rekomendasi baru yang sesuai preferensi | Pilihan ganda (a–d) dengan instruksi dan pencocokan jawaban resmi: **tanpa judge LLM**. Satu brain per konteks bersama; potongan setelah posisi pertanyaan dibuang supaya memory tidak berisi "masa depan" |
+| **LoCoMo** | 10 long conversations (~27 sessions), 1,540 questions in categories 1–4 | single-hop, multi-hop, temporal, open-domain | Mem0's official answer prompt + judge (`experiments/locomo/official_prompts.py`); category 5 (adversarial) is excluded, as Mem0 does |
+| **LongMemEval_S** | 500 questions, each with a history of ~50 sessions (~115k tokens) | single-session (user / assistant / preference), multi-session, knowledge-update, temporal-reasoning, abstention (30 `_abs` questions) | Official answer template + official per-type judge prompt (`experiments/longmemeval/lme_prompts.py`) |
+| **BEAM** (ICLR 2026) | 100 chats (100K: 20, 500K: 35, 1M: 35, 10M: 10), 2,000 questions, 10 categories × 2 questions per chat | abstention, contradiction resolution, event ordering, information extraction, instruction following, knowledge update, multi-session reasoning, preference following, summarization, temporal reasoning | RAG answer prompt + per-rubric-item judge (1 / 0.5 / 0), copied verbatim (`experiments/eval/beam_prompts.py`, MIT); question score = mean of the rubric. The 10M size is not supported yet; Kendall tau for event ordering is not computed yet (rubric score only) |
+| **PersonaMem** (COLM 2025) | 180+ persona histories, up to 60 sessions; 32k / 128k / 1M context versions | 7 question types, e.g. recalling user facts, following preference changes, new recommendations that fit the preferences | Multiple choice (a–d) with the official instructions and answer matching: **no LLM judge**. One brain per shared context; excerpts after the question's position are dropped so memory does not contain "the future" |
 
-Mode ingest:
-- `episodes`: transcript disimpan dan diindeks persis seperti hasil konsolidasi, **tanpa** ekstraksi LLM. Gratis.
-- `full`: setiap sesi dikonsolidasi oleh LLM (`--ingest-model`), inbox diterima semua. Paling realistis, paling mahal.
-  BEAM dan PersonaMem hanya mendukung `episodes` (konsolidasi chat 1M token terlalu mahal; untuk PersonaMem,
-  fakta hasil ekstraksi bisa membocorkan giliran setelah pertanyaan).
+Ingest modes:
+- `episodes`: transcripts are stored and indexed exactly as consolidation would produce them, **without** LLM extraction. Free.
+- `full`: every session is consolidated by an LLM (`--ingest-model`), and the whole inbox is accepted. Most realistic, most expensive.
+  BEAM and PersonaMem support only `episodes` (consolidating a 1M-token chat is too expensive; for PersonaMem,
+  extracted facts could leak turns that come after the question).
 
-Sumber data:
-- LoCoMo: `locomo10.json`, langsung dari GitHub:
+Data sources:
+- LoCoMo: `locomo10.json`, straight from GitHub:
   `https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json`.
-- LongMemEval_S: `longmemeval_s_cleaned.json` (Hugging Face; di sesi ini lewat GCS karena HF diblokir proxy).
-- BEAM: folder `chats/` di repo `github.com/mohammadtavakoli78/BEAM` (di-clone lewat git; divalidasi pada
-  commit `b2da22e`). Divalidasi:
-  100K/500K/1M = 20/35/35 chat dengan 400/700/700 soal (20 per chat, 10 kategori), ukuran chat ≈146k / 538k /
-  1,09M token (median), cocok dengan paper; skrip `download_dataset.py` resmi mengubah data Hugging Face ke format
-  yang sama. Perbandingan byte dengan salinan Hugging Face belum dilakukan (HF diblokir).
-- PersonaMem: Hugging Face `bowen-upenn/PersonaMem`, disalin ke GCS (`bucket_for_claude`):
+- LongMemEval_S: `longmemeval_s_cleaned.json` (Hugging Face; in this session via GCS because the proxy blocks HF).
+- BEAM: the `chats/` folder of the repo `github.com/mohammadtavakoli78/BEAM` (cloned with git; validated at
+  commit `b2da22e`). Validated:
+  100K/500K/1M = 20/35/35 chats with 400/700/700 questions (20 per chat, 10 categories), chat sizes ≈146k / 538k /
+  1.09M tokens (median), matching the paper; the official `download_dataset.py` script converts the Hugging Face data to the
+  same format. A byte comparison with the Hugging Face copy has not been done yet (HF is blocked).
+- PersonaMem: Hugging Face `bowen-upenn/PersonaMem`, copied to GCS (`bucket_for_claude`):
   `questions_32k.csv`, `shared_contexts_32k.jsonl`, `questions_1M.csv`, `shared_contexts_1M.jsonl`.
-  Divalidasi: 32k = 589 soal, 37 konteks bersama, ≈27k token per konteks; 1M = 2.674 soal, 33 konteks,
-  ≈925k token per konteks (median); 15 kolom sesuai README, semua referensi konteks ada, kunci jawaban
-  tersebar rata (a)–(d). Nama tipe pertanyaan berbeda antara 32k dan 1M (mis. `track_full_preference_evolution`
-  vs `track_full_preference_updates`; 1M punya `acknowledge_latest_user_preferences`), jadi skor per tipe
-  32k dan 1M tidak dibandingkan langsung.
+  Validated: 32k = 589 questions, 37 shared contexts, ≈27k tokens per context; 1M = 2,674 questions, 33 contexts,
+  ≈925k tokens per context (median); 15 columns as described in the README, every context reference exists, and the answer keys
+  are spread evenly over (a)–(d). Question type names differ between 32k and 1M (e.g. `track_full_preference_evolution`
+  vs `track_full_preference_updates`; 1M has `acknowledge_latest_user_preferences`), so per-type scores for
+  32k and 1M are not compared directly.
 
-## 3. Metrik
+## 3. Metrics
 
-| Metrik | Definisi | LLM? | Dilaporkan oleh |
+| Metric | Definition | LLM? | Reported by |
 |---|---|---|---|
-| **J (accuracy)** | Persen jawaban yang dinilai benar oleh judge dengan prompt resmi (BEAM: rata-rata skor rubrik 0–1; PersonaMem: akurasi pilihan ganda tanpa judge) | ya (PersonaMem: tidak untuk penilaian) | run.py |
-| **F1** (LoCoMo) | F1 token antara jawaban dan gold (metrik asli paper LoCoMo) | jawaban saja | run.py |
-| **BLEU-1** (LoCoMo) | Presisi unigram dengan brevity penalty | jawaban saja | run.py |
-| **Abstention** (LongMemEval) | Persen soal tak-terjawab yang dikenali sebagai tak-terjawab | ya | run.py |
-| **Evidence turn recall** | Persen giliran bukti yang muncul di konteks hasil recall | tidak | run.py, `--retrieval-only` |
-| **All evidence** | Persen soal yang **semua** buktinya ada di konteks | tidak | run.py |
-| **MRR** | 1 / peringkat potongan pertama yang memuat bukti (0 bila tidak ada), dirata-rata: bukti ada di urutan atas atau terkubur | tidak | run.py |
-| **Context precision** | Persen potongan terambil yang memuat bukti; sisanya *noise* yang mencemari konteks (noise ratio = 1 − precision) | tidak | run.py |
-| **Context tokens** | Besar konteks memory per soal (mean, p95; ≈ karakter/4) | tidak | run.py |
-| **Compression ratio** | Token riwayat penuh ÷ token konteks rewire: berapa kali lebih hemat dari mengirim seluruh riwayat (*full-context*) | tidak | run.py |
-| **Prompt / completion / reasoning tokens per response** | Dari `usage` API, per tahap (ingest / answer / judge) | ya | run.py |
-| **Biaya (USD)** | `usage.cost` dari OpenRouter, per tahap dan per soal | ya | run.py |
-| **Latency** | Retrieval (ms, p50/p95/p99) dan panggilan LLM (p50/p95) | — | run.py |
-| **J tanpa gold bermasalah** (LoCoMo) | J setelah membuang soal di `experiments/eval/locomo_errata.json`: pembicara tertukar di pertanyaan, gold bertentangan dengan percakapan, atau jawaban hanya ada di foto. J resmi tetap angka yang dibandingkan | ya | run.py |
-| **Strict J / list items named** (LoCoMo) | Untuk soal yang gold-nya daftar, juri daftar (model sama dengan judge) memecah gold dan menghitung item yang disebut jawaban, parafrase dihitung. Strict J: jawaban daftar benar hanya bila judge menerima **dan** semua item disebut | ya | run.py |
-| **Panjang jawaban** | Rata-rata kata per jawaban (jawaban panjang cenderung dinilai benar oleh judge yang longgar) | — | results JSON |
+| **J (accuracy)** | Percentage of answers the judge grades as correct with the official prompt (BEAM: mean rubric score 0–1; PersonaMem: multiple-choice accuracy without a judge) | yes (PersonaMem: not for grading) | run.py |
+| **F1** (LoCoMo) | Token F1 between the answer and the gold answer (the original LoCoMo paper metric) | answer only | run.py |
+| **BLEU-1** (LoCoMo) | Unigram precision with a brevity penalty | answer only | run.py |
+| **Abstention** (LongMemEval) | Percentage of unanswerable questions recognized as unanswerable | yes | run.py |
+| **Evidence turn recall** | Percentage of evidence turns that appear in the recalled context | no | run.py, `--retrieval-only` |
+| **All evidence** | Percentage of questions for which **all** evidence is in the context | no | run.py |
+| **MRR** | 1 / rank of the first excerpt containing evidence (0 if none), averaged: whether evidence is near the top or buried | no | run.py |
+| **Context precision** | Percentage of retrieved excerpts that contain evidence; the rest is *noise* that pollutes the context (noise ratio = 1 − precision) | no | run.py |
+| **Context tokens** | Size of the memory context per question (mean, p95; ≈ characters/4) | no | run.py |
+| **Compression ratio** | Full-history tokens ÷ rewire context tokens: how many times cheaper than sending the whole history (*full-context*) | no | run.py |
+| **Prompt / completion / reasoning tokens per response** | From the API `usage`, per stage (ingest / answer / judge) | yes | run.py |
+| **Cost (USD)** | `usage.cost` from OpenRouter, per stage and per question | yes | run.py |
+| **Latency** | Retrieval (ms, p50/p95/p99) and LLM calls (p50/p95) | — | run.py |
+| **J without disputed gold** (LoCoMo) | J after dropping the questions in `experiments/eval/locomo_errata.json`: speaker swapped in the question, gold contradicts the conversation, or the answer exists only in a photo. The official J remains the number that is compared | yes | run.py |
+| **Strict J / list items named** (LoCoMo) | For questions whose gold is a list, a list judge (same model as the judge) splits the gold and counts the items the answer mentions, paraphrases included. Strict J: a list answer is correct only if the judge accepts it **and** every item is mentioned | yes | run.py |
+| **Answer length** | Mean words per answer (long answers tend to be graded correct by a lenient judge) | — | results JSON |
 
-Hasil retrieval yang sudah diukur ada di §8. Context precision rendah (≈11–20%) karena satu potongan berisi
-6 giliran: ini sasaran perbaikan yang jelas (potongan lebih kecil atau pemangkasan) tanpa menurunkan recall.
+Retrieval results measured so far are in §8. Context precision is low (≈11–20%) because one excerpt contains
+6 turns: this is a clear target for improvement (smaller excerpts or trimming) without lowering recall.
 
-### Dimensi kemampuan → kategori benchmark
+### Capability dimensions → benchmark categories
 
-| Dimensi | Diukur oleh |
+| Dimension | Measured by |
 |---|---|
 | Fact recall (*needle-in-a-haystack*) | LoCoMo single-hop; LongMemEval single-session-user / -assistant |
-| Belief update (fakta lama diganti yang baru) | LongMemEval knowledge-update; uji unit supersede di repo |
+| Belief update (an old fact replaced by a new one) | LongMemEval knowledge-update; supersede unit tests in the repo |
 | Temporal reasoning | LoCoMo temporal; LongMemEval temporal-reasoning |
 | Cross-session synthesis | LoCoMo multi-hop; LongMemEval multi-session |
-| Konsistensi preferensi | LongMemEval single-session-preference; PersonaMem; BEAM preference following |
-| Kontradiksi, urutan kejadian, instruksi jangka panjang, ringkasan | BEAM contradiction resolution, event ordering, instruction following, summarization |
-| Skala sangat panjang (500K–10M token) | BEAM |
-| Tahu kapan tidak tahu | LongMemEval abstention |
+| Preference consistency | LongMemEval single-session-preference; PersonaMem; BEAM preference following |
+| Contradictions, event order, long-term instructions, summaries | BEAM contradiction resolution, event ordering, instruction following, summarization |
+| Very long scale (500K–10M tokens) | BEAM |
+| Knowing when it does not know | LongMemEval abstention |
 
-Metrik produk (bukan benchmark, diukur dari pemakaian nyata): fresh-first rate (nilai terbaru dipakai
-saat fakta berubah), captured-but-not-surfaced (fakta tersimpan tapi tidak muncul saat dibutuhkan),
-item inbox per sesi, hit rate snapshot (`memory used` di `sessions/*.md`).
+Product metrics (not benchmarks; measured from real use): fresh-first rate (the newest value is used
+when a fact changes), captured-but-not-surfaced (a fact is stored but does not surface when needed),
+inbox items per session, snapshot hit rate (`memory used` in `sessions/*.md`).
 
-## 4. Skor sistem lain (dipublikasikan)
+## 4. Scores of other systems (published)
 
-**Peringatan:** angka di bawah tidak sebanding satu sama lain. Model penjawab, model judge, prompt, dan
-subset berbeda-beda, dan banyak yang dilaporkan oleh vendornya sendiri. Bandingkan hanya bila protokolnya
-sama (§6).
+**Warning:** the numbers below are not comparable with one another. The answering model, judge model, prompt, and
+subset all differ, and many are self-reported by the vendor. Compare only when the protocol
+is the same (§6).
 
-### LoCoMo (J, kategori 1–4)
+### LoCoMo (J, categories 1–4)
 
-| Sistem | J | Token / latency | Sumber, catatan |
+| System | J | Tokens / latency | Source, notes |
 |---|---|---|---|
-| Full-context (semua percakapan di prompt) | ≈72,9% | ≈26k token per percakapan, p95 ≈17 s | Paper Mem0 (2025) |
-| Mem0 | ≈66,9% (Mem0ᵍ ≈68,4%) | ≈7k token, p95 ≈1,44 s | Paper Mem0 (2025) |
-| Zep | ≈66,0% | | Paper Mem0 (2025); Zep melaporkan 94,7% sendiri, pihak ketiga 75,1% |
-| LangMem | ≈58,1% | latency ≈60 s | Paper Mem0 (2025) |
-| OpenAI Memory | ≈52,9% | | Paper Mem0 (2025) |
-| A-Mem | ≈48,4% | | Paper Mem0 (2025) |
-| Mem0 (platform 2026) | 92,5% | median 6,7–7k token per retrieval, p50 0,88–1,09 s | Laporan vendor |
-| Evaluasi Memori (pihak ketiga) | Zep 79,1% · LangMem 78,1% · Mem0 62,5% | Mem0 ≈1.764 token per soal | Memori Labs |
-| **rewire** | **94,0–94,9%** | konteks ≈2,7k token per soal (dry-run conv-26, k=30, 10 potongan) | Iterasi 6–7 (k=50); penjawab + judge Claude via `claude -p`, prompt Mem0; **belum** dengan model yang sama dengan Mem0 |
+| Full-context (whole conversation in the prompt) | ≈72.9% | ≈26k tokens per conversation, p95 ≈17 s | Mem0 paper (2025) |
+| Mem0 | ≈66.9% (Mem0ᵍ ≈68.4%) | ≈7k tokens, p95 ≈1.44 s | Mem0 paper (2025) |
+| Zep | ≈66.0% | | Mem0 paper (2025); Zep self-reports 94.7%, a third party 75.1% |
+| LangMem | ≈58.1% | latency ≈60 s | Mem0 paper (2025) |
+| OpenAI Memory | ≈52.9% | | Mem0 paper (2025) |
+| A-Mem | ≈48.4% | | Mem0 paper (2025) |
+| Mem0 (2026 platform) | 92.5% | median 6.7–7k tokens per retrieval, p50 0.88–1.09 s | Vendor report |
+| Memori evaluation (third party) | Zep 79.1% · LangMem 78.1% · Mem0 62.5% | Mem0 ≈1,764 tokens per question | Memori Labs |
+| **rewire** | **94.0–94.9%** | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7 (k=50); answerer + judge Claude via `claude -p`, Mem0 prompt; **not yet** with the same model as Mem0 |
 
-### LongMemEval_S (akurasi, 500 soal)
+### LongMemEval_S (accuracy, 500 questions)
 
-| Sistem | Akurasi | Sumber, catatan |
+| System | Accuracy | Source, notes |
 |---|---|---|
-| Zep | 71,2% | Judge GPT-4o; angka yang paling konsisten di beberapa sumber |
-| Supermemory | 85,2% | Dirangkum di paper Agent Zero Memory (2026) |
-| EmergenceMem | 86,0% | idem |
-| Hindsight | 91,4% | idem |
-| ByteRover | 92,8% | Laporan vendor |
-| Mem0 | 94,4% | Laporan vendor |
-| Mastra (observational memory) | 94,9% (GPT-5-mini); 84,2% dengan GPT-4o | Laporan vendor; menunjukkan besarnya pengaruh model penjawab |
-| Agent Zero Memory | 95,6% | Paper Agent Zero Memory (2026) |
-| **rewire** (`episodes`, tanpa ekstraksi) | **85,4%** (10 potongan); ≈89,8% (20 potongan) | Iterasi 8; penjawab + judge Claude via `claude -p`, prompt resmi |
+| Zep | 71.2% | GPT-4o judge; the most consistent number across several sources |
+| Supermemory | 85.2% | Summarized in the Agent Zero Memory paper (2026) |
+| EmergenceMem | 86.0% | same |
+| Hindsight | 91.4% | same |
+| ByteRover | 92.8% | Vendor report |
+| Mem0 | 94.4% | Vendor report |
+| Mastra (observational memory) | 94.9% (GPT-5-mini); 84.2% with GPT-4o | Vendor report; shows how much the answering model matters |
+| Agent Zero Memory | 95.6% | Agent Zero Memory paper (2026) |
+| **rewire** (`episodes`, no extraction) | **85.4%** (10 excerpts); ≈89.8% (20 excerpts) | Iteration 8; answerer + judge Claude via `claude -p`, official prompts |
 
-Retrieval rewire (tanpa LLM, LongMemEval_S, 470 soal non-abstention): sesi bukti ditemukan 97,0%, semua
-sesi bukti 87,9%, konteks rata-rata ≈11,2k token dari ≈115k.
+rewire retrieval (no LLM, LongMemEval_S, 470 non-abstention questions): evidence session found 97.0%, all
+evidence sessions 87.9%, mean context ≈11.2k tokens out of ≈115k.
 
-Sumber: [paper Mem0](https://arxiv.org/pdf/2504.19413) ·
+Sources: [Mem0 paper](https://arxiv.org/pdf/2504.19413) ·
 [Mem0: benchmarks 2026](https://mem0.ai/library/agent-memory/ai-memory-benchmarks-in-2026) ·
 [Mem0: state of agent memory 2026](https://mem0.ai/blog/state-of-ai-agent-memory-2026) ·
 [Memori LoCoMo results](https://memorilabs.ai/docs/memori-cloud/benchmark/results/) ·
 [Agent Zero Memory](https://arxiv.org/pdf/2608.29606) ·
 [Mastra observational memory](https://mastra.ai/research/observational-memory) ·
-[ZenBrain (catatan soal angka vendor)](https://arxiv.org/pdf/2604.23878) ·
-[User as Code (reimplementasi Mem0 29,3%)](https://arxiv.org/pdf/2606.16707).
+[ZenBrain (notes on vendor numbers)](https://arxiv.org/pdf/2604.23878) ·
+[User as Code (Mem0 reimplementation 29.3%)](https://arxiv.org/pdf/2606.16707).
 
-### Model penjawab dan judge yang dipakai pembanding (dicek dari kode evaluasi mereka, 2026-10-14)
+### Answering and judge models used by the comparison systems (checked in their evaluation code, 2026-10-14)
 
-| Angka | Penjawab | Judge | Sumber |
+| Number | Answerer | Judge | Source |
 |---|---|---|---|
-| Paper Mem0 2025 (LoCoMo: Mem0 ≈66,9%, Mem0ᵍ ≈68,4%, Zep ≈66,0%, full-context ≈72,9%) | `gpt-4o-mini` (env `MODEL`, default README) | `gpt-4o-mini` (tertanam di `metrics/llm_judge.py`) | repo `mem0ai/mem0`, folder `evaluation/` (commit `d85fcda`) |
-| Mem0 platform 2026 (LoCoMo 92,5%, LongMemEval 94,4%) | `gpt-5` | `gpt-5` | repo `mem0ai/memory-benchmarks`, `results/platform/*.json` (default runner: `gpt-4o` / `gpt-4o`) |
-| Zep LoCoMo 75,14% (sanggahan Zep) | `gpt-4o-mini` | `gpt-4o-mini`, prompt grader milik Zep | repo `getzep/zep-papers`, `locomo_eval/` |
-| Zep LongMemEval (paper 2025) | `gpt-4o-mini`, dan `gpt-4o` untuk angka 71,2% | kode: `gpt-4o-mini`, prompt grader milik Zep, bukan prompt resmi LongMemEval | `zep-papers`, `zep_longmem_eval.ipynb` ("models default to gpt-4o-mini") |
+| Mem0 paper 2025 (LoCoMo: Mem0 ≈66.9%, Mem0ᵍ ≈68.4%, Zep ≈66.0%, full-context ≈72.9%) | `gpt-4o-mini` (env `MODEL`, README default) | `gpt-4o-mini` (hard-coded in `metrics/llm_judge.py`) | repo `mem0ai/mem0`, folder `evaluation/` (commit `d85fcda`) |
+| Mem0 platform 2026 (LoCoMo 92.5%, LongMemEval 94.4%) | `gpt-5` | `gpt-5` | repo `mem0ai/memory-benchmarks`, `results/platform/*.json` (runner default: `gpt-4o` / `gpt-4o`) |
+| Zep LoCoMo 75.14% (Zep's rebuttal) | `gpt-4o-mini` | `gpt-4o-mini`, Zep's own grader prompt | repo `getzep/zep-papers`, `locomo_eval/` |
+| Zep LongMemEval (2025 paper) | `gpt-4o-mini`, and `gpt-4o` for the 71.2% number | code: `gpt-4o-mini`, Zep's own grader prompt, not the official LongMemEval prompt | `zep-papers`, `zep_longmem_eval.ipynb` ("models default to gpt-4o-mini") |
 
-Konsekuensinya: untuk dibandingkan dengan paper Mem0 dan angka LoCoMo Zep, pakai `gpt-4o-mini` sebagai
-penjawab **dan** judge. Angka Mem0 2026 memakai GPT-5 untuk keduanya, jadi tidak sebanding dengan run yang
-memakai model lebih kecil.
+Consequence: to compare with the Mem0 paper and Zep's LoCoMo number, use `gpt-4o-mini` as both
+answerer **and** judge. The Mem0 2026 numbers use GPT-5 for both, so they are not comparable with runs that
+use smaller models.
 
-### Besar konteks yang dikirim ke penjawab (per soal, LoCoMo)
+### Size of the context sent to the answerer (per question, LoCoMo)
 
-| Sistem | Konteks / soal | Isi konteks | Skor | Sumber |
+| System | Context / question | Context contents | Score | Source |
 |---|---|---|---|---|
-| Memori | ≈1.294 token | fakta ringkas | 81,95% | laporan Memori (vendor) |
-| Zep | ≈1.602 token | fakta (edge) + ringkasan entitas | 79,1% (Memori), 75,1% (Zep) | paper MemCoT; Memori; Zep |
-| Mem0 (paper 2025 / pengukuran pihak ketiga) | ≈1.764 token | 10–30 fakta ringkas | 62,5–68,4% | paper MemCoT; Memori; paper Mem0 |
-| Mem0 platform 2026, top-50 | 50 fakta (≈1,7–2k token, perkiraan) | fakta ringkas | 82,7% (GPT-5) | `memory-benchmarks/results/platform/locomo_top50_results.json` |
-| Mem0 platform 2026, top-200 | 200 fakta, rata-rata 6.956 token | fakta ringkas | 91,6% (GPT-5) | `locomo_results.json` + laporan Mem0 |
-| Full-context | ≈26k token | seluruh percakapan | 72,9% (4o-mini) – 87,5% | paper Mem0; Memori |
-| **rewire, 10 potongan** | **≈2,2k token** (≈2,5k sebelum penggabungan) | 10 potongan × 6 giliran transcript mentah | bukti lengkap 77,5% | §8 |
-| **rewire, 20 potongan** | **≈4,2k token** (≈4,8k sebelum penggabungan) | 20 potongan transcript mentah | bukti lengkap 82,9% | §8 |
+| Memori | ≈1,294 tokens | concise facts | 81.95% | Memori report (vendor) |
+| Zep | ≈1,602 tokens | facts (edges) + entity summaries | 79.1% (Memori), 75.1% (Zep) | MemCoT paper; Memori; Zep |
+| Mem0 (2025 paper / third-party measurement) | ≈1,764 tokens | 10–30 concise facts | 62.5–68.4% | MemCoT paper; Memori; Mem0 paper |
+| Mem0 platform 2026, top-50 | 50 facts (≈1.7–2k tokens, estimated) | concise facts | 82.7% (GPT-5) | `memory-benchmarks/results/platform/locomo_top50_results.json` |
+| Mem0 platform 2026, top-200 | 200 facts, mean 6,956 tokens | concise facts | 91.6% (GPT-5) | `locomo_results.json` + Mem0 report |
+| Full-context | ≈26k tokens | the whole conversation | 72.9% (4o-mini) – 87.5% | Mem0 paper; Memori |
+| **rewire, 10 excerpts** | **≈2.2k tokens** (≈2.5k before merging) | 10 excerpts × 6 turns of raw transcript | all evidence 77.5% | §8 |
+| **rewire, 20 excerpts** | **≈4.2k tokens** (≈4.8k before merging) | 20 excerpts of raw transcript | all evidence 82.9% | §8 |
 
-Pelajaran: sistem dengan konteks kecil (≈1,3–1,8k token) mengirim **fakta ringkas**, bukan transcript mentah;
-skor tinggi Mem0 2026 justru memakai konteks besar (≈7k token, 200 fakta). rewire mode `episodes` mengirim
-transcript mentah dengan context precision hanya 11–20%: tokennya habis untuk giliran yang tidak relevan. Target
-yang tepat bukan "konteks lebih besar" tetapi **lebih banyak bukti per token**: KPI retrieval = persen soal dengan
-semua bukti pada anggaran token tetap (mis. 2,5k).
+Lesson: systems with small contexts (≈1.3–1.8k tokens) send **concise facts**, not raw transcripts;
+Mem0 2026's high score actually uses a large context (≈7k tokens, 200 facts). rewire in `episodes` mode sends
+raw transcripts with a context precision of only 11–20%: its tokens are spent on irrelevant turns. The right target
+is not "a larger context" but **more evidence per token**: the retrieval KPI = percentage of questions with
+all evidence at a fixed token budget (e.g. 2.5k).
 
-### Perbandingan head-to-head (apples-to-apples)
+### Head-to-head comparison (apples-to-apples)
 
-Satu-satunya cara membandingkan secara adil adalah menjalankan Mem0, Zep (Graphiti, open source) dan rewire
-**di harness yang sama**: dataset dan sampel sama, model penjawab dan judge sama, embedding lokal yang sama
-untuk sistem yang butuh embedding (mis. `bge-small-en-v1.5` atau `all-MiniLM-L6-v2`). Yang perlu diperhatikan:
-- **Biaya ingest berbeda jauh.** Mem0 dan Graphiti memanggil LLM saat menulis memory (ekstraksi per pesan /
-  per episode); rewire mode `episodes` tidak memanggil LLM sama sekali, mode `full` sekitar 2 panggilan per
-  sesi. Token ingest harus dilaporkan terpisah, bukan hanya token saat menjawab.
-- **Infrastruktur.** Graphiti butuh graph database (Neo4j/FalkorDB); Mem0 open source butuh vector store.
-  Jalankan lokal, tanpa layanan cloud mereka, supaya versinya terkunci dan bisa diulang.
-- **Mulai kecil:** 20–50 soal per benchmark untuk ketiga sistem, baru skala penuh bila selisihnya menarik.
-Belum diimplementasikan; runner sudah memisahkan token per tahap (ingest / answer / judge), jadi adaptor
-Mem0 dan Graphiti tinggal mengisi tahap ingest dan retrieval.
+The only fair way to compare is to run Mem0, Zep (Graphiti, open source) and rewire
+**in the same harness**: the same dataset and sample, the same answering and judge models, and the same local embedding
+for the systems that need embeddings (e.g. `bge-small-en-v1.5` or `all-MiniLM-L6-v2`). Things to watch:
+- **Ingest costs differ greatly.** Mem0 and Graphiti call an LLM when writing memory (extraction per message /
+  per episode); rewire in `episodes` mode makes no LLM calls at all, and `full` mode makes about 2 calls per
+  session. Ingest tokens must be reported separately, not only the tokens spent answering.
+- **Infrastructure.** Graphiti needs a graph database (Neo4j/FalkorDB); open-source Mem0 needs a vector store.
+  Run them locally, without their cloud services, so the versions are pinned and the runs are repeatable.
+- **Start small:** 20–50 questions per benchmark for all three systems, and go to full scale only if the difference is interesting.
+Not implemented yet; the runner already separates tokens per stage (ingest / answer / judge), so the Mem0
+and Graphiti adapters only need to fill in the ingest and retrieval stages.
 
-## 5. Token: dari mana datangnya, dan berapa
+## 5. Tokens: where they come from, and how many
 
-Per soal ada tiga kemungkinan konsumen token:
+Each question has three possible token consumers:
 
-| Tahap | Ukuran tipikal per soal | Catatan |
+| Stage | Typical size per question | Notes |
 |---|---|---|
-| **ingest** (`--mode full` saja) | ~2 panggilan per **sesi** transcript, bukan per soal | LoCoMo: ~272 sesi; LongMemEval: ~50 sesi × 500 soal (setiap soal punya riwayat sendiri), jadi `full` untuk LongMemEval hanya layak untuk sampel kecil |
-| **answer** | LoCoMo ≈4,4k prompt (≈1,8k instruksi Mem0 + ≈2,7k konteks); LongMemEval ≈11,4k prompt | **Tahap terbesar**; output 100–500 token (penalaran langkah demi langkah) |
-| **judge** | ≈400–600 prompt, ≈10–60 output | ±5% dari total; kandidat untuk model murah atau Jev |
-| **judge BEAM** | ≈3 panggilan per soal (satu per butir rubrik), masing-masing ≈1,3k token | judge resmi BEAM tidak murah: ≈20% dari total di dry-run |
-| **PersonaMem** | 0 | pilihan ganda, dinilai dengan pencocokan |
+| **ingest** (`--mode full` only) | ~2 calls per transcript **session**, not per question | LoCoMo: ~272 sessions; LongMemEval: ~50 sessions × 500 questions (each question has its own history), so `full` for LongMemEval is only feasible for small samples |
+| **answer** | LoCoMo ≈4.4k prompt (≈1.8k Mem0 instructions + ≈2.7k context); LongMemEval ≈11.4k prompt | **The largest stage**; output 100–500 tokens (step-by-step reasoning) |
+| **judge** | ≈400–600 prompt, ≈10–60 output | ±5% of the total; a candidate for a cheap model or Jev |
+| **BEAM judge** | ≈3 calls per question (one per rubric item), each ≈1.3k tokens | the official BEAM judge is not cheap: ≈20% of the total in the dry run |
+| **PersonaMem** | 0 | multiple choice, graded by matching |
 
-Dry-run BEAM 100K (20 soal): ≈13,4k token konteks per soal (potongan berisi jawaban asisten yang panjang),
-≈$0,06 per 20 soal dengan harga contoh di atas. Turunkan `--episodes` bila konteks terlalu besar.
+BEAM 100K dry run (20 questions): ≈13.4k context tokens per question (excerpts contain long assistant answers),
+≈$0.06 per 20 questions at the example prices above. Lower `--episodes` if the context is too large.
 
-Perkiraan dry-run (prompt dihitung dari teks sebenarnya, harga contoh $0,15 / $0,60 per 1M token):
-LoCoMo 8 soal ≈ $0,008; LongMemEval 6 soal ≈ $0,012, artinya 500 soal LongMemEval ≈ $1 dengan model sekelas
-GPT-4o-mini untuk menjawab dan menilai. Harga sebenarnya diambil dari katalog OpenRouter saat dry-run.
+Dry-run estimates (prompts counted from the actual text, example prices $0.15 / $0.60 per 1M tokens):
+LoCoMo 8 questions ≈ $0.008; LongMemEval 6 questions ≈ $0.012, which means 500 LongMemEval questions ≈ $1 with a
+GPT-4o-mini-class model for answering and judging. Actual prices are taken from the OpenRouter catalog during the dry run.
 
-Mengapa run sebelumnya cepat menghabiskan kuota: semua panggilan lewat `claude -p` dengan langganan yang sama
-dengan sesi kerja, memakai model default terbesar, menjawab ulang semua soal di setiap run, dan untuk
-LongMemEval membawa ≈11–22k token konteks per soal.
+Why earlier runs used up the quota quickly: every call went through `claude -p` on the same subscription
+as the working session, used the largest default model, re-answered every question on each run, and for
+LongMemEval carried ≈11–22k context tokens per question.
 
-## 6. Aturan agar angka bisa dibandingkan
+## 6. Rules for comparable numbers
 
-1. **Model sama dengan pembanding.** Catat model penjawab dan judge di setiap hasil (`report-*.md` menulisnya).
-   Untuk LongMemEval, judge resmi adalah GPT-4o; untuk LoCoMo pakai model yang dipakai sistem pembanding.
-2. **Prompt resmi**, tanpa modifikasi (sudah disalin verbatim di repo).
-3. **Subset sama**: LoCoMo kategori 1–4; LongMemEval_S (bukan M, bukan versi penuh).
-4. **Ukuran sampel**: interval kepercayaan 95% ≈ ±1,96·√(p(1−p)/n). Untuk p≈0,85: n=120 → ±6,4 poin;
-   n=500 → ±3,1 poin. Sampel 20/kategori cukup untuk regresi kasar, bukan untuk klaim publik.
-5. **Jam recall dikunci.** Aktivasi meluruh menurut umur memori, jadi run.py me-recall tiap soal pada saat brain
-   selesai di-ingest (waktu di `.state/eval_done`). Run ulang memberi konteks yang sama persis dan memakai cache
-   jawaban, kapan pun dijalankan. Run sebelum 2026-10-15 belum mengunci jam ini.
-6. **Variasi judge**: J bisa bergeser ±1–3 poin antar run dengan model yang sama; jangan menyimpulkan dari
-   selisih kecil.
+1. **Same model as the comparison system.** Record the answering and judge models in every result (`report-*.md` writes them).
+   For LongMemEval, the official judge is GPT-4o; for LoCoMo use the model used by the comparison system.
+2. **Official prompts**, unmodified (already copied verbatim into the repo).
+3. **Same subset**: LoCoMo categories 1–4; LongMemEval_S (not M, not the full version).
+4. **Sample size**: the 95% confidence interval ≈ ±1.96·√(p(1−p)/n). For p≈0.85: n=120 → ±6.4 points;
+   n=500 → ±3.1 points. 20 per category is enough for rough regression checks, not for public claims.
+5. **Recall clock pinned.** Activation decays with memory age, so run.py recalls each question at the moment the brain
+   finished ingesting (the time in `.state/eval_done`). Re-runs get exactly the same context and use the answer
+   cache, whenever they are run. Runs before 2026-10-15 did not pin this clock yet.
+6. **Judge variance**: J can shift ±1–3 points between runs with the same model; do not draw conclusions from
+   small differences.
 
-## 7. Pilihan model
+## 7. Model choice
 
-| Peran | Rekomendasi | Alasan |
+| Role | Recommendation | Reason |
 |---|---|---|
-| Judge untuk angka publik | model yang sama dengan pembanding (LongMemEval: GPT-4o) | angka hanya sebanding bila judge-nya sama |
-| Judge untuk regresi | model murah yang stabil; cek dulu kecocokannya dengan judge resmi pada ~100 soal | judge hanya ~5% token, tapi harus konsisten antar run |
-| Penjawab | satu model tetap untuk semua sistem yang dibandingkan | model penjawab menggeser skor puluhan poin (Mastra: 94,9% vs 84,2% hanya karena model) |
-| Ingest (`--mode full`) | model yang andal untuk JSON schema | ekstraksi gagal = memory hilang, bukan sekadar skor turun |
+| Judge for public numbers | the same model as the comparison system (LongMemEval: GPT-4o) | numbers are comparable only when the judge is the same |
+| Judge for regressions | a cheap, stable model; first check its agreement with the official judge on ~100 questions | the judge is only ~5% of tokens, but it must be consistent between runs |
+| Answerer | one fixed model for every system being compared | the answering model shifts scores by tens of points (Mastra: 94.9% vs 84.2% from the model alone) |
+| Ingest (`--mode full`) | a model that is reliable with JSON schemas | failed extraction = lost memory, not just a lower score |
 
-**Model utama (keputusan 2026-10-14, setelah run Nemotron):** `openai/gpt-4o-mini` sebagai penjawab **dan**
-judge: sama dengan paper Mem0 dan angka LoCoMo Zep (tabel di §4), judge-nya stabil, bukan model reasoning
-(tidak perlu `--reasoning-effort`), dan murah (LoCoMo penuh ≈$1,60–2,30; `openai/gpt-4o-mini:batch` setengahnya).
-Untuk LongMemEval, judge resmi adalah GPT-4o: tambahkan run `--judge-model openai/gpt-4o` bila angkanya
-akan dibandingkan dengan protokol resmi (jawaban diambil dari cache, hanya judge yang dibayar).
+**Main model (decision of 2026-10-14, after the Nemotron run):** `openai/gpt-4o-mini` as both answerer **and**
+judge: the same as the Mem0 paper and Zep's LoCoMo number (table in §4), its judging is stable, it is not a reasoning model
+(no `--reasoning-effort` needed), and it is cheap (full LoCoMo ≈$1.60–2.30; `openai/gpt-4o-mini:batch` costs half).
+For LongMemEval, the official judge is GPT-4o: add a run with `--judge-model openai/gpt-4o` when the number
+will be compared under the official protocol (answers come from the cache; only the judge is paid for).
 
-**Model untuk run pertama (2026-10-14):** `nvidia/nemotron-3-ultra-550b-a55b:free` untuk penjawab
-dan judge. Bila skornya jauh di bawah batas atas retrieval (§8), atau banyak jawaban kosong / terpotong, coba
-`thinkingmachines/inkling:free` pada soal yang sama (seed sama; cache menyimpan balasan per model).
-**Catatan 2026-10-14:** `inkling:free` membalas 403 untuk panggilan API langsung (hanya untuk "agentic harness"
-terdaftar); pakai `thinkingmachines/inkling` (berbayar) atau model gratis lain. Keduanya
-ada di katalog OpenRouter (gratis, konteks ±1M token) dan keduanya model *reasoning*: pakai
-`--reasoning-effort low`, karena proses berpikir ikut memakai `max_tokens` dan jawaban bisa kosong
-(report memberi peringatan bila itu terjadi). Penjawab dan judge yang sama cenderung menilai dirinya sendiri
-lebih longgar: wajar untuk regresi internal, tidak untuk angka publik.
+**Model for the first run (2026-10-14):** `nvidia/nemotron-3-ultra-550b-a55b:free` as answerer
+and judge. If its score is far below the retrieval upper bound (§8), or there are many empty / truncated answers, try
+`thinkingmachines/inkling:free` on the same questions (same seed; the cache stores replies per model).
+**Note 2026-10-14:** `inkling:free` returns 403 for direct API calls (it is only for registered "agentic harnesses");
+use `thinkingmachines/inkling` (paid) or another free model. Both
+are in the OpenRouter catalog (free, context ±1M tokens) and both are *reasoning* models: use
+`--reasoning-effort low`, because the thinking process also consumes `max_tokens` and the answer can come back empty
+(the report warns when that happens). When the answerer and the judge are the same model, it tends to grade itself
+more leniently: acceptable for internal regressions, not for public numbers.
 
-Model gratis (`:free`) di OpenRouter cocok untuk mencoba harness, tapi kurang cocok untuk angka resmi:
-- **Rate limit:** batas permintaannya biasanya ketat, jadi run panjang mudah terputus.
-- **Ketersediaan:** daftar model gratis bisa berubah, sehingga hasilnya sulit diulang.
-- **Privasi data:** cek kebijakan datanya sebelum mengirim riwayat chat sungguhan.
-Benchmark publik sendiri tidak berisi data pribadi.
-Kunci model (`--answer-model`, `--judge-model`, `--ingest-model`) selalu dicatat di report.
+Free (`:free`) models on OpenRouter are good for trying out the harness, but less suitable for official numbers:
+- **Rate limits:** their request limits are usually tight, so long runs are easily interrupted.
+- **Availability:** the list of free models can change, which makes results hard to reproduce.
+- **Data privacy:** check their data policy before sending real chat histories.
+The public benchmarks themselves contain no personal data.
+The model keys (`--answer-model`, `--judge-model`, `--ingest-model`) are always recorded in the report.
 
-Benchmark lain yang dipertimbangkan:
-- **PersonaMem**: relevan untuk preferensi pengguna.
-- **BEAM**: memory jangka sangat panjang.
-- **GAIA**: tidak cocok, karena menguji asisten umum (tools, web), bukan memory.
-- **SWE-bench**: baru relevan bila rewire diukur sebagai memory untuk agent coding jangka panjang.
+Other benchmarks considered:
+- **PersonaMem**: relevant for user preferences.
+- **BEAM**: very long-term memory.
+- **GAIA**: not a fit, because it tests general assistants (tools, web), not memory.
+- **SWE-bench**: relevant only if rewire is measured as memory for long-running coding agents.
 
-## 8. Baseline tanpa LLM (sudah diukur)
+## 8. Baseline without an LLM (already measured)
 
-Batas atas untuk run dengan LLM: bila bukti tidak ada di konteks, model penjawab tidak bisa menjawab benar
-(kecuali menebak). Semua angka: mode `episodes`, keyword (tanpa semantic), k=30, 10 potongan. Sejak
-2026-10-14 potongan satu sesi yang tumpang tindih digabung (bukti sama, konteks −11–12%; rincian di
+The upper bound for runs with an LLM: if the evidence is not in the context, the answering model cannot answer correctly
+(unless it guesses). All numbers: `episodes` mode, keyword (no semantic search), k=30, 10 excerpts. Since
+2026-10-14, overlapping excerpts from the same session are merged (same evidence, context −11–12%; details in
 `experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md` §7).
 
-**LoCoMo, 1.540 soal (2026-10-14):**
+**LoCoMo, 1,540 questions (2026-10-14):**
 
-| Kategori | n | Giliran bukti terambil | Semua bukti ada | MRR | Konteks / soal |
+| Category | n | Evidence turns retrieved | All evidence present | MRR | Context / question |
 |---|---|---|---|---|---|
-| single-hop | 841 | 94,5% | 94,5% | 0,81 | ≈2,5k token |
-| temporal | 321 | 84,0% | 83,4% | 0,68 | ≈2,5k |
-| multi-hop | 282 | 54,9% | 32,3% | 0,55 | ≈2,6k |
-| open-domain | 96 | 39,9% | 40,2% | 0,40 | ≈2,4k |
-| **overall** | 1.540 | **73,2%** | **77,5%** | 0,71 | ≈2,5k (7,4× lebih kecil dari riwayat penuh); ≈2,2k setelah penggabungan |
+| single-hop | 841 | 94.5% | 94.5% | 0.81 | ≈2.5k tokens |
+| temporal | 321 | 84.0% | 83.4% | 0.68 | ≈2.5k |
+| multi-hop | 282 | 54.9% | 32.3% | 0.55 | ≈2.6k |
+| open-domain | 96 | 39.9% | 40.2% | 0.40 | ≈2.4k |
+| **overall** | 1,540 | **73.2%** | **77.5%** | 0.71 | ≈2.5k (7.4× smaller than the full history); ≈2.2k after merging |
 
-Retrieval p50 4 ms, p99 16 ms. Open-domain banyak butuh pengetahuan umum (tidak ada di percakapan); multi-hop
-adalah sasaran perbaikan rewire. Catatan: skor J 94% dari iterasi 6–7 memakai k=50.
+Retrieval p50 4 ms, p99 16 ms. Open-domain often needs general knowledge (not in the conversation); multi-hop
+is rewire's improvement target. Note: the 94% J score from iterations 6–7 used k=50.
 
-**LongMemEval_S, 470 soal non-abstention (iterasi 8):** sesi bukti ditemukan 97,0%, semua sesi bukti 87,9%,
-konteks ≈11,2k token dari ≈115k (≈10× lebih kecil). Sampel 120 soal setelah penggabungan: bukti sama, konteks
-11.090 → 9.780 token, MRR 0,71 → 0,79.
+**LongMemEval_S, 470 non-abstention questions (iteration 8):** evidence session found 97.0%, all evidence sessions 87.9%,
+context ≈11.2k tokens out of ≈115k (≈10× smaller). A 120-question sample after merging: same evidence, context
+11,090 → 9,780 tokens, MRR 0.71 → 0.79.
 
-**PersonaMem (dry-run):** 32k, semua 589 soal: konteks ≈12,6k token, kompresi 2,8× (riwayatnya pendek),
-perkiraan $1,30 dengan GPT-4o-mini. 1M, 140 soal (20 per tipe): konteks ≈12,7k token dari ≈925k
-(kompresi ≈92×), retrieval p50 42 ms / p99 277 ms, perkiraan seluruh 2.674 soal ≈$5,90.
+**PersonaMem (dry run):** 32k, all 589 questions: context ≈12.6k tokens, compression 2.8× (the histories are short),
+estimated $1.30 with GPT-4o-mini. 1M, 140 questions (20 per type): context ≈12.7k tokens out of ≈925k
+(compression ≈92×), retrieval p50 42 ms / p99 277 ms, estimate for all 2,674 questions ≈$5.90.
 
-**BEAM 100K (dry-run, 20 soal):** semua bukti ada 52,9%, MRR 0,43, konteks ≈13,4k token (kompresi ≈11×),
-judge 52 panggilan untuk 20 soal; information extraction dan preference following 0% bukti di sampel kecil ini.
+**BEAM 100K (dry run, 20 questions):** all evidence present 52.9%, MRR 0.43, context ≈13.4k tokens (compression ≈11×),
+52 judge calls for 20 questions; information extraction and preference following had 0% evidence in this small sample.
 
-## 9. Runbook sesi evaluasi
+## 9. Evaluation session runbook
 
-### Prasyarat (sekali, di pengaturan environment)
-- `openrouter.ai` di **Allowed domains** (Network access). Sudah dicek terbuka pada 2026-10-14.
-- Secret / environment variable: `OPENROUTER_API_KEY` (wajib). Opsional: `OPENROUTER_MODEL` (model default
-  untuk penjawab, judge dan ingest), `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`).
-  Secret baru terbaca di **sesi baru**. Jangan tempel key di chat atau di-commit.
-- Model ditulis sebagai id (`nvidia/nemotron-3-ultra-550b-a55b:free`); URL halaman model
-  (`openrouter.ai/<id>`) juga diterima dan dinormalisasi.
-- Python ≥ 3.11 saja; runner tidak butuh paket tambahan (semantic opsional: `pip install -e '.[semantic]'`;
-  tanpa itu recall memakai keyword, sama dengan baseline §8).
+### Prerequisites (once, in the environment settings)
+- `openrouter.ai` in **Allowed domains** (Network access). Checked as open on 2026-10-14.
+- Secret / environment variable: `OPENROUTER_API_KEY` (required). Optional: `OPENROUTER_MODEL` (default model
+  for answerer, judge and ingest), `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`).
+  New secrets are only picked up in a **new session**. Never paste the key into the chat or commit it.
+- Models are written as ids (`nvidia/nemotron-3-ultra-550b-a55b:free`); model page URLs
+  (`openrouter.ai/<id>`) are also accepted and normalized.
+- Python ≥ 3.11 only; the runner needs no extra packages (semantic search is optional: `pip install -e '.[semantic]'`;
+  without it recall uses keywords, the same as the §8 baseline).
 
-### Langkah 1: data (sesi baru = container baru, scratchpad lama hilang)
+### Step 1: data (new session = new container, the old scratchpad is gone)
 
 ```bash
 D=/tmp/eval-data OUT=/tmp/eval-out && mkdir -p $D/personamem $OUT && cd $D
 curl -sSfLO https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
-# LongMemEval dan PersonaMem: signed URL baru dari GCS (berlaku 2 jam), satu URL per file
+# LongMemEval and PersonaMem: fresh signed URLs from GCS (valid for 2 hours), one URL per file
 curl -sSf -o longmemeval_s_cleaned.json             '<signed url longmemeval_s_cleaned.json>'
 curl -sSf -o personamem/questions_32k.csv           '<signed url questions_32k.csv>'
 curl -sSf -o personamem/shared_contexts_32k.jsonl   '<signed url shared_contexts_32k.jsonl>'
 curl -sSf -o personamem/questions_1M.csv            '<signed url questions_1M.csv>'
 curl -sSf -o personamem/shared_contexts_1M.jsonl    '<signed url shared_contexts_1M.jsonl>'
-# BEAM: hanya chat.json + probing_questions.json untuk 100K/500K/1M (tanpa pickle, ±263 MB)
+# BEAM: only chat.json + probing_questions.json for 100K/500K/1M (no pickles, ±263 MB)
 git clone -q --filter=blob:none --no-checkout https://github.com/mohammadtavakoli78/BEAM && cd BEAM
 git sparse-checkout init --no-cone
 for s in 100K 500K 1M; do printf '/chats/%s/*/chat.json\n/chats/%s/*/probing_questions/probing_questions.json\n' $s $s; done \
@@ -316,15 +316,15 @@ for s in 100K 500K 1M; do printf '/chats/%s/*/chat.json\n/chats/%s/*/probing_que
 git checkout -q main && cd /home/user/rewire
 ```
 
-Jangan pakai `git ls-tree --long` pada clone `--filter=blob:none`: ia mengunduh setiap blob satu per satu.
+Do not use `git ls-tree --long` on a `--filter=blob:none` clone: it downloads every blob one by one.
 
-### Langkah 2: cek key tanpa menampilkannya
+### Step 2: check the key without printing it
 
 ```bash
-test -n "$OPENROUTER_API_KEY" && echo "key terbaca (${#OPENROUTER_API_KEY} karakter)"
+test -n "$OPENROUTER_API_KEY" && echo "key loaded (${#OPENROUTER_API_KEY} characters)"
 ```
 
-### Langkah 3: run uji paling kecil (memastikan balasan model terbaca dan token tercatat)
+### Step 3: the smallest test run (confirms that model replies are read and tokens are recorded)
 
 ```bash
 M=nvidia/nemotron-3-ultra-550b-a55b:free
@@ -332,112 +332,112 @@ python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT
   --answer-model $M --judge-model $M --reasoning-effort low --parallel 2 --max-cost 0.10 --label smoke
 ```
 
-Periksa di `report-locomo-smoke.md`: tidak ada peringatan jawaban kosong / terpotong, token per tahap terisi,
-J masuk akal dibanding §8. Buka beberapa jawaban di `results-locomo-smoke.json`.
+Check `report-locomo-smoke.md`: there are no warnings about empty / truncated answers, tokens per stage are filled in,
+and J is plausible compared with §8. Open a few answers in `results-locomo-smoke.json`.
 
-### Langkah 4: run sampel, satu benchmark per kali
+### Step 4: sample runs, one benchmark at a time
 
 ```bash
-# LoCoMo 20 soal per kategori (80 soal), bandingkan dengan §8
+# LoCoMo 20 questions per category (80 questions), compare with §8
 python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --sample 20 \
   --answer-model $M --judge-model $M --reasoning-effort low --parallel 2 --label nemotron-s20
-# bila jauh di bawah batas atas retrieval: model kedua pada soal yang sama
+# if far below the retrieval upper bound: a second model on the same questions
 python experiments/eval/run.py ... --answer-model thinkingmachines/inkling:free --judge-model thinkingmachines/inkling:free --label inkling-s20
-# lalu benchmark lain dengan flag yang sama:
-#   --bench personamem  --data $D/personamem --personamem-size 32k   (lalu 1M; tanpa judge)
+# then the other benchmarks with the same flags:
+#   --bench personamem  --data $D/personamem --personamem-size 32k   (then 1M; no judge)
 #   --bench longmemeval --data $D/longmemeval_s_cleaned.json
 #   --bench beam        --data $D/BEAM/chats --beam-sizes 100K
 ```
 
-**Target multi-hop (J ≥ 80%, setara klaim CortexDB 79,8% = 225/282 soal kategori 1).** Jalankan mode `full`
-(fakta + potongan sumber) dengan gpt-4o-mini, pada dua anggaran konteks, di soal yang sama:
+**Multi-hop target (J ≥ 80%, on par with CortexDB's claimed 79.8% = 225/282 category 1 questions).** Run `full` mode
+(facts + source excerpts) with gpt-4o-mini, at two context budgets, on the same questions:
 
 ```bash
 M=openai/gpt-4o-mini
-# ≈4,7k token konteks: bukti multi-hop lengkap 51% (tanpa LLM)
+# ≈4.7k context tokens: multi-hop all evidence 51% (without an LLM)
 python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --mode full --ingest-model $M \
   --k 30 --episodes 20 --sample 40 --answer-model $M --judge-model $M --max-cost 3 --label full-30-20
-# ≈7k token, setara Mem0 2026 (200 fakta ≈7k): bukti multi-hop lengkap 64–66%
+# ≈7k tokens, on par with Mem0 2026 (200 facts ≈7k): multi-hop all evidence 64–66%
 python experiments/eval/run.py ... --k 100 --episodes 20 --label full-100-20
 ```
 
-Ingest (ekstraksi fakta) dibayar sekali per brain dan dipakai ulang oleh run berikutnya. J lebih longgar dari
-"semua bukti ada": pada run Nemotron, multi-hop J 95% dengan bukti lengkap hanya 35%, jadi 80% J kemungkinan
-tercapai sebelum bukti lengkap mencapai 80%. Awasi juga hitungan yang berlebih: konteks besar pernah membuat
-jawaban "how many" kelebihan hitung (commit 084fae2).
+Ingest (fact extraction) is paid once per brain and reused by later runs. J is more lenient than
+"all evidence present": in the Nemotron run, multi-hop J was 95% with all evidence at only 35%, so 80% J is likely
+reached before all evidence reaches 80%. Also watch for overcounting: a large context once made
+"how many" answers count too many (commit 084fae2).
 
-Model gratis punya batas per menit dan per hari: `--parallel 2`, dan bila run berhenti (429 / batas harian),
-jalankan perintah yang sama lagi nanti: cache melanjutkan dari titik terakhir.
+Free models have per-minute and per-day limits: use `--parallel 2`, and if a run stops (429 / daily limit),
+run the same command again later: the cache resumes from the last point.
 
-**Run penuh mode `full` di model gratis (1.000 request/hari).** 1.540 soal LoCoMo butuh ±3.600 request:
-±550 ingest (ekstraksi + judge per sesi, 272 sesi), lalu 1.540 jawaban dan 1.540 judge, jadi ±4 hari. Saat
-balasan 429 menyebut batas harian (`free-models-per-day`), runner langsung berhenti tanpa retry, menulis
-report parsial (`PARTIAL RUN`), dan menjawab soal hanya untuk percakapan yang ingest-nya selesai. Ingest
-dilanjutkan per sesi (`<brain>/.state/eval_ingest.jsonl`), jawaban dan judge dari cache. Urutan yang hemat:
+**Full `full`-mode run on a free model (1,000 requests/day).** The 1,540 LoCoMo questions need ±3,600 requests:
+±550 for ingest (extraction + judge per session, 272 sessions), then 1,540 answers and 1,540 judgments, so ±4 days. When
+a 429 reply mentions the daily limit (`free-models-per-day`), the runner stops immediately without retrying, writes a
+partial report (`PARTIAL RUN`), and answers questions only for conversations whose ingest has finished. Ingest
+resumes per session (`<brain>/.state/eval_ingest.jsonl`), and answers and judgments come from the cache. An economical order:
 
 ```bash
-# hari 1: ingest semua percakapan (soal ikut berjalan dengan sisa kuota)
+# day 1: ingest every conversation (questions run with the remaining quota)
 python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --mode full --ingest-model $M \
   --k 30 --episodes 20 --sample 0 --answer-model $M --judge-model $M --reasoning-effort low --parallel 2 --label full-q
-# setelah ingest lengkap, 0 token: bukti dan konteks seluruh soal pada brain yang sama
+# after ingest is complete, 0 tokens: evidence and context for every question on the same brain
 python experiments/eval/run.py --bench locomo --data $D/locomo10.json --out $OUT --mode full \
   --k 30 --episodes 20 --sample 0 --retrieval-only --label full-q-retrieval
-# hari berikutnya: perintah hari 1 yang sama, sampai tidak ada PARTIAL RUN
+# following days: the same day-1 command, until there is no PARTIAL RUN
 ```
 
-Report mode `full` memuat bagian **Ingest**: sesi yang dikonsolidasi, percobaan gagal, balasan yang bukan JSON
-(dicoba ulang hingga 3 kali), fakta per sesi, jumlah pertanyaan hipotetis, dan node aktif per tipe. Bila model
-penjawab sama dengan judge, report memberi catatan bahwa J cenderung lebih longgar.
+A `full`-mode report includes an **Ingest** section: sessions consolidated, failed attempts, replies that were not JSON
+(retried up to 3 times), facts per session, the number of hypothetical questions, and active nodes per type. When the answering model
+is the same as the judge, the report notes that J tends to be more lenient.
 
-### Langkah 5: simpan hasil ke repo
+### Step 5: save the results to the repo
 
-`$OUT` ada di scratchpad dan hilang bersama sesi. Salin report (bukan cache, bukan brain) ke
-`experiments/eval/results/<tanggal>-<bench>-<label>.md`, catat model, sampel, dan seed, lalu commit.
+`$OUT` lives in the scratchpad and disappears with the session. Copy the report (not the cache, not the brain) to
+`experiments/eval/results/<date>-<bench>-<label>.md`, record the model, sample, and seed, then commit.
 
-### Opsi runner yang sering dipakai
+### Commonly used runner options
 
 ```bash
-# 0 token: retrieval saja
+# 0 tokens: retrieval only
 python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 0 --retrieval-only
 
-# 0 token: perkiraan token dan biaya run sebelum dijalankan
+# 0 tokens: estimate a run's tokens and cost before running it
 python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --sample 20 --dry-run \
     --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini
 
-# BEAM (data: folder chats/ dari repo BEAM) dan PersonaMem (data: folder berisi csv + jsonl), dry-run
+# BEAM (data: the chats/ folder from the BEAM repo) and PersonaMem (data: a folder with csv + jsonl), dry run
 python experiments/eval/run.py --bench beam --data BEAM/chats --beam-sizes 100K,500K,1M --out OUT --sample 5 --dry-run
 python experiments/eval/run.py --bench personamem --data personamem/ --personamem-size 32k --out OUT --sample 20 --dry-run
 
-# A/B satu kategori LoCoMo; --expand-model: model menulis hingga 4 kueri tambahan (`also` di recall), seperti
-# agen yang memanggil rewire lewat MCP. Multi-hop, Haiku: J ketat 77,3% -> 81,6%, bukti lengkap 56% -> 71%
+# A/B on one LoCoMo category; --expand-model: the model writes up to 4 extra queries (`also` in recall), like
+# an agent calling rewire over MCP. Multi-hop, Haiku: strict J 77.3% -> 81.6%, all evidence 56% -> 71%
 python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --mode full --sample 0 \
     --categories multi-hop --expand-model claude-cli/haiku --answer-model claude-cli/haiku --judge-model claude-cli/haiku
 
-# angka yang sebanding dengan publik (LongMemEval, judge resmi GPT-4o)
+# numbers comparable with public ones (LongMemEval, official GPT-4o judge)
 python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 0 \
     --answer-model openai/gpt-4o --judge-model openai/gpt-4o --max-cost 20
 ```
 
-Fitur penghemat token di runner:
-- **Cache balasan** per (tahap, model, prompt) di `OUT/cache/llm.jsonl`: run ulang hanya membayar soal yang
-  konteks retrieval-nya berubah, atau model baru.
-- `--sample N` per kategori (stratified, seed tetap) · `--max-cost` (berhenti, lalu lanjut dari cache) ·
-  `--dry-run` dan `--retrieval-only` tanpa LLM.
+Token-saving features in the runner:
+- **Reply cache** per (stage, model, prompt) in `OUT/cache/llm.jsonl`: a re-run only pays for questions whose
+  retrieval context changed, or for a new model.
+- `--sample N` per category (stratified, fixed seed) · `--max-cost` (stops, then resumes from the cache) ·
+  `--dry-run` and `--retrieval-only` without an LLM.
 
-Output: `OUT/report-<bench>-<label>.md` (tabel per kategori, token per tahap dan per response, biaya, latency)
-dan `OUT/results-<bench>-<label>.json` (per soal: konteks, jawaban, putusan, usage).
+Output: `OUT/report-<bench>-<label>.md` (per-category tables, tokens per stage and per response, cost, latency)
+and `OUT/results-<bench>-<label>.json` (per question: context, answer, verdict, usage).
 
-## 10. Berikutnya
+## 10. Next
 
-- Retrieval multi-hop (32–44% bukti lengkap pada mode `episodes`). Sudah dicoba dan tidak membantu: unit 1
-  giliran, pemangkasan baris, pseudo-relevance feedback, jalur entitas, hop kedua lewat entitas, batas potongan
-  per sesi. Yang membantu: mode `full` (30 fakta + 20 potongan: multi-hop 51%, overall 86% pada ≈4,7k token).
-  Berikutnya: encoder kontekstual kecil atau cross-encoder (perlu file model; rincian di
+- Multi-hop retrieval (32–44% all evidence in `episodes` mode). Already tried, and did not help: 1-turn units,
+  line trimming, pseudo-relevance feedback, an entity path, a second hop via entities, a per-session excerpt
+  limit. What helped: `full` mode (30 facts + 20 excerpts: multi-hop 51%, overall 86% at ≈4.7k tokens).
+  Next: a small contextual encoder or a cross-encoder (needs a model file; details in
   `experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md` §8).
 
-- Judge alternatif yang lebih murah: Jev (keputusan ya/tidak dengan probabilitas) dengan cascade ke judge LLM
-  untuk kasus ragu; perlu dikalibrasi dulu terhadap judge resmi pada ~100 soal.
-- Head-to-head dengan Mem0 dan Graphiti di harness yang sama (§4).
-- BEAM 10M dan Kendall tau untuk event ordering.
-- Faithfulness (apakah jawaban hanya memakai isi konteks): judge tambahan, hanya bila halusinasi jadi masalah.
-- Metrik produk dari dogfooding (§3).
+- A cheaper alternative judge: Jev (yes/no decisions with probabilities) cascading to an LLM judge
+  for uncertain cases; it must first be calibrated against the official judge on ~100 questions.
+- Head-to-head with Mem0 and Graphiti in the same harness (§4).
+- BEAM 10M and Kendall tau for event ordering.
+- Faithfulness (whether the answer uses only the context): an extra judge, only if hallucination becomes a problem.
+- Product metrics from dogfooding (§3).

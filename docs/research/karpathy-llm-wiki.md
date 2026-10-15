@@ -1,78 +1,78 @@
-# Riset: Karpathy "LLM Wiki" dan relevansinya dengan rewire
+# Research: Karpathy's "LLM Wiki" and its relevance to rewire
 
-> Sumber: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f (gist + thread komentar komunitas). Dibaca 2026-10-10.
-> Terkait: [memory approaches](memory-approaches.md), [design synaptic memory](../design/synaptic-memory.md).
+> Source: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f (the gist + the community comment thread). Read 2026-10-10.
+> Related: [memory approaches](memory-approaches.md), [synaptic memory design](../design/synaptic-memory.md).
 
-## 1. Ringkasan gist
+## 1. Summary of the gist
 
-**Ide inti:** daripada RAG yang mengambil potongan dokumen mentah setiap kali ditanya (pengetahuan "ditemukan ulang" tiap query), LLM **membangun dan merawat wiki markdown yang saling tertaut** secara bertahap. Setiap sumber baru diintegrasikan ke halaman yang sudah ada, kontradiksi ditandai, sintesis diperbarui. Wiki-nya *compounding*; manusia hampir tidak menulisnya sendiri.
+**Core idea:** instead of RAG that retrieves raw document chunks every time a question is asked (knowledge is "rediscovered" on every query), the LLM **incrementally builds and maintains an interlinked markdown wiki**. Each new source is integrated into existing pages, contradictions are flagged, and syntheses are updated. The wiki *compounds*; humans hardly write it themselves.
 
-**Tiga lapisan:**
-1. **Raw sources** — dokumen asli, immutable. LLM membaca, tidak mengubah.
-2. **Wiki** — halaman markdown buatan LLM (ringkasan, halaman entitas/konsep, perbandingan, overview). Dimiliki LLM.
-3. **Schema** — dokumen konvensi (CLAUDE.md/AGENTS.md) yang mendefinisikan struktur & workflow; disempurnakan bersama manusia.
+**Three layers:**
+1. **Raw sources** — the original documents, immutable. The LLM reads them and does not change them.
+2. **Wiki** — LLM-written markdown pages (summaries, entity/concept pages, comparisons, overviews). Owned by the LLM.
+3. **Schema** — a conventions document (CLAUDE.md/AGENTS.md) that defines the structure & workflow; refined together with the human.
 
-**Tiga operasi:**
-- **Ingest** — baca sumber → diskusi → tulis ringkasan → update index + 10–15 halaman terkait → append log.
-- **Query** — baca index → baca halaman relevan → jawab dengan sitasi; jawaban bagus disimpan balik sebagai halaman baru.
-- **Lint** — health check berkala: kontradiksi, klaim basi, halaman yatim, konsep/tautan yang hilang.
+**Three operations:**
+- **Ingest** — read the source → discuss → write a summary → update the index + 10–15 related pages → append to the log.
+- **Query** — read the index → read relevant pages → answer with citations; good answers are saved back as new pages.
+- **Lint** — periodic health check: contradictions, stale claims, orphan pages, missing concepts/links.
 
-**File navigasi:** `index.md` (katalog per kategori, satu baris per halaman, dibaca pertama kali) dan `log.md` (kronologis, append-only, prefix konsisten agar bisa di-grep).
+**Navigation files:** `index.md` (a catalog by category, one line per page, read first) and `log.md` (chronological, append-only, with consistent prefixes so it can be grepped).
 
-**Kenapa berhasil:** manusia meninggalkan wiki karena biaya perawatan > nilainya. LLM tidak bosan merawat cross-reference, jadi biaya perawatan ≈ 0.
+**Why it works:** humans abandon wikis because the maintenance cost > their value. LLMs do not get bored maintaining cross-references, so the maintenance cost ≈ 0.
 
-## 2. Pelajaran dari thread komentar (yang paling penting untuk kita)
+## 2. Lessons from the comment thread (the most important ones for us)
 
-| Temuan komunitas | Relevansi untuk rewire |
+| Community finding | Relevance for rewire |
 |---|---|
-| **Link (gowtham0992)** menguji *usage-weighting, recency decay, dan MMR* — dan **tidak merilis satu pun**. Alasannya: constraint yang tahan lama *"do not become less true for going unread."* | ⚠️ **Langsung menantang konsep synapse kita.** Lihat §4. |
-| **post-graph (crajah)**: resolusi kontradiksi **saat menulis** (bukan dicari belakangan), klaim lama ditutup bukan dihapus, dan **dua sumbu waktu terpisah**: *valid-time* (kapan fakta berlaku di dunia) vs *belief-time* (kapan brain mempercayainya). | ✅ Adopsi: bitemporal + supersede saat konsolidasi. |
-| Error ekstraksi awal **meracuni store secara permanen**; output model harus diperlakukan sebagai *untrusted input*. | ✅ Menguatkan `confidence: inferred`, inbox, dan validasi skema sebelum tulis. |
-| Pipeline capture **gagal diam-diam** selama dua minggu. | ✅ Tambahkan health check & laporan per tahap konsolidasi. |
-| **Agent tidak membaca memory di tengah tugas** — mendiagnosis ulang masalah yang pelajarannya sudah tertulis. orcosto-lab menaruh prefix `LESSON:` di deskripsi tool supaya terlihat sebelum tiap pemanggilan. | ⚠️ Masalah *pull vs push*: memory yang hanya bisa diambil (pull) sering tidak diambil. Perlu injeksi kontekstual (push). |
-| Lint berbasis LLM **kuadratik** terhadap jumlah halaman. | ✅ Lint harus inkremental (hanya node yang berubah + tetangganya). |
-| Klaim pola ini **belum di-benchmark** secara terkontrol. | ✅ Menguatkan rencana eval kita (Fase 0 dan metrik di §7 desain). |
-| Curated Thoughts: SQLite "brain" + MCP + traversal graph + **review sebelum merge**. | ✅ Validasi arah storage kita (SQLite + review inbox). |
-| Cortexes: BM25 + vector dengan RRF, dedup sadar-provenance. | ✅ Opsi retrieval hybrid untuk fase embedding. |
+| **Link (gowtham0992)** tested *usage-weighting, recency decay, and MMR* — and **shipped none of them**. The reason: durable constraints *"do not become less true for going unread."* | ⚠️ **Directly challenges our synapse concept.** See §4. |
+| **post-graph (crajah)**: contradiction resolution **at write time** (not searched for later), old claims are closed rather than deleted, and **two separate time axes**: *valid-time* (when a fact holds in the world) vs *belief-time* (when the brain believed it). | ✅ Adopt: bitemporal + supersede during consolidation. |
+| Early extraction errors **permanently poison the store**; model output must be treated as *untrusted input*. | ✅ Reinforces `confidence: inferred`, the inbox, and schema validation before writing. |
+| A capture pipeline **failed silently** for two weeks. | ✅ Add health checks & per-stage consolidation reports. |
+| **Agents do not read memory mid-task** — they re-diagnose problems whose lessons were already written down. orcosto-lab puts a `LESSON:` prefix in tool descriptions so it is seen before every call. | ⚠️ A *pull vs push* problem: memory that can only be pulled often is not pulled. Contextual injection (push) is needed. |
+| LLM-based lint is **quadratic** in the number of pages. | ✅ Lint must be incremental (only changed nodes + their neighbors). |
+| The claims of this pattern have **not been benchmarked** in a controlled way. | ✅ Reinforces our eval plan (Phase 0 and the metrics in §7 of the design). |
+| Curated Thoughts: a SQLite "brain" + MCP + graph traversal + **review before merge**. | ✅ Validates our storage direction (SQLite + inbox review). |
+| Cortexes: BM25 + vector with RRF, provenance-aware dedup. | ✅ A hybrid retrieval option for the embedding phase. |
 
-## 3. Pemetaan LLM Wiki ↔ rewire
+## 3. Mapping LLM Wiki ↔ rewire
 
-| LLM Wiki | rewire (desain saat ini) | Catatan |
+| LLM Wiki | rewire (current design) | Notes |
 |---|---|---|
-| Raw sources (immutable) | `sessions/` (transcript/ringkasan) | **Gap:** rewire baru menangkap sesi agent, belum *sumber eksternal* (artikel, paper, dokumen). |
-| Wiki pages | `nodes/*.md` | Sama: markdown buatan LLM, saling tertaut. Kita menambah tipe & relasi bertipe. |
-| Schema (AGENTS.md) | `brain.yaml` + ontology | Sama. Kita lebih formal (tipe tetap). |
-| `index.md` | `snapshot/CORE.md` + `MEMORY.md` | Bedanya: index Karpathy berisi **semua** halaman; CORE kita dipilih berdasarkan activation & budget. |
-| `log.md` | `events/*.jsonl` + `sessions/dreams/` | Kita memisahkan log mesin (event) dan log manusia. |
-| Ingest | Konsolidasi SessionEnd | Sama polanya: satu input → update banyak node. |
-| Query → simpan balik jawaban | `remember()` | Adopsi eksplisit: jawaban/sintesis bagus jadi node `concept`/`decision`. |
-| Lint | "Tidur" periodik | Sama. Kita tambah decay/tier. |
-| Obsidian + graph view | — | **Bonus gratis:** karena node kita markdown, brain bisa dibuka di Obsidian (pakai wikilink di body). |
+| Raw sources (immutable) | `sessions/` (transcripts/summaries) | **Gap:** rewire only captures agent sessions so far, not *external sources* (articles, papers, documents). |
+| Wiki pages | `nodes/*.md` | Same: LLM-written, interlinked markdown. We add types & typed relations. |
+| Schema (AGENTS.md) | `brain.yaml` + ontology | Same. Ours is more formal (fixed types). |
+| `index.md` | `snapshot/CORE.md` + `MEMORY.md` | The difference: Karpathy's index contains **all** pages; our CORE is selected by activation & budget. |
+| `log.md` | `events/*.jsonl` + `sessions/dreams/` | We separate the machine log (events) from the human log. |
+| Ingest | SessionEnd consolidation | Same pattern: one input → updates many nodes. |
+| Query → save the answer back | `remember()` | Adopted explicitly: good answers/syntheses become `concept`/`decision` nodes. |
+| Lint | Periodic "sleep" | Same. We add decay/tiers. |
+| Obsidian + graph view | — | **Free bonus:** because our nodes are markdown, the brain can be opened in Obsidian (using wikilinks in the body). |
 
-**Kesimpulan:** LLM Wiki adalah **lapisan semantic** dari rewire, hampir 1:1. Yang ditambahkan rewire di atasnya: (a) siklus hidup per sesi agent dan adapter ke banyak harness, (b) ontology bertipe, (c) model activation/synapse, (d) event sourcing untuk multi-device.
+**Conclusion:** the LLM Wiki is the **semantic layer** of rewire, almost 1:1. What rewire adds on top of it: (a) a per-agent-session lifecycle and adapters for many harnesses, (b) a typed ontology, (c) an activation/synapse model, (d) event sourcing for multi-device use.
 
-## 4. Pertanyaan kritis: apakah synapse masih layak?
+## 4. Critical question: is the synapse still worth it?
 
-Temuan Link bukan alasan membuang konsep synapse, tapi **membatasi perannya**. Ada dua jenis memory yang berperilaku berbeda:
+Link's finding is not a reason to throw away the synapse concept, but it **limits its role**. There are two kinds of memory that behave differently:
 
-| | **Constraint / identitas** | **Asosiasi / konteks kerja** |
+| | **Constraints / identity** | **Associations / working context** |
 |---|---|---|
-| Contoh | "Jangan pernah push ke main", "user alergi kacang", "jawab dalam Bahasa Indonesia" | "Saat bahas rewire biasanya juga bahas SQLite", proyek yang sedang aktif |
-| Apakah berkurang benarnya kalau jarang dipakai? | **Tidak** | Relevansinya memang turun |
-| Peran decay | ❌ Tidak boleh | ✅ Masuk akal |
+| Examples | "Never push to main", "the user is allergic to peanuts", "answer in Indonesian" | "When discussing rewire we usually also discuss SQLite", the currently active project |
+| Does it become less true if rarely used? | **No** | Its relevance does drop |
+| Role of decay | ❌ Not allowed | ✅ Makes sense |
 
-Jadi revisi desain:
-1. **Activation hanya mengatur *ranking & penempatan di context*, tidak pernah mengatur *keberadaan* atau *kebenaran*.** Tidak ada yang dihapus karena decay.
-2. **Node bertipe `preference` dan constraint (`importance ≥ 4`) dikecualikan dari decay** — selalu `core` atau `active` sesuai budget.
-3. **Synapse paling berguna di *associative edges*** (memory apa yang ikut dipanggil saat X aktif) dan pemilihan snapshot proyek — di situ pola penggunaan memang sinyal relevansi.
-4. **Wajib dibuktikan dengan eval** di Fase 0/2: bandingkan retrieval *dengan* vs *tanpa* activation. Kalau tidak menang, matikan (sesuai pengalaman Link). Desain harus membuat activation sebagai komponen yang bisa di-*toggle* (`β = 0`).
+So the design revision:
+1. **Activation only governs *ranking & placement in the context*, never *existence* or *truth*.** Nothing is deleted because of decay.
+2. **Nodes of type `preference` and constraints (`importance ≥ 4`) are exempt from decay** — always `core` or `active` depending on the budget.
+3. **Synapses are most useful for *associative edges*** (which memories get recalled along with X when X is active) and for choosing the project snapshot — there, usage patterns really are a relevance signal.
+4. **Must be proven with an eval** in Phase 0/2: compare retrieval *with* vs *without* activation. If it does not win, turn it off (in line with Link's experience). The design must make activation a component that can be *toggled* (`β = 0`).
 
-## 5. Revisi desain yang diusulkan (sudah diterapkan ke dokumen desain)
+## 5. Proposed design revisions (already applied to the design document)
 
-1. **Bitemporal**: `valid_from/valid_to` (dunia) + `recorded_at/retracted_at` (keyakinan brain).
-2. **Constraint tidak decay**; activation hanya untuk ranking.
-3. **Kontradiksi diselesaikan saat konsolidasi** (write-time), bukan hanya saat lint.
-4. **Layer `sources/`** untuk sumber eksternal yang immutable + operasi `ingest`.
-5. **Push memory kontekstual**: hook sebelum tool call / saat membuka file menyuntikkan pelajaran relevan (pola `LESSON:`), tidak hanya mengandalkan agent memanggil `recall`.
-6. **Lint inkremental** + **health check per tahap** konsolidasi.
-7. **Kompatibel Obsidian**: wikilink `[[...]]` di body node.
+1. **Bitemporal**: `valid_from/valid_to` (world) + `recorded_at/retracted_at` (brain belief).
+2. **Constraints do not decay**; activation is only for ranking.
+3. **Contradictions are resolved during consolidation** (write-time), not only during lint.
+4. **A `sources/` layer** for immutable external sources + an `ingest` operation.
+5. **Contextual memory push**: a hook before a tool call / when opening a file injects relevant lessons (the `LESSON:` pattern), instead of relying only on the agent calling `recall`.
+6. **Incremental lint** + **per-stage health checks** for consolidation.
+7. **Obsidian-compatible**: `[[...]]` wikilinks in the node body.
