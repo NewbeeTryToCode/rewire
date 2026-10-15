@@ -9,6 +9,7 @@ Environment:
   OPENROUTER_BASE_URL  default https://openrouter.ai/api/v1 (any OpenAI-compatible endpoint works)
 """
 
+import http.client
 import json
 import os
 import random
@@ -144,7 +145,8 @@ class Client:
                 if exc.code == 429 and retry_after and retry_after.isdigit():  # free models: strict rate limits
                     time.sleep(min(int(retry_after), 300))
                     continue
-            except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+            except (urllib.error.URLError, OSError, http.client.HTTPException, KeyError, json.JSONDecodeError,
+                    RuntimeError) as exc:  # OSError: connection reset while reading the reply
                 err = str(exc)[:300]
             time.sleep(min(2 ** attempt + random.random(), 120))
         raise RuntimeError(f"{model}: failed after {attempts} attempts: {err}")
@@ -163,7 +165,13 @@ class JsonProvider:
 
     def __init__(self, client: Client, model: str, stage: str = "ingest"):
         self.client, self.model, self.stage = client, model, stage
-        self.bad_json = 0  # replies that were not valid JSON (each one retried)
+        self.bad_json: dict[int, int] = {}  # per thread: replies that were not valid JSON (each one retried)
+        self.bad_log = None  # path: where their endings go, to tell truncation from chatter
+        self._lock = threading.Lock()
+
+    def bad_count(self) -> int:
+        """Replies that were not JSON, in calls made by the current thread."""
+        return self.bad_json.get(threading.get_ident(), 0)
 
     def complete_json(self, system: str, prompt: str, schema: dict, attempts: int = 3) -> dict:
         from rewire.llm import LLMError, extract_json
@@ -177,6 +185,11 @@ class JsonProvider:
             try:
                 return extract_json(call["text"])
             except LLMError:
-                self.bad_json += 1
+                me = threading.get_ident()
+                self.bad_json[me] = self.bad_json.get(me, 0) + 1
+                if self.bad_log:
+                    with self._lock, open(self.bad_log, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"finish_reason": call.get("finish_reason"), "text_tail": call["text"][-300:],
+                                             "completion_tokens": call.get("completion_tokens")}) + "\n")
                 if attempt == attempts - 1:
                     raise
