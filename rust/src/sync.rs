@@ -20,6 +20,7 @@ fn git(brain: &Brain, args: &[&str], timeout: u64) -> Result<Output> {
         .arg("-C")
         .arg(&brain.root)
         .args(["-c", "user.name=rewire", "-c", "user.email=rewire@localhost"])
+        .args(["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"]) // as Brain::git
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0") // never hang on a credential prompt in a hook
         .stdin(Stdio::null())
