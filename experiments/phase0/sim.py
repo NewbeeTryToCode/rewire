@@ -1,19 +1,19 @@
-"""Fase 0: simulasi model activation synaptic memory (tanpa LLM).
+"""Phase 0: simulation of the synaptic memory activation model (no LLM).
 
-Menguji klaim desain dengan event log sintetis selama 180 hari:
-  H1  Eksposur (masuk snapshot) yang dihitung sebagai "pakai" -> rich-get-richer.
-  H2  Tanpa pengecualian decay, constraint penting hilang dari core.
-  H3  ACT-R beradaptasi ke pergantian proyek (abrupt drift) lebih cepat dari frekuensi murni.
-  H4  Spacing effect: pemakaian tersebar lebih awet dari pemakaian massal.
+Tests the design claims with a synthetic event log over 180 days:
+  H1  Exposure (being included in the snapshot) counted as "use" -> rich-get-richer.
+  H2  Without decay exemptions, important constraints disappear from core.
+  H3  ACT-R adapts to a project switch (abrupt drift) faster than pure frequency.
+  H4  Spacing effect: spaced usage lasts longer than massed usage.
 
-Ini memvalidasi PERILAKU matematika, bukan kualitas retrieval di dunia nyata.
-Jalankan: python3 experiments/phase0/sim.py
+This validates the BEHAVIOR of the math, not real-world retrieval quality.
+Run: python3 experiments/phase0/sim.py
 """
 
 import math
 import random
 
-DAY = 24.0  # jam
+DAY = 24.0  # hours
 D = 0.5  # ACT-R decay
 CORE_N = 15
 DAYS = 180
@@ -48,18 +48,18 @@ INNER_DRIFT = {"on": False}
 
 
 def true_usage(rng, day, nodes):
-    """Node yang BENAR-BENAR dibutuhkan sesi pada hari itu (ground truth)."""
+    """Nodes the session REALLY needs on that day (ground truth)."""
     proj = "projA" if day < SWITCH_DAY else "projB"
     proj_nodes = [n["id"] for n in nodes if n["kind"] == proj]
     if INNER_DRIFT["on"]:
-        # fokus di dalam proyek bergeser tiap 15 hari (fitur/modul berbeda)
+        # the focus within the project shifts every 15 days (different features/modules)
         shift = (day // 15) * 5 % len(proj_nodes)
         proj_nodes = proj_nodes[shift:] + proj_nodes[:shift]
     used = zipf_pick(rng, proj_nodes, k=6)
     prefs = [n["id"] for n in nodes if n["kind"] == "preference"]
     if rng.random() < 0.3:
         used.add(rng.choice(prefs))
-    # constraint jarang dibutuhkan, tapi saat dibutuhkan harus ada
+    # constraints are rarely needed, but when needed they must be present
     if rng.random() < 0.02:
         used.add(rng.choice([n["id"] for n in nodes if n["kind"] == "constraint"]))
     return used
@@ -77,20 +77,20 @@ def build_core(policy, nodes, events, now, exemptions, scope=None, separate_budg
     fixed, ranked = [], []
     for n in nodes:
         if scope and n["kind"].startswith("proj") and n["kind"] != scope:
-            continue  # harness tahu proyek aktif (cwd/repo) -> hanya node proyek itu
+            continue  # the harness knows the active project (cwd/repo) -> only that project's nodes
         if exemptions and n["exempt"] and n["importance"] >= 4:
             fixed.append(n["id"])
             continue
         if exemptions and n["exempt"]:
-            # preference: tidak decay -> skor = jumlah pakai, ditambah bonus importance
+            # preference: no decay -> score = number of uses, plus an importance bonus
             ranked.append((1e6 + n["importance"] * 10 + len(events[n["id"]]), n["id"]))
             continue
         ranked.append((score_fn(policy, n, events[n["id"]], now, d), n["id"]))
     ranked.sort(reverse=True)
-    # separate_budget: constraint adalah baris pendek dengan budget sendiri,
-    # tidak memakan slot konteks kerja
+    # separate_budget: constraints are short lines with their own budget,
+    # they do not take up working-context slots
     slots = CORE_N if separate_budget else CORE_N - len(fixed)
-    # preference hanya boleh mengisi maks 3 slot agar konteks proyek tetap muat
+    # preferences may fill at most 3 slots so the project context still fits
     pref_taken, chosen = 0, []
     for sc, nid in ranked:
         if len(chosen) >= slots:
@@ -110,7 +110,7 @@ def run(policy="actr", count_exposure=False, exemptions=True, seed=0,
     rng = random.Random(seed)
     nodes = make_nodes()
     events = {n["id"]: [] for n in nodes}
-    # semua constraint dan preference diajarkan di hari 0
+    # all constraints and preferences are taught on day 0
     for n in nodes:
         if n["kind"] in ("constraint", "preference"):
             events[n["id"]].append((0.0, 1.0))
@@ -120,7 +120,7 @@ def run(policy="actr", count_exposure=False, exemptions=True, seed=0,
         scope = ("projA" if day < SWITCH_DAY else "projB") if scoped else None
         core = build_core(policy, nodes, events, now, exemptions, scope, separate_budget, d)
         used = true_usage(rng, day, nodes)
-        # hit rate dihitung atas kebutuhan non-constraint agar budget terpisah adil
+        # hit rate is computed over non-constraint needs so the separate budget is fair
         need = {u for u in used if not u.startswith("C")} or used
         hit = len(need & set(core)) / len(need)
         proj_slots = [c for c in core if c[0] in "AB"]
@@ -162,43 +162,43 @@ def avg(policy_kwargs):
 
 def spacing():
     now = 60 * DAY
-    massed = [(1 * DAY + h, 1.0) for h in range(5)]  # 5x dalam 5 jam, hari 1
-    spaced = [(d * DAY, 1.0) for d in (1, 5, 10, 20, 30)]  # 5x tersebar
+    massed = [(1 * DAY + h, 1.0) for h in range(5)]  # 5x within 5 hours, day 1
+    spaced = [(d * DAY, 1.0) for d in (1, 5, 10, 20, 30)]  # 5x spaced
     return base_level(massed, now), base_level(spaced, now)
 
 
 def main():
     configs = [
-        ("ACT-R, eksposur=0, pengecualian decay (DESAIN)", dict(policy="actr")),
-        ("ACT-R, eksposur dihitung sebagai pakai", dict(policy="actr", count_exposure=True)),
-        ("ACT-R, TANPA pengecualian decay", dict(policy="actr", exemptions=False)),
-        ("Frekuensi murni (count)", dict(policy="frequency")),
-        ("Recency murni (terakhir dipakai)", dict(policy="recency")),
-        ("WORKAROUND 1: ACT-R d=0.8 (decay lebih cepat untuk node proyek)", dict(policy="actr", d=0.8)),
-        ("WORKAROUND 2: ACT-R + scope proyek aktif", dict(policy="actr", scoped=True)),
-        ("WORKAROUND 2+3: + budget constraint terpisah (REVISI DESAIN)", dict(policy="actr", scoped=True, separate_budget=True)),
-        ("Recency + scope + budget terpisah (pembanding)", dict(policy="recency", scoped=True, separate_budget=True)),
-        ("Frekuensi + scope + budget terpisah (pembanding)", dict(policy="frequency", scoped=True, separate_budget=True)),
+        ("ACT-R, exposure=0, decay exemption (DESIGN)", dict(policy="actr")),
+        ("ACT-R, exposure counted as use", dict(policy="actr", count_exposure=True)),
+        ("ACT-R, WITHOUT decay exemption", dict(policy="actr", exemptions=False)),
+        ("Pure frequency (count)", dict(policy="frequency")),
+        ("Pure recency (last used)", dict(policy="recency")),
+        ("WORKAROUND 1: ACT-R d=0.8 (faster decay for project nodes)", dict(policy="actr", d=0.8)),
+        ("WORKAROUND 2: ACT-R + active project scope", dict(policy="actr", scoped=True)),
+        ("WORKAROUND 2+3: + separate constraint budget (DESIGN REVISION)", dict(policy="actr", scoped=True, separate_budget=True)),
+        ("Recency + scope + separate budget (baseline)", dict(policy="recency", scoped=True, separate_budget=True)),
+        ("Frequency + scope + separate budget (baseline)", dict(policy="frequency", scoped=True, separate_budget=True)),
     ]
-    print(f"Simulasi {DAYS} hari, ganti proyek di hari {SWITCH_DAY}, core={CORE_N} slot, {len(SEEDS)} seed\n")
-    print("| Kebijakan | Hit rate core (semua) | Hit rate setelah ganti proyek | Hari sampai 80% slot proyek = proyek baru | Constraint di core hari 180 (dari 5) |")
+    print(f"Simulation of {DAYS} days, project switch on day {SWITCH_DAY}, core={CORE_N} slots, {len(SEEDS)} seeds\n")
+    print("| Policy | Core hit rate (all) | Hit rate after project switch | Days until 80% of project slots = new project | Constraints in core on day 180 (of 5) |")
     print("|---|---|---|---|---|")
     for name, kw in configs:
         r = avg(kw)
-        lag = "tidak pernah" if r["lag80"] is None else f"{r['lag80']:.1f}"
+        lag = "never" if r["lag80"] is None else f"{r['lag80']:.1f}"
         if r["never"] and r["lag80"] is not None:
-            lag += f" ({r['never']}/{len(SEEDS)} seed tidak pernah)"
+            lag += f" ({r['never']}/{len(SEEDS)} seeds never)"
         print(f"| {name} | {r['hit_all']:.1%} | {r['hit_after']:.1%} | {lag} | {r['constraints_end']:.1f} |")
     INNER_DRIFT["on"] = True
-    print("\nSkenario 2: fokus di dalam proyek bergeser tiap 15 hari\n")
-    print("| Kebijakan | Hit rate core (semua) | Hit rate setelah ganti proyek |")
+    print("\nScenario 2: the focus within a project shifts every 15 days\n")
+    print("| Policy | Core hit rate (all) | Hit rate after project switch |")
     print("|---|---|---|")
     for name, kw in configs[-3:]:
         r = avg(kw)
         print(f"| {name} | {r['hit_all']:.1%} | {r['hit_after']:.1%} |")
     INNER_DRIFT["on"] = False
     m, s = spacing()
-    print(f"\nSpacing effect (dinilai di hari 60): massal 5x/5 jam B={m:.2f}, tersebar 5x/30 hari B={s:.2f}")
+    print(f"\nSpacing effect (evaluated on day 60): massed 5x/5 hours B={m:.2f}, spaced 5x/30 days B={s:.2f}")
 
 
 if __name__ == "__main__":
