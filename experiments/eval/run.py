@@ -239,10 +239,12 @@ def locomo_items(args) -> list[dict]:
             gold = qa.get("answer", qa.get("adversarial_answer", ""))
             if qa["category"] == 3 and ";" in str(gold):
                 gold = str(gold).split(";")[0].strip()
-            ev = [turns[e] for raw in qa.get("evidence", []) for e in re.split(r"[;, ]+", raw) if e in turns]
+            ev_ids = [e for raw in qa.get("evidence", []) for e in re.split(r"[;, ]+", raw) if e in turns]
+            ev = [turns[e] for e in ev_ids]
             items.append({"bench": "locomo", "qid": f"{conv['sample_id']}-{i}", "conv": conv,
                           "category": LOCOMO.CATS[qa["category"]], "question": qa["question"], "gold": str(gold),
-                          "ref_date": max(d for d in dates if d), "evidence_turns": ev, "abstention": False,
+                          "ref_date": max(d for d in dates if d), "evidence_turns": ev, "evidence_ids": ev_ids,
+                          "abstention": False,
                           "raw_tokens": raw_tokens})
     return items
 
@@ -261,13 +263,18 @@ def locomo_prepare(it: dict, args, provider) -> dict:
     context = "\n".join(lines) if mems else "(No relevant memories found)"
     ranked = [m["memory"] for m in mems if m["memory"].startswith("Conversation excerpt")]
     excerpts = norm(" ".join(ranked))
-    hits = sum(norm(t)[:50] in excerpts for t in it["evidence_turns"])
+    found = [norm(t)[:50] in excerpts for t in it["evidence_turns"]]
+    hits = sum(found)
+    # a turn also counts when a fact in the context was extracted from it (mode full)
+    sources = {m.get("source") for m in mems if m.get("source")}
+    with_facts = sum(f or i in sources for f, i in zip(found, it["evidence_ids"]))
     prompt = (LOCOMO_PROMPTS.ANSWER_GENERATION_PROMPT.replace("{reference_date}", it["ref_date"])
               .replace("{memories}", context).replace("{question}", it["question"]))
     return {"prompt": prompt, "context_tokens": est_tokens(context), "retrieval_ms": retrieval_ms,
             "n_memories": len(mems),
             "raw_tokens": it["raw_tokens"],
             "evidence": {"turns": hits, "n_turns": len(it["evidence_turns"]), "all": hits == len(it["evidence_turns"]),
+                         "turns_with_facts": with_facts, "all_with_facts": with_facts == len(it["evidence_turns"]),
                          **ranking(ranked, it["evidence_turns"])} if it["evidence_turns"] else None}
 
 
@@ -283,9 +290,29 @@ def locomo_judge_prompt(it: dict, response: str) -> str:
             .replace("{response}", response))
 
 
-def locomo_verdict(text: str) -> bool:
+def locomo_verdict(text: str) -> bool | None:
+    """True / False from the judge's label; None when the reply has no label (counted as wrong, and reported)."""
     m = re.search(r'"label"\s*:\s*"(CORRECT|WRONG)"', text, re.I)
-    return (m.group(1) if m else ("WRONG" if "WRONG" in text.upper() else "CORRECT")).upper() == "CORRECT"
+    if m:
+        return m.group(1).upper() == "CORRECT"
+    up = text.upper()
+    if ("WRONG" in up) != ("CORRECT" in up):
+        return "CORRECT" in up
+    return None
+
+
+def gold_items(gold: str) -> list[str]:
+    """The items of a list answer ("a, b and c"); one item for anything else."""
+    parts = [p for p in re.split(r",|;|\band\b", str(gold)) if norm(p)]
+    return parts if len(parts) > 1 else [str(gold)]
+
+
+def item_coverage(gold: str, response: str) -> float:
+    """Share of the gold items whose content words all appear in the response (no LLM). The official judge
+    accepts a list answer when one item is right; this shows how much of the list was found."""
+    have = set(norm(response).split())
+    items = [set(norm(i).split()) for i in gold_items(gold)]
+    return sum(bool(i) and i <= have for i in items) / len(items)
 
 
 # ---- LongMemEval ---------------------------------------------------------
@@ -571,6 +598,9 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "J": sum(r["correct"] for r in judged) / len(judged) if judged else None,
                "evidence_turn_recall": sum(e["turns"] for e in ev) / max(1, sum(e["n_turns"] for e in ev)) if ev else None,
                "evidence_all": sum(e["all"] for e in ev) / len(ev) if ev else None,
+               "evidence_all_with_facts": (sum(e["all_with_facts"] for e in ev if "all_with_facts" in e)
+                                           / max(1, sum("all_with_facts" in e for e in ev)))
+               if any("all_with_facts" in e for e in ev) else None,
                "context_tokens_mean": sum(r["context_tokens"] for r in g) / len(g),
                "context_tokens_p95": pct([r["context_tokens"] for r in g], 0.95),
                "retrieval_ms_p50": pct([r["retrieval_ms"] for r in g], 0.5),
@@ -587,6 +617,11 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
         miss = [r for r in with_ev if not r["evidence"]["all"]]
         out["J_all_evidence"] = sum(r["correct"] for r in hit) / len(hit) if hit else None
         out["J_missing_evidence"] = sum(r["correct"] for r in miss) / len(miss) if miss else None
+        listed = [r for r in judged if "item_coverage" in r]
+        if listed:  # list answers: the judge accepts one right item, this is the share of items found
+            out["list_n"] = len(listed)
+            out["list_J"] = sum(r["correct"] for r in listed) / len(listed)
+            out["list_item_coverage"] = sum(r["item_coverage"] for r in listed) / len(listed)
         if args.bench == "locomo" and judged:
             out["F1"] = sum(r["f1"] for r in judged) / len(judged)
             out["BLEU1"] = sum(r["bleu1"] for r in judged) / len(judged)
@@ -605,6 +640,8 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
     if answered:  # a reasoning model that runs out of max_tokens returns no text: raise the limit or lower effort
         summary["empty_answers"] = sum(not r["response"].strip() for r in answered)
         summary["truncated_answers"] = sum((r["answer_call"].get("finish_reason") == "length") for r in answered)
+    if any("judge_unparsed" in r for r in rows):
+        summary["judge_unparsed"] = sum(r.get("judge_unparsed", False) for r in rows)
     abst = [r for r in rows if r["abstention"] and r.get("correct") is not None]
     if abst:
         summary["abstention_accuracy"] = sum(r["correct"] for r in abst) / len(abst)
@@ -645,6 +682,16 @@ def write_report(summary: dict, path: str) -> None:
             lines.append(f"| {name} | {f(g.get('J_all_evidence'), True)} | {f(g.get('J_missing_evidence'), True)} | "
                          f"{f(g['evidence_all'], True)} |")
         lines += ["", "Low J with all evidence = the answering model; low share with all evidence = retrieval."]
+    if any(g.get("evidence_all_with_facts") is not None for g in summary["groups"].values()):
+        lines += ["", "| category | all evidence (excerpts) | all evidence (excerpts or a fact from the turn) | list answers n | list J | list items found |",
+                  "|---|---|---|---|---|---|"]
+        for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+            lines.append(f"| {name} | {f(g['evidence_all'], True)} | {f(g.get('evidence_all_with_facts'), True)} | "
+                         f"{g.get('list_n', '-')} | {f(g.get('list_J'), True)} | {f(g.get('list_item_coverage'), True)} |")
+        lines += ["", "List J follows the official judge (one right item is enough); list items found is the share of "
+                      "gold items present in the answer, without an LLM."]
+    if summary.get("judge_unparsed"):
+        lines += ["", f"WARNING: {summary['judge_unparsed']} judge replies had no CORRECT/WRONG label (counted as wrong)."]
     if "abstention_accuracy" in summary:
         lines += ["", f"Abstention accuracy: {summary['abstention_accuracy']:.1%}"]
     if summary.get("empty_answers") or summary.get("truncated_answers"):
@@ -768,6 +815,9 @@ def main():
         if args.bench == "locomo":
             row["f1"] = LOCOMO.f1(row["response"], row["gold"])
             row["bleu1"] = bleu1(row["response"], row["gold"])
+            row["judge_unparsed"] = locomo_verdict(calls[0]["text"]) is None
+            if len(gold_items(row["gold"])) > 1:
+                row["item_coverage"] = item_coverage(row["gold"], row["response"])
         return row
 
     rows, stopped = [], None
