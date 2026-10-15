@@ -292,7 +292,7 @@ def locomo_prepare(it: dict, args, provider) -> dict:
                 index.refresh(max_age=0)
                 _act_fresh.add(root)
         start = time.time()
-        mems = LOCOMO.memories_for(index, it["question"], args.k, args.episodes)
+        mems = LOCOMO.memories_for(index, it["question"], args.k, args.episodes, also=it.get("also"))
         retrieval_ms = (time.time() - start) * 1000
         index.close()
     finally:
@@ -341,6 +341,30 @@ def locomo_verdict(text: str) -> bool | None:
     if ("WRONG" in up) != ("CORRECT" in up):
         return "CORRECT" in up
     return None
+
+
+EXPAND_PROMPT = """You search a person's long chat history with a keyword search engine (BM25: it matches words, not meanings).
+Question: {question}
+
+The words in the question may not appear in the messages that answer it. A question about a category ("desserts",
+"cities", "activities", "pets") is answered by messages that name specific instances ("ice cream", "Tampa",
+"pottery", "dog"). Write 4 short keyword queries (3-8 words each) with the specific words such messages are likely
+to contain: likely instances, synonyms, and related verbs. Keep the person's name out unless it is needed.
+
+Reply with one line of JSON and nothing else: {"queries": ["...", "...", "...", "..."]}"""
+
+
+def expand_prompt(question: str) -> str:
+    return EXPAND_PROMPT.replace("{question}", question)
+
+
+def expand_queries(text: str) -> list[str]:
+    """The extra queries from the expansion reply (none when it is unreadable)."""
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        return [q for q in json.loads(m.group(0))["queries"] if isinstance(q, str)][:4]
+    except (AttributeError, ValueError, KeyError, TypeError):
+        return []
 
 
 LIST_JUDGE_PROMPT = """The gold answer to a question is a list. Split the gold answer into its items, then count how
@@ -715,6 +739,7 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
 
     summary = {"bench": args.bench, "mode": args.mode, "k": args.k, "episodes": args.episodes,
                "answer_model": args.answer_model, "judge_model": args.judge_model,
+               "expand_model": getattr(args, "expand_model", None),
                "groups": {name: group(g) for name, g in by.items()},
                "llm_spent_this_run": ledger.summary()}
     answered = [r for r in rows if "response" in r]
@@ -740,7 +765,8 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
 def write_report(summary: dict, path: str) -> None:
     f = lambda v, p=False: "-" if v is None else (f"{v:.1%}" if p else (f"{v:,.0f}" if v >= 10 else f"{v:.3f}"))  # noqa: E731
     lines = [f"# {summary['bench']} · mode {summary['mode']} · k={summary['k']} · episodes={summary['episodes']}",
-             f"answer model `{summary['answer_model']}` · judge model `{summary['judge_model']}`", "",
+             f"answer model `{summary['answer_model']}` · judge model `{summary['judge_model']}`"
+             + (f" · extra queries by `{summary['expand_model']}`" if summary.get("expand_model") else ""), "",
              "| category | n | J | F1 | BLEU-1 | evidence turns | all evidence | ctx tokens (mean / p95) | answer tokens in / out | retrieval ms p50 / p95 |",
              "|---|---|---|---|---|---|---|---|---|---|"]
     for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
@@ -843,6 +869,8 @@ def main():
     ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
     ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
+    ap.add_argument("--expand-model", help="LoCoMo: this model writes up to 4 extra queries per question, passed to "
+                    "recall as `also` (what an agent calling rewire over MCP does)")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
     ap.add_argument("--answer-model", default=default_model,
@@ -870,6 +898,8 @@ def main():
     client = None if no_llm else Client(ledger, reasoning_effort=args.reasoning_effort)
     args.answer_model, args.judge_model, args.ingest_model = (
         normalize_model(m) for m in (args.answer_model, args.judge_model, args.ingest_model))
+    if args.expand_model:
+        args.expand_model = normalize_model(args.expand_model)
     provider = JsonProvider(client, args.ingest_model) if client else None
     if provider:
         provider.bad_log = os.path.join(args.out, "bad_json.jsonl")
@@ -893,6 +923,11 @@ def main():
         sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
 
     def run_one(it: dict) -> dict:
+        if args.expand_model:  # the calling model writes extra queries (recall `also`), from the question only
+            if client is None and not cache.get(Cache.key("expand", args.expand_model, expand_prompt(it["question"]))):
+                raise SystemExit("--retrieval-only with --expand-model needs the expansions cached by an LLM run")
+            it["also"] = expand_queries(ask(client, cache, "expand", args.expand_model, expand_prompt(it["question"]),
+                                            1000)["text"])
         prep = bench["prepare"](it, args, provider)
         row = {k: it[k] for k in ("bench", "qid", "category", "question", "gold", "abstention")}
         if it.get("errata"):

@@ -29,6 +29,12 @@ REFERS_TO_GUIDE = (
     "Notes and excerpts from that period rank higher (nothing is filtered out)."
 )
 
+ALSO_GUIDE = (
+    "Up to 4 extra keyword queries, searched too and merged by rank. When the question names a category "
+    "('desserts', 'cities', 'hobbies', 'pets') or asks for a list, add queries naming likely specific "
+    "instances ('ice cream cake pie', 'Paris Tokyo trip'): memories name the instances, not the category."
+)
+
 TOOLS = [
     {
         "name": "recall",
@@ -51,6 +57,7 @@ TOOLS = [
                 "refers_to": {"type": "object", "description": REFERS_TO_GUIDE,
                               "properties": {"from": {"type": "string"}, "to": {"type": "string"}},
                               "additionalProperties": False},
+                "also": {"type": "array", "items": {"type": "string"}, "maxItems": 4, "description": ALSO_GUIDE},
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -96,10 +103,13 @@ class Server:
 
     def call(self, name: str, args: dict):
         if name == "recall":
+            also = args.get("also") or []
+            if not isinstance(also, list):
+                raise ops.OpError("also must be a list of queries")
             self.index.refresh()
             return ops.recall(self.brain, self.index, args["query"], k=int(args.get("k", 8)),
                               cwd=self.cwd, scope=args.get("scope"), episodes=max(0, min(int(args.get("episodes", 3)), 30)),
-                              refers_to=args.get("refers_to"))
+                              refers_to=args.get("refers_to"), also=[q for q in also if isinstance(q, str)])
         if name == "get":
             return ops.get(self.brain, list(args["ids"]), session=self.session)
         if name == "remember":

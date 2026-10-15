@@ -33,31 +33,51 @@ def resolve_id(brain: Brain, ref: str) -> Node | None:
     return matches[0] if len(matches) == 1 else None
 
 
+RRF_K = 60  # rank fusion of extra queries (standard reciprocal-rank-fusion constant)
+MAX_ALSO = 4
+
+
 def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None = None,
            scope: str | None = None, beta: float | None = None, episodes: int = 0,
-           refers_to: dict | None = None) -> list[dict]:
+           refers_to: dict | None = None, also: list[str] | None = None) -> list[dict]:
     """`refers_to` {from, to}: the time the question is about, resolved by the calling model
-    ("last week", "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter)."""
+    ("last week", "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter).
+
+    `also`: extra queries written by the calling model, searched like `query` and fused by rank. A
+    question about a category ("desserts", "cities") is answered by memories naming instances ("ice
+    cream", "Tampa") that share no word with it (measured on LoCoMo multi-hop: experiments/eval)."""
     window = time_range(refers_to)
     if scope:
         scopes = [scope] if scope != "all" else None
     else:
         scopes = project_mod.scopes_for(project_mod.detect(cwd, brain.config.projects))
-    hits = index.search(query, scopes=scopes, k=k, beta=beta, window=window)
+    queries = [query] + [q for q in (also or []) if q.strip()][:MAX_ALSO]
+    fused_hits, fused_eps, firsts = {}, {}, {}
+    for q in queries:
+        hits = index.search(q, scopes=scopes, k=k, beta=beta, window=window)
+        # raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
+        eps = index.search_episodes(q, k=episodes, seeds=hits, window=window, scopes=scopes) if episodes else []
+        for fused, found in ((fused_hits, hits), (fused_eps, eps)):
+            for rank, hit in enumerate(found):
+                fused[hit["id"]] = fused.get(hit["id"], 0.0) + 1.0 / (RRF_K + rank + 1)
+                firsts.setdefault(hit["id"], hit)  # the first query's text and trim win
+    order = {i: n for n, i in enumerate(firsts)}  # ties: first found first
+
+    def top(fused: dict, n: int) -> list[dict]:
+        return [firsts[i] for i in sorted(fused, key=lambda i: (-fused[i], order[i]))[:n]]
+
+    hits = top(fused_hits, k) if len(queries) > 1 else [firsts[i] for i in fused_hits]
+    eps = top(fused_eps, episodes) if len(queries) > 1 else [firsts[i] for i in fused_eps]
     for hit in hits:  # re-scanned when shown: files can be edited by hand or arrive by sync
         why = security.blocked(hit["title"] + " " + hit["snippet"])
         if why:
             hit["title"], hit["snippet"] = f"[BLOCKED: {why}; check this note with `rewire doctor`]", ""
-    if episodes:
-        # raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
-        eps = index.search_episodes(query, k=episodes, seeds=hits, window=window, scopes=scopes)
-        for ep in eps:  # excerpts are re-scanned too: sessions/ arrive by sync and quote untrusted pages
-            why = security.blocked(ep["text"] + " " + ep.get("summary", ""))
-            if why:
-                ep["text"] = f"[BLOCKED: {why}; excerpt of {ep['session']} withheld]"
-                ep.pop("summary", None)
-        hits += eps
-    return hits
+    for ep in eps:  # excerpts are re-scanned too: sessions/ arrive by sync and quote untrusted pages
+        why = security.blocked(ep["text"] + " " + ep.get("summary", ""))
+        if why:
+            ep["text"] = f"[BLOCKED: {why}; excerpt of {ep['session']} withheld]"
+            ep.pop("summary", None)
+    return hits + eps
 
 
 def time_range(refers_to: dict | None) -> tuple[str, str] | None:

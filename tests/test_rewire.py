@@ -705,6 +705,19 @@ class TestTimeAndHistory(BrainCase):
         with self.assertRaises(ops.OpError):
             ops.recall(self.brain, self.index, "x", refers_to={"from": "last week"})
 
+    def test_extra_queries_find_instances_of_a_category(self):
+        self.add("fact", "Nate made coconut milk ice cream")
+        self.add("fact", "Nate fixed his bike")
+        self.add("fact", "Nate likes strawberry cheesecake")
+        plain = ops.recall(self.brain, self.index, "favorite desserts", k=2, scope="all")
+        hits = ops.recall(self.brain, self.index, "favorite desserts", k=2, scope="all",
+                          also=["ice cream", "cake pie cheesecake", "  "])
+        self.assertEqual([h["title"] for h in hits],
+                         ["Nate made coconut milk ice cream", "Nate likes strawberry cheesecake"])
+        self.assertEqual(plain, [])  # no memory says "dessert"
+        self.assertEqual(ops.recall(self.brain, self.index, "Nate bike", scope="all", also=[]),
+                         ops.recall(self.brain, self.index, "Nate bike", scope="all"))
+
     def test_session_summaries_are_searchable_and_bookend_the_top_excerpt(self):
         path = self.brain.path("sessions", "2023-05-08", "claude-code-s1.md")
         os.makedirs(os.path.dirname(path))

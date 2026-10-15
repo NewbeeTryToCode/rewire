@@ -151,12 +151,12 @@ def backfill_transcripts(conv: dict, root: str) -> None:
         con._write_session("locomo", session, None, [], [], [], [], [], set(), date, con._transcript(turns))
 
 
-def memories_for(index: Index, question: str, k: int, episodes: int = 0) -> list[dict]:
+def memories_for(index: Index, question: str, k: int, episodes: int = 0, also: list[str] | None = None) -> list[dict]:
     """What rewire's recall returns (the same path MCP and the CLI use), as Mem0-style memory rows."""
     from rewire import nodefmt, ops
 
     out = []
-    for h in ops.recall(index.brain, index, question, k=k, scope="all", episodes=episodes):
+    for h in ops.recall(index.brain, index, question, k=k, scope="all", episodes=episodes, also=also):
         if h["type"] == "episode":
             out.append({"memory": "Conversation excerpt: " + " / ".join(h["text"].splitlines()),
                         "created_at": h["date"]})

@@ -32,6 +32,16 @@ pub fn resolve_id(brain: &Brain, reference: &str) -> Option<Node> {
     if matches.len() == 1 { matches.into_iter().next() } else { None }
 }
 
+/// Rank fusion of extra queries (standard reciprocal-rank-fusion constant).
+const RRF_K: f64 = 60.0;
+pub const MAX_ALSO: usize = 4;
+
+/// `refers_to` {from, to}: the time the question is about, resolved by the calling model ("last week",
+/// "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter).
+///
+/// `also`: extra queries written by the calling model, searched like `query` and fused by rank. A question
+/// about a category ("desserts", "cities") is answered by memories naming instances ("ice cream", "Tampa")
+/// that share no word with it (measured on LoCoMo multi-hop: experiments/eval).
 #[allow(clippy::too_many_arguments)]
 pub fn recall(
     brain: &Brain,
@@ -43,16 +53,48 @@ pub fn recall(
     beta: Option<f64>,
     episodes: usize,
     refers_to: Option<&Value>,
+    also: &[String],
 ) -> Result<Vec<Hit>> {
-    // `refers_to` {from, to}: the time the question is about, resolved by the calling model ("last week",
-    // "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter).
     let window = time_range(refers_to)?;
     let scopes = match scope.filter(|s| !s.is_empty()) {
         Some("all") => None,
         Some(s) => Some(vec![s.to_string()]),
         None => Some(project::scopes_for(project::detect(cwd, &brain.config.projects).as_deref())),
     };
-    let mut hits = index.search(query, &SearchOpts { scopes: scopes.clone(), k, beta, window: window.clone(), ..Default::default() })?;
+    let mut queries = vec![query.to_string()];
+    queries.extend(also.iter().filter(|q| !q.trim().is_empty()).take(MAX_ALSO).cloned());
+    // fused score per id, in first-found order; the first query's text and trim win
+    let mut fused_hits: Vec<(String, f64)> = Vec::new();
+    let mut fused_eps: Vec<(String, f64)> = Vec::new();
+    let mut firsts: Vec<Hit> = Vec::new();
+    for q in &queries {
+        let hits = index.search(q, &SearchOpts { scopes: scopes.clone(), k, beta, window: window.clone(), ..Default::default() })?;
+        // raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
+        let eps = if episodes > 0 { index.search_episodes(q, episodes, &hits, window.as_ref(), scopes.as_deref())? } else { Vec::new() };
+        for (fused, found) in [(&mut fused_hits, hits), (&mut fused_eps, eps)] {
+            for (rank, hit) in found.into_iter().enumerate() {
+                let add = 1.0 / (RRF_K + rank as f64 + 1.0);
+                match fused.iter_mut().find(|(id, _)| *id == hit.id) {
+                    Some(entry) => entry.1 += add,
+                    None => fused.push((hit.id.clone(), add)),
+                }
+                if !firsts.iter().any(|f| f.id == hit.id) {
+                    firsts.push(hit);
+                }
+            }
+        }
+    }
+    let order = |id: &str| firsts.iter().position(|f| f.id == id).unwrap_or(usize::MAX);
+    let top = |mut fused: Vec<(String, f64)>, n: usize| -> Vec<Hit> {
+        if queries.len() > 1 {
+            // ties: first found first
+            fused.sort_by(|a, b| b.1.total_cmp(&a.1).then(order(&a.0).cmp(&order(&b.0))));
+            fused.truncate(n);
+        }
+        fused.iter().filter_map(|(id, _)| firsts.iter().find(|f| f.id == *id).cloned()).collect()
+    };
+    let mut hits = top(fused_hits, k);
+    let mut eps = top(fused_eps, episodes);
     for hit in hits.iter_mut() {
         // re-scanned when shown: files can be edited by hand or arrive by sync
         let why = security::blocked(&format!("{} {}", hit.title, hit.snippet));
@@ -61,19 +103,15 @@ pub fn recall(
             hit.snippet = String::new();
         }
     }
-    if episodes > 0 {
-        // raw excerpts after the distilled facts; the facts found pull in the excerpts they came from
-        let mut eps = index.search_episodes(query, episodes, &hits, window.as_ref(), scopes.as_deref())?;
-        for ep in eps.iter_mut() {
-            // excerpts are re-scanned too: sessions/ arrive by sync and quote untrusted pages
-            let why = security::blocked(&format!("{} {}", ep.text, ep.summary.as_deref().unwrap_or("")));
-            if !why.is_empty() {
-                ep.text = format!("[BLOCKED: {why}; excerpt of {} withheld]", ep.session);
-                ep.summary = None;
-            }
+    for ep in eps.iter_mut() {
+        // excerpts are re-scanned too: sessions/ arrive by sync and quote untrusted pages
+        let why = security::blocked(&format!("{} {}", ep.text, ep.summary.as_deref().unwrap_or("")));
+        if !why.is_empty() {
+            ep.text = format!("[BLOCKED: {why}; excerpt of {} withheld]", ep.session);
+            ep.summary = None;
         }
-        hits.extend(eps);
     }
+    hits.extend(eps);
     Ok(hits)
 }
 

@@ -408,6 +408,11 @@ python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --s
 python experiments/eval/run.py --bench beam --data BEAM/chats --beam-sizes 100K,500K,1M --out OUT --sample 5 --dry-run
 python experiments/eval/run.py --bench personamem --data personamem/ --personamem-size 32k --out OUT --sample 20 --dry-run
 
+# A/B satu kategori LoCoMo; --expand-model: model menulis hingga 4 kueri tambahan (`also` di recall), seperti
+# agen yang memanggil rewire lewat MCP. Multi-hop, Haiku: J ketat 77,3% -> 81,6%, bukti lengkap 56% -> 71%
+python experiments/eval/run.py --bench locomo --data locomo10.json --out OUT --mode full --sample 0 \
+    --categories multi-hop --expand-model claude-cli/haiku --answer-model claude-cli/haiku --judge-model claude-cli/haiku
+
 # angka yang sebanding dengan publik (LongMemEval, judge resmi GPT-4o)
 python experiments/eval/run.py --bench longmemeval --data longmemeval_s_cleaned.json --out OUT --sample 0 \
     --answer-model openai/gpt-4o --judge-model openai/gpt-4o --max-cost 20
