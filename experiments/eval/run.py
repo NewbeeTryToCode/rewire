@@ -182,40 +182,49 @@ rewire_index.datetime = rewire_activation.datetime = _Clock
 # ---- LoCoMo --------------------------------------------------------------
 
 def locomo_brain(conv: dict, root: str, mode: str, provider) -> None:
-    done = os.path.join(root, ".state", "eval_done")
-    if os.path.exists(done):
+    if os.path.exists(os.path.join(root, ".state", "eval_done")):
         return
-    if not os.path.exists(os.path.join(root, "brain.toml")):
-        Brain.init(root, device="eval")
-        toml = os.path.join(root, "brain.toml")
-        text = open(toml).read().replace('profile = "coding"', 'profile = "general"')
-        open(toml, "w").write(text)
     if mode == "episodes":
+        LME.new_brain(root)
         LOCOMO.backfill_transcripts(conv, root)  # transcripts only, no LLM
+        _mark_done(root)
     else:
-        brain = Brain(root)
-        con = Consolidator(brain, provider=provider, log=lambda *_: None)
-        log = os.path.join(root, ".state", "eval_ingest.jsonl")
-        os.makedirs(os.path.dirname(log), exist_ok=True)
-        done_sessions = {r["session"] for r in _jsonl(log) if r.get("ok")}  # a stopped ingest resumes here
-        for key, date, turns in LOCOMO.sessions_of(conv):
-            session = f"{conv['sample_id']}-{key}"
-            if session in done_sessions:
-                continue
-            bad_before, start = provider.bad_count(), time.time()
-            try:
-                with brain.lock(timeout=600):
-                    r = con._consolidate("locomo", {"session": session, "cwd": None, "date": date}, turns)
-                rec = {"session": session, "ok": True, "turns": len(turns), "applied": len(r["applied"]),
-                       "queued": len(r["queued"]), "rejected": len(r["rejected"])}
-            except Exception as exc:  # recorded, then re-raised: the conversation stays unfinished until a rerun
-                rec = {"session": session, "ok": False, "error": str(exc)[:300]}
-                raise
-            finally:
-                rec.update(bad_json=provider.bad_count() - bad_before, seconds=round(time.time() - start, 1))
-                with open(log, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(rec) + "\n")
-        LOCOMO.approve_all(root)  # no human reviewer in a benchmark: proposals accepted in bulk
+        consolidate_sessions(root, "locomo", [(f"{conv['sample_id']}-{key}", date, turns)
+                                              for key, date, turns in LOCOMO.sessions_of(conv)], provider)
+
+
+def consolidate_sessions(root: str, harness: str, sessions: list[tuple[str, str, list[dict]]], provider) -> None:
+    """--mode full: consolidate each session in order, as after a real session, then accept the whole inbox.
+    Resumes per session (<root>/.state/eval_ingest.jsonl); writes eval_done (the recall clock) when finished."""
+    if os.path.exists(os.path.join(root, ".state", "eval_done")):
+        return
+    brain = LME.new_brain(root)  # profile "general"
+    con = Consolidator(brain, provider=provider, log=lambda *_: None)
+    log = os.path.join(root, ".state", "eval_ingest.jsonl")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    done_sessions = {r["session"] for r in _jsonl(log) if r.get("ok")}  # a stopped ingest resumes here
+    for session, date, turns in sessions:
+        if session in done_sessions:
+            continue
+        bad_before, start = provider.bad_count(), time.time()
+        try:
+            with brain.lock(timeout=600):
+                r = con._consolidate(harness, {"session": session, "cwd": None, "date": date}, turns)
+            rec = {"session": session, "ok": True, "turns": len(turns), "applied": len(r["applied"]),
+                   "queued": len(r["queued"]), "rejected": len(r["rejected"])}
+        except Exception as exc:  # recorded, then re-raised: the brain stays unfinished until a rerun
+            rec = {"session": session, "ok": False, "error": str(exc)[:300]}
+            raise
+        finally:
+            rec.update(bad_json=provider.bad_count() - bad_before, seconds=round(time.time() - start, 1))
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+    LOCOMO.approve_all(root)  # no human reviewer in a benchmark: proposals accepted in bulk
+    _mark_done(root)
+
+
+def _mark_done(root: str) -> None:
+    done = os.path.join(root, ".state", "eval_done")
     os.makedirs(os.path.dirname(done), exist_ok=True)
     with open(done, "w") as fh:  # the brain's clock for recall (frozen_now)
         fh.write(datetime.now(timezone.utc).isoformat())
@@ -543,6 +552,8 @@ def beam_items(args) -> list[dict]:
     items = []
     for size in args.beam_sizes.split(","):
         for chat_dir in sorted(glob.glob(os.path.join(args.data, size, "*")), key=lambda p: (len(p), p)):
+            if args.convs != "all" and os.path.basename(chat_dir) not in args.convs.split(","):
+                continue
             qpath = os.path.join(chat_dir, "probing_questions", "probing_questions.json")
             if not os.path.exists(qpath) or not os.path.exists(os.path.join(chat_dir, "chat.json")):
                 continue
@@ -568,13 +579,23 @@ def beam_messages(chat_dir: str) -> list[tuple[str, list[dict]]]:
     return out
 
 
-def beam_prepare(it: dict, args, provider) -> dict:
-    if args.mode != "episodes":
-        raise SystemExit("BEAM is supported in --mode episodes (a 1M-token chat costs too much to consolidate)")
-    root = os.path.join(args.out, "beam", "brains", it["size"], os.path.basename(it["chat_dir"]))
-    batches = beam_messages(it["chat_dir"])
+def beam_root(args, it: dict) -> str:
+    sub = "brains" if args.mode == "episodes" else "brains-full"  # episodes path kept as before
+    return os.path.join(args.out, "beam", sub, it["size"], os.path.basename(it["chat_dir"]))
+
+
+def beam_sessions(it: dict) -> list[tuple[str, str, list[dict]]]:
     name = f"beam-{it['size']}-{os.path.basename(it['chat_dir'])}"
-    write_sessions(root, "beam", [(f"{name}-b{i + 1}", date or "2024-01-01", turns) for i, (date, turns) in enumerate(batches)])
+    return [(f"{name}-b{i + 1}", date or "2024-01-01", turns) for i, (date, turns) in enumerate(beam_messages(it["chat_dir"]))]
+
+
+def beam_prepare(it: dict, args, provider) -> dict:
+    root = beam_root(args, it)
+    batches = beam_messages(it["chat_dir"])
+    if args.mode == "episodes":
+        write_sessions(root, "beam", beam_sessions(it))
+    elif not os.path.exists(os.path.join(root, ".state", "eval_done")):
+        raise RuntimeError(f"BEAM chat not ingested: {root}")  # main() consolidates every chat before questions
     context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes)
     by_id = {t["n"]: t["text"] for _, turns in batches for t in turns}
     evidence = [by_id[i] for i in it["evidence_ids"] if i in by_id]
@@ -865,7 +886,7 @@ def main():
     ap.add_argument("--sample", type=int, default=20, help="questions per category (0 = all)")
     ap.add_argument("--categories", default="all", help="only these categories (comma-separated, e.g. multi-hop)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--convs", default="all", help="LoCoMo conversations (comma-separated sample ids or all)")
+    ap.add_argument("--convs", default="all", help="LoCoMo conversations or BEAM chat ids (comma-separated, or all)")
     ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
     ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
@@ -915,8 +936,10 @@ def main():
     all_items = items
     brain_root = lambda conv: os.path.join(args.out, "locomo", f"brains-{args.mode}", conv["sample_id"])  # noqa: E731
     is_done = lambda conv: os.path.exists(os.path.join(brain_root(conv), ".state", "eval_done"))  # noqa: E731
-    if args.mode == "full" and no_llm and args.bench == "locomo":  # scoring brains ingested by an earlier run
-        missing = sorted({it["conv"]["sample_id"] for it in items if not is_done(it["conv"])})
+    if args.mode == "full" and no_llm and args.bench in ("locomo", "beam"):  # brains ingested by an earlier run
+        missing = sorted({it["conv"]["sample_id"] for it in items if not is_done(it["conv"])} if args.bench == "locomo"
+                         else {beam_root(args, it) for it in items
+                               if not os.path.exists(os.path.join(beam_root(args, it), ".state", "eval_done"))})
         if missing:
             sys.exit(f"--mode full needs the LLM for ingestion; not ingested yet: {', '.join(missing)}")
     elif args.mode == "full" and no_llm:
@@ -975,6 +998,20 @@ def main():
             stopped = f"ingest stopped: {errors[0]}"
             items = [it for it in items if is_done(it["conv"])]
             print(f"{stopped}; {len(items)} questions on finished conversations", flush=True)
+    if args.bench == "beam" and args.mode == "full" and not no_llm:  # one brain per chat, consolidated first
+        chats = list({beam_root(args, it): it for it in items}.items())
+        with ThreadPoolExecutor(args.parallel) as pool:
+            futures = [pool.submit(consolidate_sessions, root, "beam", beam_sessions(it), provider) for root, it in chats]
+            errors = []
+            for fut in futures:
+                try:
+                    fut.result()
+                except Exception as exc:
+                    errors.append(str(exc))
+        if errors:
+            stopped = f"ingest stopped: {errors[0]}"
+            items = [it for it in items if os.path.exists(os.path.join(beam_root(args, it), ".state", "eval_done"))]
+            print(f"{stopped}; {len(items)} questions on finished chats", flush=True)
     with ThreadPoolExecutor(args.parallel) as pool:
         futures = [pool.submit(run_one, it) for it in items]
         for fut in futures:
@@ -988,6 +1025,8 @@ def main():
         print(f"STOPPED: {stopped}; rerun to resume from the cache", flush=True)
     if args.bench == "locomo" and args.mode == "full":
         ingest = ingest_stats(sorted({brain_root(it["conv"]) for it in all_items}))
+    elif args.bench == "beam" and args.mode == "full":
+        ingest = ingest_stats(sorted({beam_root(args, it) for it in all_items}))
 
     est = None
     if args.dry_run:
@@ -1019,7 +1058,7 @@ def main():
                 est[f"{stage}_cost_usd"] = round((tin * prices[model][0] + tout * prices[model][1]) / 1e6, 4)
 
     summary = summarize(rows, ledger, args, est)
-    if args.bench == "locomo" and args.mode == "full" and ingest:
+    if args.bench in ("locomo", "beam") and args.mode == "full" and ingest:
         summary["ingest"] = ingest
     if stopped:
         summary["stopped"] = stopped

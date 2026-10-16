@@ -26,8 +26,8 @@ metrics have no equivalent on leaderboards, but they are free and stable, so the
 Ingest modes:
 - `episodes`: transcripts are stored and indexed exactly as consolidation would produce them, **without** LLM extraction. Free.
 - `full`: every session is consolidated by an LLM (`--ingest-model`), and the whole inbox is accepted. Most realistic, most expensive.
-  BEAM and PersonaMem support only `episodes` (consolidating a 1M-token chat is too expensive; for PersonaMem,
-  extracted facts could leak turns that come after the question).
+  PersonaMem supports only `episodes` (extracted facts could leak turns that come after the question). BEAM
+  supports `full` for chosen chats (`--convs 1,7,...`; consolidating every 1M-token chat is too expensive).
 
 Data sources:
 - LoCoMo: `locomo10.json`, straight from GitHub:
