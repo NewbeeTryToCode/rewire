@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from . import activation, nodefmt, semantic, text
 from .util import parse_iso
 
-SCHEMA = "9"
+SCHEMA = "10"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
@@ -238,7 +238,26 @@ class Index:
             db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", (path, mtime, size, node_id))
         return changed
 
-    EP_WINDOW, EP_STEP = 6, 4  # turns per episode chunk, and stride (chunks overlap by 2 turns)
+    # An episode chunk holds up to EP_WINDOW turns and EP_CHARS characters (a single longer turn is its own chunk).
+    # Capping by size, not only by turns, keeps chunks with long turns (assistant replies with code) small:
+    # BEAM 100K all-evidence 47.0% -> 54.1% at the same context budget, LoCoMo unchanged
+    # (experiments/eval/results/2026-10-16-beam-retrieval-experiments.md).
+    EP_WINDOW, EP_CHARS = 6, 1200
+
+    @classmethod
+    def _chunks(cls, lines: list[str]) -> list[list[str]]:
+        """Consecutive turn windows; a window of 3+ turns shares its last turn with the next one."""
+        out, i = [], 0
+        while i < len(lines):
+            j, size = i + 1, len(lines[i])
+            while j < len(lines) and j - i < cls.EP_WINDOW and size + len(lines[j]) <= cls.EP_CHARS:
+                size += len(lines[j])
+                j += 1
+            out.append(lines[i:j])
+            if j >= len(lines):
+                break
+            i = j - 1 if j - i > 2 else j
+        return out
 
     def _sync_episodes(self, db) -> None:
         seen = {}
@@ -271,8 +290,7 @@ class Index:
                     continue
                 lines = [l for l in part.split("\n## Transcript\n", 1)[1].splitlines() if l.startswith("[")]
                 questions = _questions(part)
-                for start in range(0, max(len(lines) - 2, 1), self.EP_STEP):
-                    part_lines = lines[start:start + self.EP_WINDOW]
+                for part_lines in self._chunks(lines):
                     chunk = "\n".join(part_lines)
                     if chunk:
                         turns = [int(m.group(1)) for m in map(_TURN.match, part_lines) if m]

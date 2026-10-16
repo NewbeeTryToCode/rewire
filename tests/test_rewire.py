@@ -64,6 +64,16 @@ class TestStems(unittest.TestCase):
         self.assertEqual(overlap("How many hikes?", "We went for a hike"), 1)
 
 
+class TestEpisodeChunks(unittest.TestCase):
+    def test_chunks_cap_turns_and_size(self):
+        short = [f"[{n} user] hi" for n in range(1, 9)]
+        self.assertEqual([len(c) for c in Index._chunks(short)], [6, 3])  # the 6th turn again with 7 and 8
+        long = "x" * 1195  # does not fit beside another turn: a chunk of its own
+        self.assertEqual(Index._chunks(["[1 user] a", long, "[3 user] b", "[4 user] c"]),
+                         [["[1 user] a"], [long], ["[3 user] b", "[4 user] c"]])
+        self.assertEqual(Index._chunks([]), [])
+
+
 class TestFrontmatter(unittest.TestCase):
     def test_roundtrip(self):
         meta = {"id": "X", "edges": [{"rel": "about", "to": "Y"}], "valid_to": None, "title": "Ünïcode: yes"}

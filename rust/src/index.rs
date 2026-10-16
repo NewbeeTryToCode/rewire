@@ -20,13 +20,34 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
-pub const SCHEMA: &str = "9";
+pub const SCHEMA: &str = "10";
 const HOP_DECAY: f64 = 0.5;
 const ACT_MAX_AGE: f64 = 300.0;
 const SCAN_MAX_AGE: f64 = 60.0;
+// An episode chunk holds up to EP_WINDOW turns and EP_CHARS characters (a single longer turn is its own chunk),
+// so chunks with long turns stay small; same rule as index.py (`Index._chunks`).
 const EP_WINDOW: usize = 6;
-const EP_STEP: usize = 4;
+const EP_CHARS: usize = 1200;
 pub const RRF_K: f64 = 60.0;
+
+/// Consecutive turn windows of at most EP_WINDOW turns and EP_CHARS characters; a window of 3+ turns shares
+/// its last turn with the next one.
+fn chunks<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < lines.len() {
+        let (mut j, mut size) = (i + 1, lines[i].chars().count());
+        while j < lines.len() && j - i < EP_WINDOW && size + lines[j].chars().count() <= EP_CHARS {
+            size += lines[j].chars().count();
+            j += 1;
+        }
+        out.push(lines[i..j].to_vec());
+        if j >= lines.len() {
+            break;
+        }
+        i = if j - i > 2 { j - 1 } else { j };
+    }
+    out
+}
 
 fn rel_weight(rel: &str) -> f64 {
     match rel {
@@ -738,10 +759,7 @@ impl Index {
                 let Some((_, transcript)) = part.split_once("\n## Transcript\n") else { continue };
                 let lines: Vec<&str> = transcript.lines().filter(|l| l.starts_with('[')).collect();
                 let questions = session_questions(part);
-                let n = lines.len();
-                let mut start = 0;
-                while start < n.saturating_sub(2).max(1) {
-                    let part_lines = &lines[start.min(n)..(start + EP_WINDOW).min(n)];
+                for part_lines in chunks(&lines) {
                     let chunk = part_lines.join("\n");
                     if !chunk.is_empty() {
                         let turns: Vec<i64> =
@@ -756,7 +774,6 @@ impl Index {
                             .join("\n");
                         db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, indexed])?;
                     }
-                    start += EP_STEP;
                 }
             }
             db.execute("INSERT OR REPLACE INTO epfiles VALUES (?,?,?)", params![path, mtime, size])?;
@@ -1309,5 +1326,23 @@ mod trim_tests {
             "[2 user] Bob: the weather is nice\n[3 user] Ann: I adopted a dog\n[4 user] Bob: what is its name"
         );
         assert_eq!(trim_excerpt("kubernetes", ex), ex); // nothing to anchor on: kept whole
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::chunks;
+
+    #[test]
+    fn chunks_cap_turns_and_size() {
+        let short: Vec<String> = (1..=8).map(|n| format!("[{n} user] hi")).collect();
+        let short: Vec<&str> = short.iter().map(String::as_str).collect();
+        let lens: Vec<usize> = chunks(&short).iter().map(Vec::len).collect();
+        assert_eq!(lens, vec![6, 3]); // 6 turns, then the 6th again with 7 and 8
+        let long = "x".repeat(1195); // does not fit beside another turn: a chunk of its own
+        let mixed = ["[1 user] a", long.as_str(), "[3 user] b", "[4 user] c"];
+        let got: Vec<Vec<&str>> = chunks(&mixed);
+        assert_eq!(got, vec![vec!["[1 user] a"], vec![long.as_str()], vec!["[3 user] b", "[4 user] c"]]);
+        assert!(chunks(&[]).is_empty());
     }
 }

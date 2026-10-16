@@ -67,8 +67,9 @@ Data sources:
 | **Strict J / list items named** (LoCoMo) | For questions whose gold is a list, a list judge (same model as the judge) splits the gold and counts the items the answer mentions, paraphrases included. Strict J: a list answer is correct only if the judge accepts it **and** every item is mentioned | yes | run.py |
 | **Answer length** | Mean words per answer (long answers tend to be graded correct by a lenient judge) | — | results JSON |
 
-Retrieval results measured so far are in §8. Context precision is low (≈11–20%) because one excerpt contains
-6 turns: this is a clear target for improvement (smaller excerpts or trimming) without lowering recall.
+Retrieval results measured so far are in §8. Context precision is low (≈11–20%) because one excerpt contained
+6 turns. Since index schema 10, an excerpt holds at most 6 turns **and** 1,200 characters (BEAM all-evidence +7 points
+at the same budget, LoCoMo unchanged; `experiments/eval/results/2026-10-16-beam-retrieval-experiments.md`).
 
 ### Capability dimensions → benchmark categories
 
