@@ -124,6 +124,7 @@ is the same (§6).
 | Agent Zero Memory | 95.6% | Agent Zero Memory paper (2026) |
 | **rewire** (`episodes`, no extraction) | **85.4%** (10 excerpts); ≈89.8% (20 excerpts) | Iteration 8; answerer + judge Claude via `claude -p`, official prompts |
 | **rewire** (`episodes`, no extraction) | **78.4%** (10 excerpts; abstention 76.7%) | 2026-10-16, all 500: answerer Haiku 5.5, judge Haiku 4.5 via `claude -p`, official prompts; per-question diagnosis in `experiments/eval/results/2026-10-16-longmemeval-haiku55-ep10-analysis.md` |
+| **rewire** (`episodes`, recall changes of 2026-10-16) | **83.6%**; **85.6%** with query expansion (`also`) | Same models and questions as the 78.4% row; whole turns + query-aware condensing, session opener, semantic at 0.25, 2× excerpts for counting questions. `experiments/eval/results/2026-10-16-longmemeval-improvements.md` |
 
 rewire retrieval (no LLM, LongMemEval_S, 470 non-abstention questions): evidence session found 97.0%, all
 evidence sessions 87.9%, mean context ≈11.2k tokens out of ≈115k.
@@ -277,6 +278,10 @@ The upper bound for runs with an LLM: if the evidence is not in the context, the
 
 Retrieval p50 4 ms, p99 16 ms. Open-domain often needs general knowledge (not in the conversation); multi-hop
 is rewire's improvement target. Note: the 94% J score from iterations 6–7 used k=50.
+
+**LongMemEval_S after the 2026-10-16 recall changes:** all evidence 91.1% (98.3% with query expansion), evidence turns
+94.4% (98.1%), context ≈12.5k tokens (19.1k), retrieval p50 235 ms (1.1 s): condensing embeds sentences at recall
+time, to be cached in the index.
 
 **LongMemEval_S, all 500 (2026-10-16, frozen clock):** evidence turns 86.2%, all evidence 85.7%, session found 97.0%,
 MRR 0.857, context precision 25.0%, context ≈8.8k tokens (13.8× smaller), retrieval p50 21 ms / p99 195 ms
