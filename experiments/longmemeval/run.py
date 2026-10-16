@@ -138,6 +138,14 @@ def recall(q: dict, root: str, k: int, episodes: int) -> dict:
     return {"facts": facts, "episodes": eps}
 
 
+def coverage(turn: str, context_norm: str) -> float:
+    """Share of an evidence turn's sentences that reached the context (normalised text). Matching only the turn's
+    start counts a turn cut after 1,500 characters as found; this sees what was cut."""
+    sents = [s for s in (re.sub(r"\W+", " ", p.lower()).strip() for p in re.split(r"(?<=[.!?:])\s+|\n+", turn))
+             if len(s) >= 20]
+    return sum(s in context_norm for s in sents) / len(sents) if sents else 1.0
+
+
 def evidence(q: dict, ctx: dict) -> dict | None:
     """Session- and turn-level recall of the evidence; None for abstention questions (no evidence)."""
     if q["question_id"].endswith("_abs"):
@@ -149,7 +157,8 @@ def evidence(q: dict, ctx: dict) -> dict | None:
     turns = [t["content"] for s in q["haystack_sessions"] for t in s if t.get("has_answer")]
     hit_turns = sum(norm(t)[:60] in text for t in turns)
     return {"sess_any": bool(want & got), "sess_all": want <= got,
-            "turns": hit_turns, "n_turns": len(turns), "ctx": sum(len(e["text"]) for e in ctx["episodes"]) +
+            "turns": hit_turns, "n_turns": len(turns), "turn_coverage": [coverage(t, text) for t in turns],
+            "ctx": sum(len(e["text"]) for e in ctx["episodes"]) +
             sum(len(f["text"]) for f in ctx["facts"])}
 
 

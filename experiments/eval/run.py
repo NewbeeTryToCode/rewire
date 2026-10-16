@@ -466,6 +466,7 @@ def lme_prepare(it: dict, args, provider) -> dict:
                       "answer_sessions": [LME.session_file(s) for s in q.get("answer_session_ids", [])],
                       "context": history},
             "evidence": {"turns": ev["turns"], "n_turns": ev["n_turns"], "all": ev["sess_all"],
+                         "turn_coverage": ev["turn_coverage"],
                          "session_any": ev["sess_any"], **ranking([e["text"] for e in ctx["episodes"]], evidence_turns)}
             if ev else None}
 
@@ -717,6 +718,10 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "evidence_session_any": (sum(e["session_any"] for e in ev if "session_any" in e)
                                         / max(1, sum("session_any" in e for e in ev))) if any("session_any" in e for e in ev) else None,
                "compression": sum(r["raw_tokens"] for r in g) / max(1, sum(r["context_tokens"] for r in g))}
+        cov = [c for e in ev for c in e.get("turn_coverage", [])]
+        if cov:  # LongMemEval: how much of each evidence turn reached the context, not only its first words
+            out["evidence_turn_coverage"] = sum(cov) / len(cov)
+            out["evidence_turns_complete"] = sum(c >= 0.9 for c in cov) / len(cov)
         # retrieval vs answering: accuracy when every evidence turn was in the context, and when some were not
         with_ev = [r for r in judged if r.get("evidence")]
         hit = [r for r in with_ev if r["evidence"]["all"]]
@@ -794,6 +799,11 @@ def write_report(summary: dict, path: str) -> None:
         lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | "
                      f"{f(g['evidence_session_any'], True)} | {g['compression']:.1f}× | {g['retrieval_ms_p99']:.0f} | "
                      f"{f(g.get('answer_words_mean'))} |")
+    if any(g.get("evidence_turn_coverage") is not None for g in summary["groups"].values()):
+        lines += ["", "| category | evidence turn coverage (share of its sentences in the context) | evidence turns complete (≥90%) |",
+                  "|---|---|---|"]
+        for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+            lines.append(f"| {name} | {f(g.get('evidence_turn_coverage'), True)} | {f(g.get('evidence_turns_complete'), True)} |")
     if any(g.get("J_clean") is not None for g in summary["groups"].values()):
         lines += ["", "| category | J | disputed gold excluded | J without them |", "|---|---|---|---|"]
         for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):

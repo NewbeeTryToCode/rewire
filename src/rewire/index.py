@@ -238,6 +238,10 @@ class Index:
             db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", (path, mtime, size, node_id))
         return changed
 
+    # Static word vectors (WordLlama) are a weak ranker: at equal weight in rank fusion, excerpts that sit mid-list in
+    # both rankings pushed out the best keyword match (LongMemEval single-session-user all evidence 100% -> 95%).
+    # At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16 results).
+    EP_SEM_WEIGHT = 0.25
     EP_WINDOW, EP_STEP = 6, 4  # turns per episode chunk, and stride (chunks overlap by 2 turns)
 
     def _sync_episodes(self, db) -> None:
@@ -346,9 +350,9 @@ class Index:
                 sims = mat @ semantic.embed([query])[0]
                 sem = [rids[i] for i in sims.argsort()[::-1] if not scopes or ep_scopes[i] in scopes][:limit]
         fused: dict[int, float] = {}
-        for ranks in (fts, sem):
+        for ranks, weight in ((fts, 1.0), (sem, self.EP_SEM_WEIGHT)):
             for rank, rid in enumerate(ranks):
-                fused[rid] = fused.get(rid, 0.0) + 1.0 / (self.RRF_K + rank + 1)
+                fused[rid] = fused.get(rid, 0.0) + weight / (self.RRF_K + rank + 1)
         scale = max(fused.values(), default=1.0 / (self.RRF_K + 1))  # bonus relative to the best match
         seeded = self._seed_episodes(seeds or [])
         for rid, bonus in seeded.items():
@@ -364,9 +368,17 @@ class Index:
                     fused[rid] += 1.0 / self.RRF_K
         best = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))[:k]
         best, texts = self._merge(best, rows)
+        opened = set()
         for pos, rid in enumerate(best):
             if pos >= self.EP_WHOLE and rows[rid]["first"] != 0 and rid not in seeded:
                 texts[rid] = self._trim(query, texts[rid])
+            texts[rid] = self._condense(query, texts[rid])
+            path = rows[rid]["path"]
+            if rows[rid]["first"] > 1 and path not in opened:  # the session's opening user message, once per session
+                opener = self._opener(path)
+                if opener:
+                    texts[rid] = self._condense_line(query, opener, self.OPENER_CHARS) + "\n" + texts[rid]
+            opened.add(path)
         out = [{"id": f"ep:{rid}", "type": "episode", "date": rows[rid]["date"],
                 "session": os.path.relpath(rows[rid]["path"], self.brain.root), "text": texts[rid]}
                for rid in best]
@@ -393,6 +405,68 @@ class Index:
             return excerpt
         keep = sorted({j for i in hits for j in range(i - cls.EP_CONTEXT, i + cls.EP_CONTEXT + 1) if 0 <= j < len(lines)})
         return "\n".join(lines[j] for j in keep)
+
+    # Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
+    # line longer than LINE_CHARS is shown condensed to the sentences that best match the query, plus its opening.
+    LINE_CHARS = 1500
+    _QUANTITY = re.compile(r"(?i)\bhow (much|many|long|old|far|often)\b|\bwhat (time|date|year|day|price|percentage)\b|\bwhen\b")
+    _SEGMENT = re.compile(r"(?<=[.!?:])\s+|\s+(?=\d{1,2}[.)]\s)|\s+(?=[-*•]\s)")
+
+    @classmethod
+    def _condense(cls, query: str, excerpt: str) -> str:
+        return "\n".join(cls._condense_line(query, line) if len(line) > cls.LINE_CHARS else line
+                         for line in excerpt.splitlines())
+
+    # The user's opening message states their situation, and facts are often said there in passing ("I just got
+    # back from Yosemite, so ..."); an excerpt from later in the session would lose it. On LongMemEval_S, 34 of the
+    # 45 evidence turns missing from recalled sessions were turn 1. Shown condensed with every excerpt after it.
+    OPENER_CHARS = 700
+
+    def _opener(self, path: str) -> str | None:
+        row = self.db.execute("SELECT text FROM episodes WHERE path = ? AND first = 1 ORDER BY rowid LIMIT 1",
+                              (path,)).fetchone()
+        line = row[0].split("\n", 1)[0] if row else ""
+        return line if line.startswith("[1 user]") else None
+
+    @classmethod
+    def _condense_line(cls, query: str, line: str, limit: int | None = None) -> str:
+        limit = limit or cls.LINE_CHARS
+        m = cls._SPEAKER.match(line)
+        head, body = (m.group(0), line[m.end():]) if m else ("", line)
+        if len(body) <= limit:
+            return line
+        segs = [s[:limit] for s in cls._SEGMENT.split(body) if s.strip()]
+        if len(segs) < 2:
+            return head + body[:limit] + " …[condensed]"
+        # query words weighted by how rare they are among the segments: a word in every sentence of the reply
+        # ("marketing" in a marketing plan) says nothing about which sentence answers; "27th" also finds "27."
+        words = text.content_words(query)
+        words += [n for w in words for n in re.findall(r"^(\d+)(?:st|nd|rd|th)$", w)]
+        hits = {w: [text.overlap(w, s) > 0 for s in segs] for w in dict.fromkeys(words)}
+        idf = {w: math.log((len(segs) + 1) / (sum(h) + 0.5)) for w, h in hits.items()}
+        scores = [sum(idf[w] for w, h in hits.items() if h[i]) for i in range(len(segs))]
+        quantity = bool(cls._QUANTITY.search(query))
+        for i, s in enumerate(segs):
+            if any(re.match(rf"{n}[.)]\s", s) for n in words if n.isdigit()):  # a numbered item asked for by position
+                scores[i] += 5.0
+            if quantity and re.search(r"\d", s):  # "how much / when ...": the sentences holding numbers
+                scores[i] += 1.0
+        vecs = semantic.embed([query] + segs)
+        if vecs is not None:  # words first, meaning breaks ties and finds paraphrases
+            scores = [o + float(v) for o, v in zip(scores, vecs[1:] @ vecs[0])]
+        keep, size = {0}, len(segs[0])  # the opening says what the reply is about
+        for i in sorted(range(len(segs)), key=lambda i: -scores[i]):
+            for j in (i, i + 1, i - 1):  # a matching sentence with its neighbours
+                if 0 <= j < len(segs) and j not in keep and size + len(segs[j]) <= limit:
+                    keep.add(j)
+                    size += len(segs[j]) + 1
+            if size >= limit * 0.9:
+                break
+        out, prev = [], -1
+        for j in sorted(keep):
+            out.append(("… " if j != prev + 1 else "") + segs[j])
+            prev = j
+        return head + " ".join(out) + (" …[condensed]" if prev != len(segs) - 1 or len(keep) < len(segs) else "")
 
     @staticmethod
     def _merge(best: list[int], rows: dict) -> tuple[list[int], dict[int, str]]:

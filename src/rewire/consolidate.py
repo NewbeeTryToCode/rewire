@@ -29,7 +29,7 @@ KEYWORDS_RULE = (
     "keywords: 8-15 lowercase search terms someone might use later to look for this memory without "
     "remembering its wording: synonyms, related everyday words, and translations of the key terms in "
     "BOTH Indonesian and English. Single words or short phrases."
-)  # long assistant turns are condensed; user turns are kept whole
+)  # long assistant turns are condensed in the extraction prompt; user turns are kept whole
 QUESTIONS_RULE = (
     "questions: questions someone might ask later that TRANSCRIPT answers, about 2 for every 3 turns, each "
     "with turn = the [number] of the turn holding the answer. Use the general words a later question would "
@@ -221,13 +221,15 @@ JUDGE_SCHEMA = {
 }
 
 
-def _format_turns(turns: list[dict]) -> list[str]:
+def _format_turns(turns: list[dict], limit: int | None = ASSISTANT_CHARS) -> list[str]:
+    """`limit` condenses long assistant turns (the extraction prompt); the stored transcript keeps them whole and
+    recall condenses them around the query instead (Index._condense), so a detail late in a long reply survives."""
     out = []
     for t in turns:
         # redacted before anything leaves the machine: these lines go to the LLM and into sessions/
         text = security.redact(security.strip_private(t["text"]))
-        if t["role"] == "assistant" and len(text) > ASSISTANT_CHARS:
-            text = text[:ASSISTANT_CHARS] + " …[condensed]"
+        if limit and t["role"] == "assistant" and len(text) > limit:
+            text = text[:limit] + " …[condensed]"
         out.append(f"[{t['n']} {t['role']}] {text}")
     return out
 
@@ -523,7 +525,7 @@ class Consolidator:
         if keep == "none":
             return []
         roles = ("user",) if keep == "user" else ("user", "assistant")
-        return [line for t, line in zip(turns, _format_turns(turns)) if t["role"] in roles]
+        return [line for t, line in zip(turns, _format_turns(turns, limit=None)) if t["role"] in roles]
 
     def _write_session(self, harness, session, project, summaries, applied, queued, rejected, shown, used,
                        date=None, transcript=None, questions=None):
