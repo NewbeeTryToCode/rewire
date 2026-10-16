@@ -97,6 +97,18 @@ _HISTORY = re.compile(r"\b(used to|previously|originally|formerly|at first|first
                       r"dulu|sebelumnya|awalnya|pertama|semula|pernah)\b", re.I)
 
 
+AGGREGATE = re.compile(
+    r"\b(how many|in total|total|altogether|combined|sum of|all (the|my)|each of|how often|in what order|order of|"
+    r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer)|"
+    r"berapa (kali|banyak|total)|totalnya|semua|seluruh|mana yang .{0,40}(duluan|pertama|terakhir|paling))\b", re.I)
+
+
+def aggregate(query: str) -> bool:
+    """The question gathers several memories (a count, a total, an order of events), so one best match is not
+    enough: recall widens the excerpt budget for it."""
+    return bool(AGGREGATE.search(query))
+
+
 def time_window(query: str) -> tuple[str, str] | None:
     """Explicit time in the query -> (start, end) ISO dates, e.g. 'in July 2023' -> July 2023."""
     q = query.lower()
