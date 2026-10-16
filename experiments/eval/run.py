@@ -444,15 +444,27 @@ def lme_prepare(it: dict, args, provider) -> dict:
     q = it["raw"]
     root = os.path.join(args.out, "longmemeval", f"brains-{args.mode}", q["question_id"])
     lme_brain(q, root, args.mode, provider)
-    start = time.time()
-    ctx = LME.recall(q, root, args.k, args.episodes)
-    retrieval_ms = (time.time() - start) * 1000
+    done = os.path.join(root, ".state", "lme_done")
+    _now.at = datetime.fromtimestamp(os.path.getmtime(done), timezone.utc)  # recall as of the end of ingest
+    try:
+        index = Index(Brain(root))  # build or refresh the index first: latency measures recall, not indexing
+        index.refresh()
+        index.close()
+        start = time.time()
+        ctx = LME.recall(q, root, args.k, args.episodes)
+        retrieval_ms = (time.time() - start) * 1000
+    finally:
+        _now.at = None
     history = LME.history_string(ctx)
     ev = LME.evidence(q, ctx)
     evidence_turns = [t["content"] for s in q["haystack_sessions"] for t in s if t.get("has_answer")]
     return {"prompt": LME.ANSWER_TEMPLATE.format(history, q["question_date"], q["question"]),
             "context_tokens": est_tokens(history), "retrieval_ms": retrieval_ms, "raw_tokens": it["raw_tokens"],
             "n_memories": len(ctx["facts"]) + len(ctx["episodes"]),
+            # for per-question diagnosis: excerpt sessions in rank order, and the sessions holding the answer
+            "trace": {"ranked_sessions": [e["session"] for e in ctx["episodes"]],
+                      "answer_sessions": [LME.session_file(s) for s in q.get("answer_session_ids", [])],
+                      "context": history},
             "evidence": {"turns": ev["turns"], "n_turns": ev["n_turns"], "all": ev["sess_all"],
                          "session_any": ev["sess_any"], **ranking([e["text"] for e in ctx["episodes"]], evidence_turns)}
             if ev else None}
@@ -933,6 +945,8 @@ def main():
         if it.get("errata"):
             row["errata"] = it["errata"]
         row.update({k: prep[k] for k in ("context_tokens", "raw_tokens", "retrieval_ms", "n_memories", "evidence")})
+        if prep.get("trace"):
+            row["trace"] = prep["trace"]
         row["answer_prompt_tokens_est"] = est_tokens(prep["prompt"])
         if no_llm:
             return row
