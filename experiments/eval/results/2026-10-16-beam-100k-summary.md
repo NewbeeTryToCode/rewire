@@ -71,3 +71,33 @@ Retrieval accounts for 44 questions, the answer step for 32.
    excerpt and the supersede mechanism (old value `valid_to`) target exactly this.
 6. **Scale**: at 500K/1M, all-evidence drops from 44.8% to 30.5% (retrieval-only), with compression ≈72×. The
    insights above matter more at larger sizes.
+
+## Follow-up: what was implemented and measured (2026-10-16)
+
+All runs: answer `claude-cli/haiku`, judge `claude-cli/sonnet`, keyword recall, ≈12k context tokens per question.
+
+| step | change | questions | before | after | paired better / worse |
+|---|---|---|---|---|---|
+| 1–2 | excerpts capped at 1,200 chars as well as 6 turns (index schema 10), 40 excerpts | 100 (10 per category) | 37.7% (all evidence 46.6%) | **40.4%** (53.4%) | 24 / 30 |
+| 3 | `--mode full` (Haiku consolidates every session, inbox accepted) vs `episodes` | 80 (chats 1, 7, 13, 19) | 36.5% (all evidence 52.8%) | **43.0%** (59.7%) | 26 / 17 |
+
+Files: [chunks run](2026-10-16-beam-100k-s10-chunks.md) ([diagnosis](2026-10-16-beam-100k-s10-chunks-diagnosis.md)) ·
+[episodes, 4 chats](2026-10-16-beam-100k-ep-4chats.md) ([diagnosis](2026-10-16-beam-100k-ep-4chats-diagnosis.md)) ·
+[full, 4 chats](2026-10-16-beam-100k-full-4chats.md) ([diagnosis](2026-10-16-beam-100k-full-4chats-diagnosis.md)).
+
+Per category, `full` vs `episodes` (n = 8 each, so only large moves mean anything): preference following
+43.8 → 68.8%, temporal 18.8 → 37.5%, instruction following 21.9 → 34.4%, contradiction 20.3 → 32.8%,
+knowledge update 50.0 → 62.5%; abstention 75.0 → 62.5% (extracted facts tempt the answer to fill gaps, e.g.
+"It was a great success, with 12 attendees" for a detail the chat never gives); summarization and event ordering
+unchanged (18–30%). Ingest: 18 sessions, 36 facts per session, ≈71 s per session.
+
+What this says:
+- **Small excerpts trade retrieval for answer confidence.** With 40 short excerpts, Haiku more often refuses
+  ("the excerpts are fragmentary"): retrieval losses 44 → 37 questions, answer losses 32 → 40. Next: present
+  excerpts of the same session merged and in turn order, so the answer reads a conversation, not fragments.
+- **Consolidation is the larger lever** (+6.5 points): facts and preferences extracted per session reach the
+  context where raw excerpts do not. This is rewire's real mode; `episodes` understates it.
+- **Instruction following is still low with facts** (34%): in the benchmark the instruction only reaches the
+  answer through recall. In real use `prime` injects constraints and preferences at session start; the eval does
+  not yet include the `prime` snapshot in the answer context, which is the next thing to measure.
+- Summarization and event ordering need the per-session summary intent; no change here touched them.

@@ -87,3 +87,8 @@ a date on every snapshot line, a `<rewire-memory>` fence + loop guard in the tra
 2. **Verify the Codex parser** with real `~/.codex/sessions/**/rollout-*.jsonl` files (the current fixture was built from third-party documentation).
 3. **E4 dogfooding:** install on the user's machine for 2 weeks; monitor the snapshot hit rate (from `used_memory_ids` in `sessions/*.md`) and the number of inbox items per session.
 4. Consider automatically splitting combined claims during judging.
+
+## Iteration: BEAM (2026-10-16)
+
+BEAM ([ICLR 2026](https://github.com/mohammadtavakoli78/BEAM)) tests what LoCoMo does not: instruction and preference following, contradictions, event order, summaries, and scale (100K–1M tokens). Retrieval only, all 1,800 questions: all evidence in context 44.8% at 100K, 30.5% at 500K/1M. End to end on 100K (Haiku answers): the Haiku judge is unusable for BEAM (its prompt has no question, so correct bare answers score 0; 20.6% vs 37.7% with Sonnet on the same answers). Implemented: transcript excerpts capped at 1,200 characters as well as 6 turns (BEAM all-evidence 47.0 → 54.1% at the same budget, LoCoMo unchanged, Python/Rust recall identical), end to end 37.7 → 40.4%; and BEAM `--mode full`, which scores 43.0% vs 36.5% for episodes on the same 80 questions. Per-question diagnoses with the judge's reason per rubric item: [`diagnose_beam.py`](../experiments/eval/diagnose_beam.py), results in [`experiments/eval/results/2026-10-16-beam-100k-summary.md`](../experiments/eval/results/2026-10-16-beam-100k-summary.md).
+
