@@ -178,6 +178,21 @@ fn re(pattern: &'static str, cell: &'static OnceLock<Regex>) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).unwrap())
 }
 
+/// The question gathers several memories (a count, a total, an order of events), so one best match is not
+/// enough: recall widens the excerpt budget for it.
+pub fn aggregate(query: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(concat!(
+            r"(?i)\b(how many|in total|total|altogether|combined|sum of|all (the|my)|each of|how often|in what order|order of|",
+            r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer)|",
+            r"berapa (kali|banyak|total)|totalnya|semua|seluruh|mana yang .{0,40}(duluan|pertama|terakhir|paling))\b"
+        ))
+        .unwrap()
+    })
+    .is_match(query)
+}
+
 /// Explicit time in the query -> (start, end) ISO dates, e.g. "in July 2023" -> July 2023.
 pub fn time_window(query: &str) -> Option<(String, String)> {
     static ISO: OnceLock<Regex> = OnceLock::new();

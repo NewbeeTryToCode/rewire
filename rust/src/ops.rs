@@ -3,7 +3,7 @@
 use crate::brain::{err_str, is_set, out_str, Brain, Node};
 use crate::index::{Hit, Index, SearchOpts};
 use crate::util::{now_iso, relpath, short_of, take};
-use crate::{project, schema, security, skills, Error, Meta, Result};
+use crate::{project, schema, security, skills, text, Error, Meta, Result};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
@@ -35,6 +35,8 @@ pub fn resolve_id(brain: &Brain, reference: &str) -> Option<Node> {
 /// Rank fusion of extra queries (standard reciprocal-rank-fusion constant).
 const RRF_K: f64 = 60.0;
 pub const MAX_ALSO: usize = 4;
+/// Excerpt budget multiplier for counting / total / ordering questions (text::aggregate).
+pub const AGGREGATE_EPISODES: usize = 2;
 
 /// `refers_to` {from, to}: the time the question is about, resolved by the calling model ("last week",
 /// "kemarin"); it boosts notes and excerpts dated inside it (a boost, not a filter).
@@ -56,6 +58,8 @@ pub fn recall(
     also: &[String],
 ) -> Result<Vec<Hit>> {
     let window = time_range(refers_to)?;
+    // the evidence is spread over several sessions
+    let episodes = if episodes > 0 && text::aggregate(query) { episodes * AGGREGATE_EPISODES } else { episodes };
     let scopes = match scope.filter(|s| !s.is_empty()) {
         Some("all") => None,
         Some(s) => Some(vec![s.to_string()]),

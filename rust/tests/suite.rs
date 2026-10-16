@@ -1043,3 +1043,60 @@ fn plural_and_verb_forms_reach_the_base_word() {
     assert!(stems("movies").contains("movie"));
     assert_eq!(overlap("How many hikes?", "We went for a hike"), 1);
 }
+
+fn episode_texts(c: &mut Case, query: &str, episodes: usize) -> Vec<String> {
+    ops::recall(&c.brain, &mut c.index, query, 8, None, Some("all"), None, episodes, None, &[])
+        .unwrap()
+        .into_iter()
+        .filter(|h| h.type_ == "episode")
+        .map(|h| h.text)
+        .collect()
+}
+
+#[test]
+fn long_turns_are_condensed_around_the_query() {
+    let mut c = Case::new();
+    let filler: Vec<String> = (0..60).map(|i| format!("Paragraph {i} talks about the prehistoric seas.")).collect();
+    let filler = filler.join(" ");
+    let reply = format!("[2 assistant] Here is the book. {filler} The Plesiosaur has a blue scaly body and long neck. {filler}");
+    write_session(&c, "a", "-", &["[1 user] write a dinosaur book", &reply]);
+    c.index.refresh().unwrap();
+    let text = episode_texts(&mut c, "what color was the Plesiosaur", 3).join(" ");
+    assert!(text.contains("blue scaly body") && text.contains("…[condensed]") && text.chars().count() < 2500, "{text}");
+    let items: Vec<String> = (1..=100).map(|i| format!("{i}. Option {i} (e.g., value)")).collect();
+    let line = format!("[2 user] Here are the parameters: {}", items.join(" "));
+    write_session(&c, "b", "-", &["[1 user] list prompt parameters please", &line]);
+    c.index.refresh().unwrap();
+    let text = episode_texts(&mut c, "what was the 27th prompt parameter", 3).join(" ");
+    assert!(text.contains("27. Option 27"), "{text}");
+}
+
+#[test]
+fn excerpts_carry_the_sessions_opening_message() {
+    let mut c = Case::new();
+    let mut turns = vec!["[1 user] I just got back from Yosemite today, anyway about my budget spreadsheet".to_string()];
+    for n in 2..14 {
+        turns.push(format!("[{n} {}] notes on formulas and pivot tables {n}", if n % 2 == 0 { "assistant" } else { "user" }));
+    }
+    turns.push("[14 user] which national park trip should I plan next".into());
+    let refs: Vec<&str> = turns.iter().map(String::as_str).collect();
+    write_session(&c, "a", "-", &refs);
+    c.index.refresh().unwrap();
+    let texts = episode_texts(&mut c, "national park trip", 1);
+    assert!(texts[0].starts_with("[1 user] I just got back from Yosemite") && texts[0].contains("[14 user]"), "{texts:?}");
+}
+
+#[test]
+fn aggregate_questions_get_a_wider_excerpt_budget() {
+    assert!(rewire::text::aggregate("How many doctors did I visit?"));
+    assert!(rewire::text::aggregate("Which did I start first, the Ferrari or the Zero model?"));
+    assert!(rewire::text::aggregate("Berapa kali saya ke dokter bulan ini?"));
+    assert!(!rewire::text::aggregate("What degree did I graduate with?"));
+    let mut c = Case::new();
+    for i in 0..8 {
+        write_session(&c, &format!("s{i}"), "-", &[&format!("[1 user] I visited doctor number {i} about my knee")]);
+    }
+    c.index.refresh().unwrap();
+    assert_eq!(episode_texts(&mut c, "which doctor did I visit about my knee", 3).len(), 3);
+    assert_eq!(episode_texts(&mut c, "how many doctors did I visit about my knee", 3).len(), 6);
+}

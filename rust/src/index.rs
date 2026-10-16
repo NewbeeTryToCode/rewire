@@ -7,7 +7,7 @@
 
 use crate::activation::{self, FLOOR, MIN_AGE_H};
 use crate::brain::Brain;
-use crate::util::{now_ts, parse_iso, relpath, round_to, short_of, slugify};
+use crate::util::{now_ts, parse_iso, relpath, round_to, short_of, slugify, take};
 use crate::{nodefmt, semantic, text, Error, Meta, Result};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
@@ -298,6 +298,133 @@ fn trim_excerpt(query: &str, excerpt: &str) -> String {
     let keep: std::collections::BTreeSet<usize> =
         hits.iter().flat_map(|&i| i.saturating_sub(EP_CONTEXT)..=(i + EP_CONTEXT).min(lines.len() - 1)).collect();
     keep.into_iter().map(|j| lines[j]).collect::<Vec<_>>().join("\n")
+}
+
+/// Static word vectors (WordLlama) are a weak ranker: at equal weight in rank fusion, excerpts that sit mid-list
+/// in both rankings pushed out the best keyword match (LongMemEval single-session-user all evidence 100% -> 95%).
+/// At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16 results).
+const EP_SEM_WEIGHT: f64 = 0.25;
+
+/// Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
+/// line longer than LINE_CHARS is shown condensed to the sentences that best match the query, plus its opening.
+const LINE_CHARS: usize = 1500;
+/// The user's opening message states their situation, and facts are often said there in passing; an excerpt
+/// from later in the session would lose it. On LongMemEval_S, 34 of the 45 evidence turns missing from
+/// recalled sessions were turn 1. Shown condensed with every excerpt after it.
+const OPENER_CHARS: usize = 700;
+
+fn condense(query: &str, excerpt: &str) -> String {
+    excerpt
+        .lines()
+        .map(|l| if l.chars().count() > LINE_CHARS { condense_line(query, l, LINE_CHARS) } else { l.to_string() })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Sentences and list items of a turn: split after . ! ? : and before "12. " / "3) " / "- " / "* " / "• ".
+fn segments(body: &str) -> Vec<&str> {
+    static WS: OnceLock<Regex> = OnceLock::new();
+    static ITEM: OnceLock<Regex> = OnceLock::new();
+    let ws = WS.get_or_init(|| Regex::new(r"\s+").unwrap());
+    let item = ITEM.get_or_init(|| Regex::new(r"^(\d{1,2}[.)]\s|[-*•]\s)").unwrap());
+    let (mut out, mut start) = (Vec::new(), 0);
+    for m in ws.find_iter(body) {
+        let after_punct = body[..m.start()].chars().last().is_some_and(|c| ".!?:".contains(c));
+        if after_punct || item.is_match(&body[m.end()..]) {
+            out.push(&body[start..m.start()]);
+            start = m.end();
+        }
+    }
+    out.push(&body[start..]);
+    out.into_iter().filter(|s| !s.trim().is_empty()).collect()
+}
+
+fn condense_line(query: &str, line: &str, limit: usize) -> String {
+    static SPEAKER: OnceLock<Regex> = OnceLock::new();
+    static ORDINAL: OnceLock<Regex> = OnceLock::new();
+    static QUANTITY: OnceLock<Regex> = OnceLock::new();
+    let speaker = SPEAKER.get_or_init(|| Regex::new(r"^\[[^\]]*\] (?:\w+: )?").unwrap());
+    let (head, body) = match speaker.find(line) {
+        Some(m) => (&line[..m.end()], &line[m.end()..]),
+        None => ("", line),
+    };
+    if body.chars().count() <= limit {
+        return line.to_string();
+    }
+    let segs: Vec<String> = segments(body).into_iter().map(|s| take(s, limit)).collect();
+    if segs.len() < 2 {
+        return format!("{head}{} …[condensed]", take(body, limit));
+    }
+    // query words weighted by how rare they are among the segments: a word in every sentence of the reply
+    // ("marketing" in a marketing plan) says nothing about which sentence answers; "27th" also finds "27."
+    let ordinal = ORDINAL.get_or_init(|| Regex::new(r"^(\d+)(?:st|nd|rd|th)$").unwrap());
+    let mut words = text::content_words(query);
+    let numbers: Vec<String> = words.iter().filter_map(|w| ordinal.captures(w).map(|c| c[1].to_string())).collect();
+    for n in numbers {
+        if !words.contains(&n) {
+            words.push(n);
+        }
+    }
+    let n = segs.len();
+    let mut scores = vec![0.0f64; n];
+    for w in &words {
+        let hits: Vec<bool> = segs.iter().map(|s| text::overlap(w, s) > 0).collect();
+        let df = hits.iter().filter(|&&h| h).count() as f64;
+        let idf = ((n as f64 + 1.0) / (df + 0.5)).ln();
+        for (i, h) in hits.iter().enumerate() {
+            if *h {
+                scores[i] += idf;
+            }
+        }
+    }
+    let quantity = QUANTITY
+        .get_or_init(|| {
+            Regex::new(r"(?i)\bhow (much|many|long|old|far|often)\b|\bwhat (time|date|year|day|price|percentage)\b|\bwhen\b").unwrap()
+        })
+        .is_match(query);
+    for (i, s) in segs.iter().enumerate() {
+        // a numbered item asked for by its position
+        let numbered = words.iter().filter(|w| w.chars().all(|c| c.is_ascii_digit())).any(|w| {
+            s.strip_prefix(w.as_str()).is_some_and(|r| (r.starts_with('.') || r.starts_with(')')) && r[1..].starts_with(char::is_whitespace))
+        });
+        if numbered {
+            scores[i] += 5.0;
+        }
+        if quantity && s.chars().any(|c| c.is_ascii_digit()) {
+            scores[i] += 1.0; // "how much / when ...": the sentences holding numbers
+        }
+    }
+    let mut texts = vec![query.to_string()];
+    texts.extend(segs.iter().cloned());
+    if let Some(vecs) = semantic::embed(&texts) {
+        for i in 0..n {
+            scores[i] += semantic::dot(&vecs[i + 1], &vecs[0]) as f64; // words first, meaning breaks ties
+        }
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+    let len = |s: &String| s.chars().count();
+    let (mut keep, mut size) = (std::collections::BTreeSet::from([0usize]), len(&segs[0])); // the opening says what it is about
+    for i in order {
+        for j in [Some(i), i.checked_add(1), i.checked_sub(1)].into_iter().flatten() {
+            if j < n && !keep.contains(&j) && size + len(&segs[j]) <= limit {
+                keep.insert(j);
+                size += len(&segs[j]) + 1;
+            }
+        }
+        if size as f64 >= limit as f64 * 0.9 {
+            break;
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut prev: Option<usize> = None;
+    for &j in &keep {
+        let gap = prev.map_or(j != 0, |p| j != p + 1);
+        out.push(if gap { format!("… {}", segs[j]) } else { segs[j].clone() });
+        prev = Some(j);
+    }
+    let cut = prev != Some(n - 1) || keep.len() < n;
+    format!("{head}{}{}", out.join(" "), if cut { " …[condensed]" } else { "" })
 }
 
 fn turn_re() -> &'static Regex {
@@ -1151,7 +1278,7 @@ impl Index {
             }
         }
         for (rank, rid) in self.semantic_episode_ranks(query, scopes, limit)?.into_iter().enumerate() {
-            *fused.entry(rid).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
+            *fused.entry(rid).or_insert(0.0) += EP_SEM_WEIGHT / (RRF_K + rank as f64 + 1.0);
         }
         let scale = fused.values().cloned().fold(f64::NEG_INFINITY, f64::max);
         let scale = if scale.is_finite() { scale } else { 1.0 / (RRF_K + 1.0) }; // bonus relative to the best match
@@ -1204,11 +1331,21 @@ impl Index {
             }
         }
         let mut merged = merge_excerpts(&order.iter().map(|(rid, _)| *rid).collect::<Vec<_>>(), &rows);
+        let mut opened: HashSet<String> = HashSet::new();
         for (pos, (rid, text)) in merged.iter_mut().enumerate() {
             let first = rows.get(rid).map(|r| r.3).unwrap_or(0);
             if pos >= EP_WHOLE && first != 0 && !seeded.contains_key(rid) {
                 *text = trim_excerpt(query, text);
             }
+            *text = condense(query, text);
+            let path = rows.get(rid).map(|r| r.0.clone()).unwrap_or_default();
+            if first > 1 && !opened.contains(&path) {
+                // the session's opening user message, once per session
+                if let Some(opener) = self.opener(&path)? {
+                    *text = format!("{}\n{}", condense_line(query, &opener, OPENER_CHARS), text);
+                }
+            }
+            opened.insert(path);
         }
         let mut out: Vec<Hit> = merged
             .into_iter()
@@ -1235,6 +1372,15 @@ impl Index {
             first.summary = bookend;
         }
         Ok(out)
+    }
+
+    /// The first line of a session's first excerpt when it is the user's opening message.
+    fn opener(&mut self, path: &str) -> Result<Option<String>> {
+        let db = self.db()?;
+        let text: Option<String> = db
+            .query_row("SELECT text FROM episodes WHERE path = ? AND first = 1 ORDER BY rowid LIMIT 1", [path], |r| r.get(0))
+            .optional()?;
+        Ok(text.map(|t| t.split('\n').next().unwrap_or("").to_string()).filter(|l| l.starts_with("[1 user]")))
     }
 
     /// Episode rowid -> bonus, for the excerpts the seed memories were extracted from.

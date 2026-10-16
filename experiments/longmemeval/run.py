@@ -123,12 +123,12 @@ def ingest_full(q: dict, root: str) -> None:
 
 # ---- recall + retrieval metric -----------------------------------------
 
-def recall(q: dict, root: str, k: int, episodes: int) -> dict:
+def recall(q: dict, root: str, k: int, episodes: int, also: list[str] | None = None) -> dict:
     brain = Brain(root)
     index = Index(brain)
     index.refresh()
     facts, eps = [], []
-    for h in ops.recall(brain, index, q["question"], k=k, scope="all", episodes=episodes):
+    for h in ops.recall(brain, index, q["question"], k=k, scope="all", episodes=episodes, also=also):
         if h["type"] == "episode":
             eps.append({"session": os.path.basename(h["session"]), "date": h["date"], "text": h["text"]})
         else:

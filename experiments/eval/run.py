@@ -451,7 +451,7 @@ def lme_prepare(it: dict, args, provider) -> dict:
         index.refresh()
         index.close()
         start = time.time()
-        ctx = LME.recall(q, root, args.k, args.episodes)
+        ctx = LME.recall(q, root, args.k, args.episodes, also=it.get("also"))
         retrieval_ms = (time.time() - start) * 1000
     finally:
         _now.at = None
@@ -891,7 +891,7 @@ def main():
     ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
     ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
-    ap.add_argument("--expand-model", help="LoCoMo: this model writes up to 4 extra queries per question, passed to "
+    ap.add_argument("--expand-model", help="LoCoMo and LongMemEval: this model writes up to 4 extra queries per question, passed to "
                     "recall as `also` (what an agent calling rewire over MCP does)")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
@@ -917,7 +917,8 @@ def main():
 
     no_llm = args.retrieval_only or args.dry_run
     ledger = Ledger(args.max_cost)
-    client = None if no_llm else Client(ledger, reasoning_effort=args.reasoning_effort)
+    # --retrieval-only still calls --expand-model: the extra queries are part of recall, not of answering
+    client = None if no_llm and not args.expand_model else Client(ledger, reasoning_effort=args.reasoning_effort)
     args.answer_model, args.judge_model, args.ingest_model = (
         normalize_model(m) for m in (args.answer_model, args.judge_model, args.ingest_model))
     if args.expand_model:
