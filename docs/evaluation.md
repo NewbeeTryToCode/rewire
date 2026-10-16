@@ -122,6 +122,22 @@ is the same (§6).
 | Agent Zero Memory | 95.6% | Agent Zero Memory paper (2026) |
 | **rewire** (`episodes`, no extraction) | **85.4%** (10 excerpts); ≈89.8% (20 excerpts) | Iteration 8; answerer + judge Claude via `claude -p`, official prompts |
 
+### BEAM (mean rubric score, 0–100)
+
+Collected 2026-10-16 from vendor pages and search summaries (the pages themselves were not reachable from the
+eval environment); not re-run here. Answer and judge models mostly unpublished, so not comparable with each other.
+
+| System | 100K | 500K | 1M | 10M | Source, notes |
+|---|---|---|---|---|---|
+| RAG baseline (BEAM paper) | 32.3 | 33.0 | 30.7 | 24.9 | paper, Llama-4-Maverick |
+| LIGHT (BEAM paper) | 35.8 | 35.9 | 33.6 | 26.6 | paper, Llama-4-Maverick |
+| Honcho | 63.0 | 64.9 | 63.1 | 40.6 | as listed by Hindsight (vendor) |
+| Mem0 platform | – | – | 64.1 | 48.6 | vendor report, GPT-5 answerer and judge per the Mem0 benchmarks repo |
+| Hindsight | 73.4 (86.2 in another listing) | 71.1 (80.1) | 73.9 (79.1) | 64.1 | vendor report |
+| Cognee | "SOTA + 6.5%" | – | – | – | vendor report |
+| **rewire** `episodes` | **37.7–40.4** | – | – | – | 100 questions; answerer Haiku, judge Sonnet |
+| **rewire** `full` | **43.0** | – | – | – | 80 questions (4 chats); answerer Haiku, judge Sonnet |
+
 rewire retrieval (no LLM, LongMemEval_S, 470 non-abstention questions): evidence session found 97.0%, all
 evidence sessions 87.9%, mean context ≈11.2k tokens out of ≈115k.
 
