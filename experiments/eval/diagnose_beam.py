@@ -176,7 +176,7 @@ def main():
     args = ap.parse_args()
     rows = json.load(open(args.results))["rows"]
     cache = RUN.Cache(os.path.join(os.path.dirname(os.path.abspath(args.results)), "cache", "llm.jsonl"))
-    by_qid = {it["qid"]: it for it in RUN.beam_items(SimpleNamespace(data=args.chats, beam_sizes=args.sizes))}
+    by_qid = {it["qid"]: it for it in RUN.beam_items(SimpleNamespace(data=args.chats, beam_sizes=args.sizes, convs="all"))}
 
     out, counts, scores = [], defaultdict(Counter), defaultdict(list)
     for row in rows:
