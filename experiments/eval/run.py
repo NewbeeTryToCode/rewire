@@ -984,9 +984,9 @@ def main():
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
     ap.add_argument("--expand-model", help="this model writes up to 4 extra queries per question, passed to "
                     "recall as `also` (what an agent calling rewire over MCP does)")
-    ap.add_argument("--expand-when", choices=["all", "gather", "model"], default="all",
+    ap.add_argument("--expand-when", choices=["all", "gather", "model", "union"], default="all",
                     help="gather: extra queries only for counting, total, ordering and time questions (a rule); "
-                         "model: the expansion model decides, and may write none")
+                         "model: the expansion model decides, and may write none; union: the model or the rule")
     ap.add_argument("--excerpt-order", choices=["rank", "chrono"], default="rank",
                     help="BEAM and PersonaMem: excerpts best match first, or oldest first")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
@@ -1046,13 +1046,22 @@ def main():
         sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
 
     def run_one(it: dict) -> dict:
-        if args.expand_model and (args.expand_when in ("all", "model") or wants_expansion(it["question"])):
-            # the calling model writes extra queries (recall `also`), from the question only; with "model" it may
-            # also decide that none are needed
-            prompt = expand_prompt(it["question"], gated=args.expand_when == "model")
+        def expansion(gated: bool) -> list[str]:
+            prompt = expand_prompt(it["question"], gated=gated)
             if client is None and not cache.get(Cache.key("expand", args.expand_model, prompt)):
                 raise SystemExit("--retrieval-only with --expand-model needs the expansions cached by an LLM run")
-            it["also"] = expand_queries(ask(client, cache, "expand", args.expand_model, prompt, 1000)["text"])
+            return expand_queries(ask(client, cache, "expand", args.expand_model, prompt, 1000)["text"])
+
+        # the calling model writes extra queries (recall `also`), from the question only: for every question (all),
+        # when a rule says the question gathers or hinges on time (gather), when the model itself decides (model),
+        # or when either does (union)
+        if args.expand_model:
+            if args.expand_when in ("all", "gather") and (args.expand_when == "all" or wants_expansion(it["question"])):
+                it["also"] = expansion(gated=False)
+            elif args.expand_when in ("model", "union"):
+                it["also"] = expansion(gated=True)
+                if not it["also"] and args.expand_when == "union" and wants_expansion(it["question"]):
+                    it["also"] = expansion(gated=False)
         prep = bench["prepare"](it, args, provider)
         row = {k: it[k] for k in ("bench", "qid", "category", "question", "gold", "abstention")}
         if it.get("errata"):
