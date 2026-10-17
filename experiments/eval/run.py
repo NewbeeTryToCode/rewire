@@ -361,9 +361,16 @@ TIME_QUESTION = re.compile(r"(?i)\b(when|how long|ago|before|after|since|until|e
                            r"what (date|day|time|year|month))\b")
 
 
+# Only questions: PersonaMem "questions" are often the user's statements ("During my trip last weekend, I ..."),
+# whose time words are narrative; expanding them hurt 3 of 3 (2026-10-17 A/B, variant C).
+QUESTION_FORM = re.compile(r"\?\s*$|^\s*(how|what|when|which|who|where|why|did|do|does|is|are|was|were|can|could|have|has)\b",
+                           re.I)
+
+
 def wants_expansion(question: str) -> bool:
     from rewire import text as rewire_text
-    return rewire_text.aggregate(question) or bool(TIME_QUESTION.search(question))
+    q = question.strip()
+    return bool(QUESTION_FORM.search(q)) and (rewire_text.aggregate(q) or bool(TIME_QUESTION.search(q)))
 
 
 def expand_prompt(question: str) -> str:

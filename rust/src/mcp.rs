@@ -16,7 +16,7 @@ pub const QUERY_GUIDE: &str = "Write the query as keywords, not a sentence: the 
 
 pub const REFERS_TO_GUIDE: &str = "When the question is about a time ('last week', 'in March', 'kemarin'), resolve it to ISO dates {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}; when a word is ambiguous, cover both readings. Notes and excerpts from that period rank higher (nothing is filtered out).";
 
-pub const ALSO_GUIDE: &str = "Up to 4 extra keyword queries (3-8 words each), searched too and merged by rank. Add them when the answer is spread over several memories or hinges on time: counts, totals, lists, orderings, 'when' / 'how long ago' questions. Write what those messages would say: specific instances of a category ('kitchen appliance' -> 'smoker grill air fryer') and one query per counted item ('how many doctors' -> 'dermatologist appointment', 'ENT specialist visit'). Leave them out for preference, advice or recommendation questions: broad extra queries pull in the user's older preferences.";
+pub const ALSO_GUIDE: &str = "Up to 4 extra keyword queries (3-8 words each), searched too and merged by rank. Add them when the answer is spread over several memories or hinges on time: counts, totals, lists, orderings, 'when' / 'how long ago' questions. Write what those messages would say: specific instances of a category ('kitchen appliance' -> 'smoker grill air fryer') and one query per counted item ('how many doctors' -> 'dermatologist appointment', 'ENT specialist visit'). Leave them out for preference, advice or recommendation questions: broad extra queries pull in the user's older preferences. A time mentioned in passing ('on my trip last weekend, I ...') is not a time question.";
 
 pub fn tools() -> Value {
     json!([
