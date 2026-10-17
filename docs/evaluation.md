@@ -41,7 +41,7 @@ Data sources:
   100K/500K/1M = 20/35/35 chats with 400/700/700 questions (20 per chat, 10 categories), chat sizes ≈146k / 538k /
   1.09M tokens (median), matching the paper; the official `download_dataset.py` script converts the Hugging Face data to the
   same format. A byte comparison with the Hugging Face copy has not been done yet (HF is blocked).
-- PersonaMem: Hugging Face `bowen-upenn/PersonaMem`, copied to GCS (`bucket_for_claude`):
+- PersonaMem: Hugging Face `bowen-upenn/PersonaMem-v1` (the old name `bowen-upenn/PersonaMem` redirects there; earlier copied to GCS, `bucket_for_claude`):
   `questions_32k.csv`, `shared_contexts_32k.jsonl`, `questions_1M.csv`, `shared_contexts_1M.jsonl`.
   Validated: 32k = 589 questions, 37 shared contexts, ≈27k tokens per context; 1M = 2,674 questions, 33 contexts,
   ≈925k tokens per context (median); 15 columns as described in the README, every context reference exists, and the answer keys
@@ -290,6 +290,10 @@ MRR 0.857, context precision 25.0%, context ≈8.8k tokens (13.8× smaller), ret
 **LongMemEval_S, 470 non-abstention questions (iteration 8):** evidence session found 97.0%, all evidence sessions 87.9%,
 context ≈11.2k tokens out of ≈115k (≈10× smaller). A 120-question sample after merging: same evidence, context
 11,090 → 9,780 tokens, MRR 0.71 → 0.79.
+
+**PersonaMem, end to end (2026-10-17, Haiku 5.5, multiple choice):** 32k all 589: 59.3%; 128k and 1M, 20 per type:
+55.7% and 51.4%, at ≈11k context tokens (compression 3× / 15× / 99×). Weak on `suggest_new_ideas` (20–26%) and
+`generalizing_to_new_scenarios` (30–46%). `experiments/eval/results/2026-10-17-personamem-haiku55.md`.
 
 **PersonaMem (dry run):** 32k, all 589 questions: context ≈12.6k tokens, compression 2.8× (the histories are short),
 estimated $1.30 with GPT-4o-mini. 1M, 140 questions (20 per type): context ≈12.7k tokens out of ≈925k
