@@ -35,7 +35,8 @@ ALSO_GUIDE = (
     "'how long ago' questions. Write what those messages would say: specific instances of a category "
     "('kitchen appliance' -> 'smoker grill air fryer') and one query per counted item ('how many doctors' "
     "-> 'dermatologist appointment', 'ENT specialist visit'). Leave them out for preference, advice or "
-    "recommendation questions: broad extra queries pull in the user's older preferences."
+    "recommendation questions: broad extra queries pull in the user's older preferences. A time mentioned in "
+    "passing ('on my trip last weekend, I ...') is not a time question."
 )
 
 TOOLS = [
