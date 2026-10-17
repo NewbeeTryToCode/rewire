@@ -17,6 +17,17 @@ from datetime import datetime, timezone
 from . import activation, nodefmt, semantic, text
 from .util import parse_iso
 
+
+def _top(sims, n: int | None):
+    """Indices by descending similarity (ties: higher index first, as argsort()[::-1] gives). With n, only the top n:
+    a partial selection instead of sorting every vector (about 100 ms saved at 10^6 vectors)."""
+    import numpy as np
+
+    if n is None or n >= len(sims):
+        return sims.argsort()[::-1]
+    part = np.argpartition(-sims, n - 1)[:n]
+    return sorted(part.tolist(), key=lambda i: (-sims[i], -i))
+
 SCHEMA = "9"
 # How much activation flows along each relation during recall (spreading activation).
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
@@ -347,8 +358,8 @@ class Index:
                                if rows else None)
             rids, ep_scopes, mat = self._epmat
             if mat is not None:
-                sims = mat @ semantic.embed([query])[0]
-                sem = [rids[i] for i in sims.argsort()[::-1] if not scopes or ep_scopes[i] in scopes][:limit]
+                sims = mat @ semantic.embed_query([query])[0]
+                sem = [rids[i] for i in _top(sims, None if scopes else limit) if not scopes or ep_scopes[i] in scopes][:limit]
         fused: dict[int, float] = {}
         for ranks, weight in ((fts, 1.0), (sem, self.EP_SEM_WEIGHT)):
             for rank, rid in enumerate(ranks):
@@ -366,7 +377,12 @@ class Index:
             for rid, r in rows.items():
                 if window[0] <= (r["date"] or "")[:10] <= window[1]:
                     fused[rid] += 1.0 / self.RRF_K
-        best = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))[:k]
+        order = sorted(fused, key=lambda x: (-fused[x], rows[x]["path"], rows[x]["first"]) if x in rows else (0, "", 0))
+        best = order[:k]
+        pool = order[:max(k, semantic.RERANK_POOL)]
+        scores = semantic.rerank(query, [rows[rid]["text"] for rid in pool]) if semantic.RERANK else None
+        if scores:  # experimental: a cross-encoder reorders the fused candidates (REWIRE_RERANK)
+            best = [rid for _, _, rid in sorted(zip(scores, range(len(pool)), pool), key=lambda t: (-t[0], t[1]))][:k]
         best, texts = self._merge(best, rows)
         opened = set()
         for pos, rid in enumerate(best):
@@ -633,9 +649,9 @@ class Index:
         ids, node_scopes, mat = self._matrix()
         if mat is None:
             return []
-        qv = semantic.embed([query])[0]
+        qv = semantic.embed_query([query])[0]
         sims = mat @ qv
-        order = sims.argsort()[::-1]
+        order = _top(sims, None if scopes else limit)
         allowed = set(scopes) if scopes else None
         out = []
         for i in order:
