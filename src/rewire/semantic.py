@@ -107,6 +107,8 @@ def _normalise(raw):
 # Experimental cross-encoder reranking of excerpt candidates for A/B runs (REWIRE_RERANK=<fastembed model>).
 RERANK = os.environ.get("REWIRE_RERANK", "")
 RERANK_POOL = int(os.environ.get("REWIRE_RERANK_POOL", "30"))
+RERANK_CHARS = int(os.environ.get("REWIRE_RERANK_CHARS", "0"))  # 0: whole text (the model truncates at 512 tokens)
+RERANK_BLEND = os.environ.get("REWIRE_RERANK_BLEND", "") == "1"  # fuse the reranker's order with recall's by rank
 
 
 @lru_cache(maxsize=1)
@@ -125,4 +127,6 @@ def rerank(query: str, texts: list[str]) -> list[float] | None:
     r = _reranker()
     if r is None or not texts:
         return None
+    if RERANK_CHARS:
+        texts = [t[:RERANK_CHARS] for t in texts]
     return [float(x) for x in r.rerank(query, texts)]

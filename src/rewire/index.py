@@ -382,7 +382,13 @@ class Index:
         pool = order[:max(k, semantic.RERANK_POOL)]
         scores = semantic.rerank(query, [rows[rid]["text"] for rid in pool]) if semantic.RERANK else None
         if scores:  # experimental: a cross-encoder reorders the fused candidates (REWIRE_RERANK)
-            best = [rid for _, _, rid in sorted(zip(scores, range(len(pool)), pool), key=lambda t: (-t[0], t[1]))][:k]
+            ce_rank = {rid: r for r, (_, _, rid) in enumerate(sorted(zip(scores, range(len(pool)), pool),
+                                                                      key=lambda t: (-t[0], t[1])))}
+            if semantic.RERANK_BLEND:  # recall's order and the reranker's, fused by rank
+                key = {rid: 1 / (self.RRF_K + i + 1) + 1 / (self.RRF_K + ce_rank[rid] + 1) for i, rid in enumerate(pool)}
+                best = sorted(pool, key=lambda rid: (-key[rid], pool.index(rid)))[:k]
+            else:
+                best = sorted(pool, key=lambda rid: ce_rank[rid])[:k]
         best, texts = self._merge(best, rows)
         opened = set()
         for pos, rid in enumerate(best):
