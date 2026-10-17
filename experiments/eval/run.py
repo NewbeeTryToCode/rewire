@@ -29,6 +29,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -177,6 +178,47 @@ def frozen_now(root: str) -> datetime:
 
 
 rewire_index.datetime = rewire_activation.datetime = _Clock
+
+
+# ---- Rust engine ---------------------------------------------------------
+# --engine rust: recall runs in the Rust binary (`rewire recall --json`) on the same brain files. Python only writes
+# the sessions; it builds no index of its own (both would use .index/brain.db).
+
+RUST_BIN = os.path.join(ROOT, "rust", "target", "release", "rewire")
+
+
+def rust_recall(brain, index, query: str, k: int = 8, cwd=None, scope=None, beta=None, episodes: int = 0,
+                refers_to=None, also=None) -> list[dict]:
+    argv = [RUST_BIN, "--brain", brain.root, "recall", "--json", "-k", str(k), "--episodes", str(episodes),
+            "--scope", scope or "all", *[a for q in (also or []) for a in ("--also", q)], "--", query]
+    out = subprocess.run(argv, capture_output=True, text=True)
+    if out.returncode:
+        raise RuntimeError(f"rust recall failed: {out.stderr.strip()[:300]}")
+    return json.loads(out.stdout)
+
+
+class RustIndex:
+    """Stands in for rewire.index.Index under --engine rust."""
+
+    def __init__(self, brain):
+        self.brain = brain
+
+    def refresh(self, max_age=None):  # builds or updates the Rust index, outside the timed recall
+        rust_recall(self.brain, self, "index warm up", k=1, episodes=1)
+
+    def rows(self, *args):
+        return []
+
+    def close(self):
+        pass
+
+
+def use_rust_engine() -> None:
+    global Index
+    if not os.access(RUST_BIN, os.X_OK):
+        raise SystemExit(f"--engine rust needs {RUST_BIN} (cargo build --release in rust/)")
+    Index = LME.Index = LOCOMO.Index = RustIndex
+    ops.recall = rust_recall  # LoCoMo and LongMemEval harnesses call rewire.ops.recall
 
 
 # ---- LoCoMo --------------------------------------------------------------
@@ -373,7 +415,25 @@ def wants_expansion(question: str) -> bool:
     return bool(QUESTION_FORM.search(q)) and (rewire_text.aggregate(q) or bool(TIME_QUESTION.search(q)))
 
 
-def expand_prompt(question: str) -> str:
+GATED_EXPAND_PROMPT = """You search a person's long chat history with a keyword search engine (BM25: it matches words, not meanings).
+Question: {question}
+
+First decide whether extra queries would help. They help when the answer is spread over several messages or hinges
+on when things happened: counts, totals, lists of things, comparisons, the order of events, "when" or "how long ago"
+questions, and questions naming a category ("activities", "books", "places") whose answer names specific instances.
+They do not help, and pull in stale or off-topic messages, when the question asks for one specific fact that its own
+words will find, asks for advice, a recommendation or an opinion, or is not a question but the person telling something.
+
+If they would not help, reply {"queries": []}. Otherwise write 4 short keyword queries (3-8 words each) with the
+specific words the answering messages are likely to contain: likely instances, synonyms, and related verbs, one query
+per item when several things are counted. Keep the person's name out unless it is needed.
+
+Reply with one line of JSON and nothing else: {"queries": [...]}"""
+
+
+def expand_prompt(question: str, gated: bool = False) -> str:
+    if gated:  # the model decides whether the question needs extra queries at all
+        return GATED_EXPAND_PROMPT.replace("{question}", question)
     return EXPAND_PROMPT.replace("{question}", question)
 
 
@@ -924,8 +984,9 @@ def main():
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
     ap.add_argument("--expand-model", help="this model writes up to 4 extra queries per question, passed to "
                     "recall as `also` (what an agent calling rewire over MCP does)")
-    ap.add_argument("--expand-when", choices=["all", "gather"], default="all",
-                    help="gather: extra queries only for counting, total, ordering and time questions")
+    ap.add_argument("--expand-when", choices=["all", "gather", "model"], default="all",
+                    help="gather: extra queries only for counting, total, ordering and time questions (a rule); "
+                         "model: the expansion model decides, and may write none")
     ap.add_argument("--excerpt-order", choices=["rank", "chrono"], default="rank",
                     help="BEAM and PersonaMem: excerpts best match first, or oldest first")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
@@ -947,8 +1008,12 @@ def main():
     ap.add_argument("--est-judge-out", type=int, default=60, help="dry-run: expected judge completion tokens")
     ap.add_argument("--price", action="append", default=[], metavar="MODEL=IN,OUT",
                     help="USD per 1M tokens for the dry-run when the catalog is unreachable")
+    ap.add_argument("--engine", choices=["python", "rust"], default="python",
+                    help="rust: recall through the Rust binary (rust/target/release/rewire); latency includes process start")
     ap.add_argument("--label", default="run")
     args = ap.parse_args()
+    if args.engine == "rust":
+        use_rust_engine()
 
     no_llm = args.retrieval_only or args.dry_run
     ledger = Ledger(args.max_cost)
@@ -981,12 +1046,13 @@ def main():
         sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
 
     def run_one(it: dict) -> dict:
-        if args.expand_model and (args.expand_when == "all" or wants_expansion(it["question"])):
-            # the calling model writes extra queries (recall `also`), from the question only
-            if client is None and not cache.get(Cache.key("expand", args.expand_model, expand_prompt(it["question"]))):
+        if args.expand_model and (args.expand_when in ("all", "model") or wants_expansion(it["question"])):
+            # the calling model writes extra queries (recall `also`), from the question only; with "model" it may
+            # also decide that none are needed
+            prompt = expand_prompt(it["question"], gated=args.expand_when == "model")
+            if client is None and not cache.get(Cache.key("expand", args.expand_model, prompt)):
                 raise SystemExit("--retrieval-only with --expand-model needs the expansions cached by an LLM run")
-            it["also"] = expand_queries(ask(client, cache, "expand", args.expand_model, expand_prompt(it["question"]),
-                                            1000)["text"])
+            it["also"] = expand_queries(ask(client, cache, "expand", args.expand_model, prompt, 1000)["text"])
         prep = bench["prepare"](it, args, provider)
         row = {k: it[k] for k in ("bench", "qid", "category", "question", "gold", "abstention")}
         if it.get("errata"):
