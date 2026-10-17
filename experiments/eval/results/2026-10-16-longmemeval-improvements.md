@@ -11,7 +11,7 @@ Reports: `2026-10-16-longmemeval-haiku55-A-improved.md` (A) and `2026-10-16-long
 | 1 | Semantic search on (`pip install -e '.[semantic]'`, WordLlama ships in the wheel), episode rank fusion weight **0.25** | the run used BM25 only; at weight 1.0 the static vectors pushed the best keyword match out of the top 10 (single-session-user all evidence 100% -> 95%) |
 | 2 | Transcripts keep long assistant turns **whole**; recall condenses a line over 1,500 chars to the sentences that best match the query (rare words weighted, "27th" finds item "27.", numbers favoured for "how much / when") | the 1,500-char cut at write time destroyed the answer for good ("blue scaly body", 27th list item) |
 | 3 | Every excerpt from later in a session carries the session's **opening user message** (condensed to 700 chars) | 34 of the 45 evidence turns missing from *recalled* sessions were turn 1 |
-| 4 | **Twice the excerpt budget** for counting / total / ordering questions (`text.aggregate`, English and Indonesian) | 32 missing evidence sessions ranked 11-20, mostly multi-session counting |
+| 4 | **Twice the excerpt budget** for counting / total / ordering questions (`text.aggregate`) | 32 missing evidence sessions ranked 11-20, mostly multi-session counting |
 | 5 | (config B only) **query expansion**: Haiku 5.5 writes 4 keyword queries, fused by rank (`also`, already in rewire; now wired for LongMemEval) | category vs instance vocabulary ("kitchen appliance" vs "smoker") |
 | - | Tried and dropped: semantic line choice in `_trim` (+0.1 point evidence for +200 tokens) | |
 

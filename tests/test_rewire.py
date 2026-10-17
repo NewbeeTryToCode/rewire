@@ -817,7 +817,6 @@ class TestTimeAndHistory(BrainCase):
         from rewire import text as text_mod
         self.assertTrue(text_mod.aggregate("How many doctors did I visit?"))
         self.assertTrue(text_mod.aggregate("Which did I start first, the Ferrari or the Zero model?"))
-        self.assertTrue(text_mod.aggregate("Berapa kali saya ke dokter bulan ini?"))
         self.assertFalse(text_mod.aggregate("What degree did I graduate with?"))
         for i in range(8):
             self.write_session(f"s{i}", "-", [f"[1 user] I visited doctor number {i} about my knee"])

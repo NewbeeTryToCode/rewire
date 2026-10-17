@@ -1090,7 +1090,6 @@ fn excerpts_carry_the_sessions_opening_message() {
 fn aggregate_questions_get_a_wider_excerpt_budget() {
     assert!(rewire::text::aggregate("How many doctors did I visit?"));
     assert!(rewire::text::aggregate("Which did I start first, the Ferrari or the Zero model?"));
-    assert!(rewire::text::aggregate("Berapa kali saya ke dokter bulan ini?"));
     assert!(!rewire::text::aggregate("What degree did I graduate with?"));
     let mut c = Case::new();
     for i in 0..8 {

@@ -185,8 +185,7 @@ pub fn aggregate(query: &str) -> bool {
     R.get_or_init(|| {
         Regex::new(concat!(
             r"(?i)\b(how many|in total|total|altogether|combined|sum of|all (the|my)|each of|how often|in what order|order of|",
-            r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer)|",
-            r"berapa (kali|banyak|total)|totalnya|semua|seluruh|mana yang .{0,40}(duluan|pertama|terakhir|paling))\b"
+            r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer))\b"
         ))
         .unwrap()
     })

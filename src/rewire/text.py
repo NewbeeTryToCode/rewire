@@ -109,8 +109,7 @@ _HISTORY = re.compile(r"\b(used to|previously|originally|formerly|at first|first
 
 AGGREGATE = re.compile(
     r"\b(how many|in total|total|altogether|combined|sum of|all (the|my)|each of|how often|in what order|order of|"
-    r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer)|"
-    r"berapa (kali|banyak|total)|totalnya|semua|seluruh|mana yang .{0,40}(duluan|pertama|terakhir|paling))\b", re.I)
+    r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer))\b", re.I)
 
 
 def aggregate(query: str) -> bool:
