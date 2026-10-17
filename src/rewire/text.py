@@ -7,6 +7,7 @@ experiments/retrieval.
 """
 
 import re
+from bisect import bisect_left
 from functools import lru_cache
 
 STOPWORDS = set("""
@@ -81,13 +82,26 @@ def _alts(word: str) -> frozenset[str]:
     return frozenset(stems(word) | {word})
 
 
-def tokens(doc: str) -> set[str]:
-    return set(re.findall(r"\w+", doc.lower()))
+class Tokens(frozenset):
+    """A document's distinct lowercase words, kept sorted too so a prefix is found by binary search."""
+
+    def __new__(cls, words):
+        self = super().__new__(cls, words)
+        self.ordered = sorted(self)
+        return self
+
+    def has_prefix(self, prefix: str) -> bool:
+        i = bisect_left(self.ordered, prefix)
+        return i < len(self.ordered) and self.ordered[i].startswith(prefix)
 
 
-def matches(word: str, toks: set[str]) -> bool:
+def tokens(doc: str) -> Tokens:
+    return Tokens(re.findall(r"\w+", doc.lower()))
+
+
+def matches(word: str, toks: Tokens) -> bool:
     """A content word is in a document's tokens, as itself or a stem (4+ letters match as prefixes)."""
-    return word in toks or any(t == s or (len(s) >= 4 and t.startswith(s)) for s in _alts(word) for t in toks)
+    return word in toks or any(s in toks or (len(s) >= 4 and toks.has_prefix(s)) for s in _alts(word))
 
 
 def overlap(query: str, doc: str) -> int:
