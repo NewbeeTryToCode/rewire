@@ -508,7 +508,8 @@ def _write_sessions(root: str, harness: str, sessions: list[tuple[str, str, list
     open(done, "w").close()
 
 
-def recall_context(root: str, query: str, k: int, episodes: int, keep=None) -> tuple[str, list[str], float]:
+def recall_context(root: str, query: str, k: int, episodes: int, keep=None,
+                   also: list[str] | None = None) -> tuple[str, list[str], float]:
     """rewire recall -> (context text, ranked excerpt texts, ms). `keep(excerpt_line)` drops lines (e.g. the future)."""
     brain = Brain(root)
     index = Index(brain)
@@ -517,7 +518,7 @@ def recall_context(root: str, query: str, k: int, episodes: int, keep=None) -> t
     with lock:  # questions on the same history: one builds the index, the others wait ("database is locked")
         index.refresh()
     start = time.time()
-    hits = ops.recall(brain, index, query, k=k, scope="all", episodes=episodes)
+    hits = ops.recall(brain, index, query, k=k, scope="all", episodes=episodes, also=also)
     ms = (time.time() - start) * 1000
     facts, ranked = [], []
     for h in hits:
@@ -591,7 +592,7 @@ def beam_prepare(it: dict, args, provider) -> dict:
     batches = beam_messages(it["chat_dir"])
     name = f"beam-{it['size']}-{os.path.basename(it['chat_dir'])}"
     write_sessions(root, "beam", [(f"{name}-b{i + 1}", date or "2024-01-01", turns) for i, (date, turns) in enumerate(batches)])
-    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes)
+    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, also=it.get("also"))
     by_id = {t["n"]: t["text"] for _, turns in batches for t in turns}
     evidence = [by_id[i] for i in it["evidence_ids"] if i in by_id]
     text = norm(" ".join(ranked))
@@ -657,7 +658,7 @@ def personamem_prepare(it: dict, args, provider) -> dict:
         m = re.match(r"\[(\d+) ", line)
         return bool(m) and int(m.group(1)) < it["end"]
 
-    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, keep=before)
+    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, keep=before, also=it.get("also"))
     prompt = (f"{context}\n\n{it['question']}\n\n{PERSONAMEM_INSTRUCTIONS}\n\n{it['options']}")
     return {"prompt": prompt, "context_tokens": est_tokens(context), "retrieval_ms": ms, "n_memories": len(ranked),
             "raw_tokens": est_tokens(" ".join(t["text"] for t in turns[:it["end"]])), "evidence": None}
@@ -894,7 +895,7 @@ def main():
     ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
     ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
-    ap.add_argument("--expand-model", help="LoCoMo and LongMemEval: this model writes up to 4 extra queries per question, passed to "
+    ap.add_argument("--expand-model", help="this model writes up to 4 extra queries per question, passed to "
                     "recall as `also` (what an agent calling rewire over MCP does)")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
