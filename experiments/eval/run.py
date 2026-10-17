@@ -354,6 +354,18 @@ to contain: likely instances, synonyms, and related verbs. Keep the person's nam
 Reply with one line of JSON and nothing else: {"queries": ["...", "...", "...", "..."]}"""
 
 
+# Questions whose evidence is spread over several memories or that hinge on when things happened: extra queries
+# brought their evidence (LongMemEval all evidence 91% -> 98%) but hurt preference and advice questions in every
+# sampled benchmark (2026-10-17-ab-four-benchmarks.md).
+TIME_QUESTION = re.compile(r"(?i)\b(when|how long|ago|before|after|since|until|earliest|latest|first|last|most recent|"
+                           r"what (date|day|time|year|month))\b")
+
+
+def wants_expansion(question: str) -> bool:
+    from rewire import text as rewire_text
+    return rewire_text.aggregate(question) or bool(TIME_QUESTION.search(question))
+
+
 def expand_prompt(question: str) -> str:
     return EXPAND_PROMPT.replace("{question}", question)
 
@@ -508,9 +520,11 @@ def _write_sessions(root: str, harness: str, sessions: list[tuple[str, str, list
     open(done, "w").close()
 
 
-def recall_context(root: str, query: str, k: int, episodes: int, keep=None,
-                   also: list[str] | None = None) -> tuple[str, list[str], float]:
-    """rewire recall -> (context text, ranked excerpt texts, ms). `keep(excerpt_line)` drops lines (e.g. the future)."""
+def recall_context(root: str, query: str, k: int, episodes: int, keep=None, also: list[str] | None = None,
+                   order: str = "rank") -> tuple[str, list[str], float]:
+    """rewire recall -> (context text, ranked excerpt texts, ms). `keep(excerpt_line)` drops lines (e.g. the future).
+    `order` "chrono" shows the excerpts oldest first (date, then turn) instead of best match first; the returned
+    list stays in rank order for the retrieval metrics."""
     brain = Brain(root)
     index = Index(brain)
     with _ROOT_LOCKS_GUARD:
@@ -529,8 +543,12 @@ def recall_context(root: str, query: str, k: int, episodes: int, keep=None,
         else:
             facts.append(f"({h.get('date') or 'undated'}) {h['title']}: {h['snippet']}")
     index.close()
+    shown, heading = ranked, "Excerpts from earlier conversations (best match first):"
+    if order == "chrono":  # a preference stated later replaces an earlier one: show which came last
+        shown = sorted(ranked, key=lambda e: (e[1:11], max(map(int, re.findall(r"(?m)^\[(\d+) ", e)), default=0)))
+        heading = "Excerpts from earlier conversations, in the order they happened (oldest first):"
     parts = (["Facts remembered about the user:"] + facts if facts else []) + \
-            (["Excerpts from earlier conversations (best match first):"] + ranked if ranked else [])
+            ([heading] + shown if shown else [])
     return "\n".join(parts) or "(no relevant memories found)", ranked, ms
 
 
@@ -592,7 +610,8 @@ def beam_prepare(it: dict, args, provider) -> dict:
     batches = beam_messages(it["chat_dir"])
     name = f"beam-{it['size']}-{os.path.basename(it['chat_dir'])}"
     write_sessions(root, "beam", [(f"{name}-b{i + 1}", date or "2024-01-01", turns) for i, (date, turns) in enumerate(batches)])
-    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, also=it.get("also"))
+    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, also=it.get("also"),
+                                         order=args.excerpt_order)
     by_id = {t["n"]: t["text"] for _, turns in batches for t in turns}
     evidence = [by_id[i] for i in it["evidence_ids"] if i in by_id]
     text = norm(" ".join(ranked))
@@ -658,7 +677,8 @@ def personamem_prepare(it: dict, args, provider) -> dict:
         m = re.match(r"\[(\d+) ", line)
         return bool(m) and int(m.group(1)) < it["end"]
 
-    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, keep=before, also=it.get("also"))
+    context, ranked, ms = recall_context(root, it["question"], args.k, args.episodes, keep=before, also=it.get("also"),
+                                         order=args.excerpt_order)
     prompt = (f"{context}\n\n{it['question']}\n\n{PERSONAMEM_INSTRUCTIONS}\n\n{it['options']}")
     return {"prompt": prompt, "context_tokens": est_tokens(context), "retrieval_ms": ms, "n_memories": len(ranked),
             "raw_tokens": est_tokens(" ".join(t["text"] for t in turns[:it["end"]])), "evidence": None}
@@ -897,6 +917,10 @@ def main():
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
     ap.add_argument("--expand-model", help="this model writes up to 4 extra queries per question, passed to "
                     "recall as `also` (what an agent calling rewire over MCP does)")
+    ap.add_argument("--expand-when", choices=["all", "gather"], default="all",
+                    help="gather: extra queries only for counting, total, ordering and time questions")
+    ap.add_argument("--excerpt-order", choices=["rank", "chrono"], default="rank",
+                    help="BEAM and PersonaMem: excerpts best match first, or oldest first")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
     ap.add_argument("--answer-model", default=default_model,
@@ -950,7 +974,8 @@ def main():
         sys.exit("--mode full needs the LLM for ingestion; use --mode episodes with --dry-run/--retrieval-only")
 
     def run_one(it: dict) -> dict:
-        if args.expand_model:  # the calling model writes extra queries (recall `also`), from the question only
+        if args.expand_model and (args.expand_when == "all" or wants_expansion(it["question"])):
+            # the calling model writes extra queries (recall `also`), from the question only
             if client is None and not cache.get(Cache.key("expand", args.expand_model, expand_prompt(it["question"]))):
                 raise SystemExit("--retrieval-only with --expand-model needs the expansions cached by an LLM run")
             it["also"] = expand_queries(ask(client, cache, "expand", args.expand_model, expand_prompt(it["question"]),
