@@ -3,13 +3,13 @@ answer model `claude-cli/claude-haiku-5-5` · judge model `claude-cli/claude-hai
 
 | category | n | J | F1 | BLEU-1 | evidence turns | all evidence | ctx tokens (mean / p95) | answer tokens in / out | retrieval ms p50 / p95 |
 |---|---|---|---|---|---|---|---|---|---|
-| multi-hop | 40 | 92.5% | 0.178 | 0.124 | 59.4% | 32.5% | 2,952 / 7,960 | 7,968 / 763 | 109 / 148 |
-| overall | 40 | 92.5% | 0.178 | 0.124 | 59.4% | 32.5% | 2,952 / 7,960 | 7,968 / 763 | 109 / 148 |
+| multi-hop | 40 | 92.5% | 0.178 | 0.124 | 59.4% | 32.5% | 2,952 / 7,960 | 7,968 / 763 | 105 / 132 |
+| overall | 40 | 92.5% | 0.178 | 0.124 | 59.4% | 32.5% | 2,952 / 7,960 | 7,968 / 763 | 105 / 132 |
 
 | category | MRR (first evidence excerpt) | context precision | evidence session found | compression vs full history | retrieval ms p99 | answer words |
 |---|---|---|---|---|---|---|
-| multi-hop | 0.620 | 20.3% | - | 6.2× | 157 | 38 |
-| overall | 0.620 | 20.3% | - | 6.2× | 157 | 38 |
+| multi-hop | 0.620 | 20.3% | - | 6.2× | 153 | 38 |
+| overall | 0.620 | 20.3% | - | 6.2× | 153 | 38 |
 
 | category | J when all evidence retrieved | J when evidence missing | share with all evidence |
 |---|---|---|---|
@@ -36,10 +36,8 @@ The list judge (same model as the judge) splits the gold list and counts the ite
 
 | stage | calls | prompt tokens | completion tokens | reasoning tokens | tokens/call in / out | cost USD | latency p50 / p95 ms |
 |---|---|---|---|---|---|---|---|
-| answer | 40 | 318,704 | 30,521 | 17,964 | 7,968 / 763 | 0.0000 | 7931 / 12212 |
-| judge | 40 | 72,877 | 28,883 | 25,861 | 1,822 / 722 | 0.0000 | 8718 / 24642 |
-| expand | 7 | 10,979 | 532 | 0 | 1,568 / 76 | 0.0000 | 4922 / 5416 |
-| list_judge | 14 | 17,248 | 4,985 | 4,685 | 1,232 / 356 | 0.0000 | 6533 / 10834 |
+
+Retrieval tokens per question: context 2,952 (p95 7,960); extra-query LLM calls 274 prompt + 13 completion on average over all questions, 1,568 + 76 on the 7 questions given extra queries.
 
 Per question, answer + judge, including cached replies: 9,790 prompt tokens, 1,485 completion tokens, $0.00000.
 

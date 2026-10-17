@@ -41,6 +41,40 @@ How often extra queries are written (questions with non-empty `also`):
 | BEAM 100K | 20 | 6 | 12 | 5 |
 | PersonaMem 32k | 70 | 0 | 4 | 0 |
 
+## Tokens spent on retrieval
+
+Two costs: the **memory context** recall returns (sent to the answerer; estimated as characters / 4), and the
+**LLM calls that write extra queries** (`expand` stage). Expansion tokens exclude the 1,319 prompt tokens that
+`claude -p` adds to every call (measured with a one-word prompt); through the API the expansion prompt itself is
+about 170 (rule) or 280 (model-gated) tokens. Model-gated arms (C3, C4) make one call for every question, including
+the ones where the model writes no queries; completion tokens include the model's thinking.
+
+| benchmark | arm | n | memory context mean / p95 | questions with extra queries | expansion tokens per question, all (in + out) | per expanded question (in + out) | answer prompt mean |
+|---|---|---|---|---|---|---|---|
+| LoCoMo | C2 | 40 | 2,769 / 5,294 | 13 (13 calls) | 82 + 23 | 252 + 71 | 7,716 |
+| LoCoMo | C3 | 40 | 2,975 / 5,031 | 22 (40 calls) | 366 + 212 | 365 + 258 | 8,005 |
+| LoCoMo | C4 | 40 | 3,056 / 5,031 | 26 (40 calls) | 391 + 219 | 403 + 246 | 8,130 |
+| LongMemEval_S | C2 | 60 | 15,062 / 29,025 | 30 (30 calls) | 131 + 35 | 262 + 69 | 21,915 |
+| LongMemEval_S | C3 | 60 | 14,808 / 28,302 | 26 (60 calls) | 374 + 155 | 370 + 206 | 21,570 |
+| LongMemEval_S | C4 | 60 | 15,162 / 28,302 | 33 (60 calls) | 406 + 165 | 433 + 207 | 22,112 |
+| BEAM 100K | C2 | 20 | 17,945 / 48,547 | 6 (6 calls) | 78 + 18 | 260 + 62 | 26,818 |
+| BEAM 100K | C3 | 20 | 19,744 / 51,904 | 12 (20 calls) | 378 + 192 | 381 + 232 | 29,341 |
+| BEAM 100K | C4 | 20 | 20,355 / 51,904 | 13 (20 calls) | 390 + 195 | 398 + 231 | 30,186 |
+| PersonaMem 32k | C2 | 70 | 11,762 / 18,506 | 0 (0 calls) | 0 + 0 | 0 + 0 | 15,886 |
+| PersonaMem 32k | C3 | 70 | 12,240 / 20,819 | 4 (70 calls) | 422 + 100 | 369 + 349 | 16,462 |
+| PersonaMem 32k | C4 | 70 | 12,240 / 20,819 | 4 (70 calls) | 422 + 100 | 369 + 349 | 16,462 |
+| LoCoMo multi-hop (extra) | C2 | 40 | 2,952 / 7,960 | 7 (7 calls) | 44 + 13 | 249 + 76 | 7,968 |
+| LoCoMo multi-hop (extra) | C3 | 40 | 3,548 / 8,024 | 30 (40 calls) | 361 + 211 | 361 + 240 | 8,817 |
+| LoCoMo multi-hop (extra) | C4 | 40 | 3,548 / 8,024 | 30 (40 calls) | 361 + 211 | 361 + 240 | 8,817 |
+| **all 190** | C2 | 190 | 11,562 | | 67 + 18 | | 17,220 |
+| **all 190** | C3 | 190 | 11,890 | | 390 + 151 | | 17,650 |
+| **all 190** | C4 | 190 | 12,083 | | 407 + 156 | | 17,937 |
+
+Reading: extra queries cost ~250–430 prompt + 60–260 completion tokens per expanded question, small next to the
+answer prompt (8k–30k). The model gate (C3/C4) pays a call on every question (~390 + 150 tokens per question on
+average vs ~70 + 20 for the rule), and grows the memory context by 3–4% overall (LoCoMo multi-hop +20%, where it
+expands most).
+
 ## Reading
 
 - **Overall J is a tie**: 72.2% (C2), 71.8% (C3), 72.3% (C4) on the 190 questions; on all 230 with the extra

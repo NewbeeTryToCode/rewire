@@ -865,6 +865,17 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
             "prompt": sum(c["prompt_tokens"] for c in all_calls) / len(rows),
             "completion": sum(c["completion_tokens"] for c in all_calls) / len(rows),
             "cost_usd": sum(c.get("cost") or 0 for c in all_calls) / len(rows)}
+    if rows:  # what retrieval costs in tokens: the memory context it returns, and the LLM calls writing extra queries
+        exp = [r["expand_call"] for r in rows if r.get("expand_call")]
+        wrote = [e for e in exp if e["queries"]]
+        summary["retrieval_tokens"] = {
+            "context_mean": sum(r["context_tokens"] for r in rows) / len(rows),
+            "context_p95": pct([r["context_tokens"] for r in rows], 0.95),
+            "expand_prompt": sum(e["prompt_tokens"] for e in exp) / len(rows),
+            "expand_completion": sum(e["completion_tokens"] for e in exp) / len(rows),
+            "expand_prompt_when": sum(e["prompt_tokens"] for e in wrote) / max(1, len(wrote)),
+            "expand_completion_when": sum(e["completion_tokens"] for e in wrote) / max(1, len(wrote)),
+            "expanded": len(wrote), "expand_calls": sum(e["calls"] for e in exp)}
     if est:
         summary["dry_run_estimate"] = est
     return summary
@@ -938,6 +949,12 @@ def write_report(summary: dict, path: str) -> None:
         lines.append(f"| {stage} | {s['calls']} | {s['prompt_tokens']:,} | {s['completion_tokens']:,} | "
                      f"{s['reasoning_tokens']:,} | {s['prompt_tokens_per_call']:,.0f} / {s['completion_tokens_per_call']:,.0f} | "
                      f"{s['cost']:.4f} | {s['latency_p50_ms']} / {s['latency_p95_ms']} |")
+    if "retrieval_tokens" in summary:
+        t = summary["retrieval_tokens"]
+        lines += ["", f"Retrieval tokens per question: context {t['context_mean']:,.0f} (p95 {t['context_p95']:,.0f}); "
+                      f"extra-query LLM calls {t['expand_prompt']:,.0f} prompt + {t['expand_completion']:,.0f} completion "
+                      f"on average over all questions, {t['expand_prompt_when']:,.0f} + {t['expand_completion_when']:,.0f} "
+                      f"on the {t['expanded']} questions given extra queries."]
     if "tokens_per_question_incl_cached" in summary:
         t = summary["tokens_per_question_incl_cached"]
         lines += ["", f"Per question, answer + judge, including cached replies: {t['prompt']:,.0f} prompt tokens, "
@@ -1050,7 +1067,11 @@ def main():
             prompt = expand_prompt(it["question"], gated=gated)
             if client is None and not cache.get(Cache.key("expand", args.expand_model, prompt)):
                 raise SystemExit("--retrieval-only with --expand-model needs the expansions cached by an LLM run")
-            return expand_queries(ask(client, cache, "expand", args.expand_model, prompt, 1000)["text"])
+            call = ask(client, cache, "expand", args.expand_model, prompt, 1000)
+            calls.append({k: call.get(k) or 0 for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cost")})
+            return expand_queries(call["text"])
+
+        calls = []  # the expansion calls: LLM tokens spent on retrieval, not on answering
 
         # the calling model writes extra queries (recall `also`), from the question only: for every question (all),
         # when a rule says the question gathers or hinges on time (gather), when the model itself decides (model),
@@ -1070,6 +1091,9 @@ def main():
         if prep.get("trace"):
             row["trace"] = prep["trace"]
         row["answer_prompt_tokens_est"] = est_tokens(prep["prompt"])
+        if calls:
+            row["expand_call"] = {k: sum(c[k] for c in calls) for k in calls[0]}
+            row["expand_call"].update(calls=len(calls), queries=len(it.get("also") or []))
         if no_llm:
             return row
         a = ask(client, cache, "answer", args.answer_model, prep["prompt"], args.answer_max_tokens)
