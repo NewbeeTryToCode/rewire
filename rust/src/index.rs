@@ -307,6 +307,7 @@ const EP_SEM_WEIGHT: f64 = 0.25;
 
 /// Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
 /// line longer than LINE_CHARS is shown condensed to the sentences that best match the query, plus its opening.
+/// Keywords only: embedding every sentence at recall time cost ~4x the latency for the same evidence.
 const LINE_CHARS: usize = 1500;
 /// The user's opening message states their situation, and facts are often said there in passing; an excerpt
 /// from later in the session would lose it. On LongMemEval_S, 34 of the 45 evidence turns missing from
@@ -392,13 +393,6 @@ fn condense_line(query: &str, line: &str, limit: usize) -> String {
         }
         if quantity && s.chars().any(|c| c.is_ascii_digit()) {
             scores[i] += 1.0; // "how much / when ...": the sentences holding numbers
-        }
-    }
-    let mut texts = vec![query.to_string()];
-    texts.extend(segs.iter().cloned());
-    if let Some(vecs) = semantic::embed(&texts) {
-        for i in 0..n {
-            scores[i] += semantic::dot(&vecs[i + 1], &vecs[0]) as f64; // words first, meaning breaks ties
         }
     }
     let mut order: Vec<usize> = (0..n).collect();

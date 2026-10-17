@@ -408,6 +408,8 @@ class Index:
 
     # Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
     # line longer than LINE_CHARS is shown condensed to the sentences that best match the query, plus its opening.
+    # Keywords only: embedding every sentence at recall time cost ~4x the latency for the same evidence
+    # (LongMemEval_S, 2026-10-17).
     LINE_CHARS = 1500
     _QUANTITY = re.compile(r"(?i)\bhow (much|many|long|old|far|often)\b|\bwhat (time|date|year|day|price|percentage)\b|\bwhen\b")
     _SEGMENT = re.compile(r"(?<=[.!?:])\s+|\s+(?=\d{1,2}[.)]\s)|\s+(?=[-*•]\s)")
@@ -442,7 +444,8 @@ class Index:
         # ("marketing" in a marketing plan) says nothing about which sentence answers; "27th" also finds "27."
         words = text.content_words(query)
         words += [n for w in words for n in re.findall(r"^(\d+)(?:st|nd|rd|th)$", w)]
-        hits = {w: [text.overlap(w, s) > 0 for s in segs] for w in dict.fromkeys(words)}
+        toks = [text.tokens(s) for s in segs]  # once per segment, not once per query word
+        hits = {w: [text.matches(w, t) for t in toks] for w in dict.fromkeys(words) if len(w) > 1}
         idf = {w: math.log((len(segs) + 1) / (sum(h) + 0.5)) for w, h in hits.items()}
         scores = [sum(idf[w] for w, h in hits.items() if h[i]) for i in range(len(segs))]
         quantity = bool(cls._QUANTITY.search(query))
@@ -451,9 +454,6 @@ class Index:
                 scores[i] += 5.0
             if quantity and re.search(r"\d", s):  # "how much / when ...": the sentences holding numbers
                 scores[i] += 1.0
-        vecs = semantic.embed([query] + segs)
-        if vecs is not None:  # words first, meaning breaks ties and finds paraphrases
-            scores = [o + float(v) for o, v in zip(scores, vecs[1:] @ vecs[0])]
         keep, size = {0}, len(segs[0])  # the opening says what the reply is about
         for i in sorted(range(len(segs)), key=lambda i: -scores[i]):
             for j in (i, i + 1, i - 1):  # a matching sentence with its neighbours

@@ -512,7 +512,10 @@ def recall_context(root: str, query: str, k: int, episodes: int, keep=None) -> t
     """rewire recall -> (context text, ranked excerpt texts, ms). `keep(excerpt_line)` drops lines (e.g. the future)."""
     brain = Brain(root)
     index = Index(brain)
-    index.refresh()
+    with _ROOT_LOCKS_GUARD:
+        lock = _ROOT_LOCKS[root]
+    with lock:  # questions on the same history: one builds the index, the others wait ("database is locked")
+        index.refresh()
     start = time.time()
     hits = ops.recall(brain, index, query, k=k, scope="all", episodes=episodes)
     ms = (time.time() - start) * 1000
