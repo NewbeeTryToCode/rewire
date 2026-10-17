@@ -32,13 +32,16 @@ Ingest modes:
 Data sources:
 - LoCoMo: `locomo10.json`, straight from GitHub:
   `https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json`.
-- LongMemEval_S: `longmemeval_s_cleaned.json` (Hugging Face; in this session via GCS because the proxy blocks HF).
+- LongMemEval_S: `longmemeval_s_cleaned.json` (Hugging Face `xiaowu0162/longmemeval-cleaned`). When the proxy allows
+  `huggingface.co` but blocks the file CDN (`us.aws.cdn.hf.co`, `*.xethub.hf.co`), fetch the rows through
+  `datasets-server.huggingface.co/rows` from the mirror `lorenoamori/longmemeval` (10 rows per request, sort by `row_idx`);
+  validated 2026-10-16: 500 questions, 30 `_abs`, 896 `has_answer` turns, per-type counts as in the paper.
 - BEAM: the `chats/` folder of the repo `github.com/mohammadtavakoli78/BEAM` (cloned with git; validated at
   commit `b2da22e`). Validated:
   100K/500K/1M = 20/35/35 chats with 400/700/700 questions (20 per chat, 10 categories), chat sizes ≈146k / 538k /
   1.09M tokens (median), matching the paper; the official `download_dataset.py` script converts the Hugging Face data to the
   same format. A byte comparison with the Hugging Face copy has not been done yet (HF is blocked).
-- PersonaMem: Hugging Face `bowen-upenn/PersonaMem`, copied to GCS (`bucket_for_claude`):
+- PersonaMem: Hugging Face `bowen-upenn/PersonaMem-v1` (the old name `bowen-upenn/PersonaMem` redirects there; earlier copied to GCS, `bucket_for_claude`):
   `questions_32k.csv`, `shared_contexts_32k.jsonl`, `questions_1M.csv`, `shared_contexts_1M.jsonl`.
   Validated: 32k = 589 questions, 37 shared contexts, ≈27k tokens per context; 1M = 2,674 questions, 33 contexts,
   ≈925k tokens per context (median); 15 columns as described in the README, every context reference exists, and the answer keys
@@ -120,6 +123,8 @@ is the same (§6).
 | Mastra (observational memory) | 94.9% (GPT-5-mini); 84.2% with GPT-4o | Vendor report; shows how much the answering model matters |
 | Agent Zero Memory | 95.6% | Agent Zero Memory paper (2026) |
 | **rewire** (`episodes`, no extraction) | **85.4%** (10 excerpts); ≈89.8% (20 excerpts) | Iteration 8; answerer + judge Claude via `claude -p`, official prompts |
+| **rewire** (`episodes`, no extraction) | **78.4%** (10 excerpts; abstention 76.7%) | 2026-10-16, all 500: answerer Haiku 5.5, judge Haiku 4.5 via `claude -p`, official prompts; per-question diagnosis in `experiments/eval/results/2026-10-16-longmemeval-haiku55-ep10-analysis.md` |
+| **rewire** (`episodes`, recall changes of 2026-10-16) | **83.6%**; **85.6%** with query expansion (`also`) | Same models and questions as the 78.4% row; whole turns + query-aware condensing, session opener, semantic at 0.25, 2× excerpts for counting questions. `experiments/eval/results/2026-10-16-longmemeval-improvements.md` |
 
 rewire retrieval (no LLM, LongMemEval_S, 470 non-abstention questions): evidence session found 97.0%, all
 evidence sessions 87.9%, mean context ≈11.2k tokens out of ≈115k.
@@ -274,9 +279,21 @@ The upper bound for runs with an LLM: if the evidence is not in the context, the
 Retrieval p50 4 ms, p99 16 ms. Open-domain often needs general knowledge (not in the conversation); multi-hop
 is rewire's improvement target. Note: the 94% J score from iterations 6–7 used k=50.
 
+**LongMemEval_S after the 2026-10-16 recall changes:** all evidence 91.1% (98.3% with query expansion), evidence turns
+94.4% (98.1%), context ≈12.5k tokens (19.1k), retrieval p50 235 ms (1.1 s): condensing embeds sentences at recall
+time, to be cached in the index.
+
+**LongMemEval_S, all 500 (2026-10-16, frozen clock):** evidence turns 86.2%, all evidence 85.7%, session found 97.0%,
+MRR 0.857, context precision 25.0%, context ≈8.8k tokens (13.8× smaller), retrieval p50 21 ms / p99 195 ms
+(`experiments/eval/results/2026-10-16-longmemeval-retrieval.md`).
+
 **LongMemEval_S, 470 non-abstention questions (iteration 8):** evidence session found 97.0%, all evidence sessions 87.9%,
 context ≈11.2k tokens out of ≈115k (≈10× smaller). A 120-question sample after merging: same evidence, context
 11,090 → 9,780 tokens, MRR 0.71 → 0.79.
+
+**PersonaMem, end to end (2026-10-17, Haiku 5.5, multiple choice):** 32k all 589: 59.3%; 128k and 1M, 20 per type:
+55.7% and 51.4%, at ≈11k context tokens (compression 3× / 15× / 99×). Weak on `suggest_new_ideas` (20–26%) and
+`generalizing_to_new_scenarios` (30–46%). `experiments/eval/results/2026-10-17-personamem-haiku55.md`.
 
 **PersonaMem (dry run):** 32k, all 589 questions: context ≈12.6k tokens, compression 2.8× (the histories are short),
 estimated $1.30 with GPT-4o-mini. 1M, 140 questions (20 per type): context ≈12.7k tokens out of ≈925k

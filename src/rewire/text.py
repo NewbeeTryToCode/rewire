@@ -7,6 +7,7 @@ experiments/retrieval.
 """
 
 import re
+from functools import lru_cache
 
 STOPWORDS = set("""
 a an and are as at be been but by can could do does did for from has have how i if in into is it its
@@ -75,17 +76,26 @@ def content_words(query: str) -> list[str]:
     return list(dict.fromkeys([w for w in words if w not in STOPWORDS] or words))
 
 
+@lru_cache(maxsize=8192)
+def _alts(word: str) -> frozenset[str]:
+    return frozenset(stems(word) | {word})
+
+
+def tokens(doc: str) -> set[str]:
+    return set(re.findall(r"\w+", doc.lower()))
+
+
+def matches(word: str, toks: set[str]) -> bool:
+    """A content word is in a document's tokens, as itself or a stem (4+ letters match as prefixes)."""
+    return word in toks or any(t == s or (len(s) >= 4 and t.startswith(s)) for s in _alts(word) for t in toks)
+
+
 def overlap(query: str, doc: str) -> int:
     """How many distinct content words of the query a document contains (as itself or a stem;
     words and stems of 4+ letters match as prefixes). An absolute relevance signal: BM25 scores
     are only comparable within one query."""
-    tokens = set(re.findall(r"\w+", doc.lower()))
-    n = 0
-    for w in content_words(query):
-        alts = stems(w) | {w}
-        if w in tokens or any(t == s or (len(s) >= 4 and t.startswith(s)) for s in alts for t in tokens):
-            n += 1
-    return n
+    toks = tokens(doc)
+    return sum(matches(w, toks) for w in content_words(query))
 
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -95,6 +105,17 @@ _MONTHS.update({"januari": 1, "februari": 2, "maret": 3, "mei": 5, "juni": 6, "j
                 "oktober": 10, "desember": 12, "agu": 8, "okt": 10, "des": 12})
 _HISTORY = re.compile(r"\b(used to|previously|originally|formerly|at first|first|earlier|before|old|"
                       r"dulu|sebelumnya|awalnya|pertama|semula|pernah)\b", re.I)
+
+
+AGGREGATE = re.compile(
+    r"\b(how many|in total|total|altogether|combined|sum of|all (the|my)|each of|how often|in what order|order of|"
+    r"which\b.{0,80}\b(first|last|most|least|earliest|latest|more|fewer))\b", re.I)
+
+
+def aggregate(query: str) -> bool:
+    """The question gathers several memories (a count, a total, an order of events), so one best match is not
+    enough: recall widens the excerpt budget for it."""
+    return bool(AGGREGATE.search(query))
 
 
 def time_window(query: str) -> tuple[str, str] | None:

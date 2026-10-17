@@ -30,9 +30,11 @@ REFERS_TO_GUIDE = (
 )
 
 ALSO_GUIDE = (
-    "Up to 4 extra keyword queries, searched too and merged by rank. When the question names a category "
-    "('desserts', 'cities', 'hobbies', 'pets') or asks for a list, add queries naming likely specific "
-    "instances ('ice cream cake pie', 'Paris Tokyo trip'): memories name the instances, not the category."
+    "Up to 4 extra keyword queries (3-8 words each), searched too and merged by rank. Worth adding for most "
+    "questions about the past: the words of a question rarely match the messages that answer it. Write what those "
+    "messages would say: specific instances of a category ('kitchen appliance' -> 'smoker grill air fryer'), "
+    "synonyms and related verbs, and one query per item of a count, total or comparison ('how many doctors' -> "
+    "'dermatologist appointment', 'ENT specialist visit')."
 )
 
 TOOLS = [

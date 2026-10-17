@@ -6,7 +6,7 @@ import os
 import re
 
 from . import project as project_mod
-from . import schema, security
+from . import schema, security, text
 from . import skills as skills_mod
 from .brain import Brain, Node
 from .index import Index
@@ -35,6 +35,7 @@ def resolve_id(brain: Brain, ref: str) -> Node | None:
 
 RRF_K = 60  # rank fusion of extra queries (standard reciprocal-rank-fusion constant)
 MAX_ALSO = 4
+AGGREGATE_EPISODES = 2  # excerpt budget multiplier for counting / total / ordering questions (text.aggregate)
 
 
 def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None = None,
@@ -47,6 +48,8 @@ def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None =
     question about a category ("desserts", "cities") is answered by memories naming instances ("ice
     cream", "Tampa") that share no word with it (measured on LoCoMo multi-hop: experiments/eval)."""
     window = time_range(refers_to)
+    if episodes and text.aggregate(query):  # the evidence is spread over several sessions
+        episodes *= AGGREGATE_EPISODES
     if scope:
         scopes = [scope] if scope != "all" else None
     else:

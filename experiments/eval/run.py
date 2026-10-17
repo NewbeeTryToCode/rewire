@@ -444,16 +444,29 @@ def lme_prepare(it: dict, args, provider) -> dict:
     q = it["raw"]
     root = os.path.join(args.out, "longmemeval", f"brains-{args.mode}", q["question_id"])
     lme_brain(q, root, args.mode, provider)
-    start = time.time()
-    ctx = LME.recall(q, root, args.k, args.episodes)
-    retrieval_ms = (time.time() - start) * 1000
+    done = os.path.join(root, ".state", "lme_done")
+    _now.at = datetime.fromtimestamp(os.path.getmtime(done), timezone.utc)  # recall as of the end of ingest
+    try:
+        index = Index(Brain(root))  # build or refresh the index first: latency measures recall, not indexing
+        index.refresh()
+        index.close()
+        start = time.time()
+        ctx = LME.recall(q, root, args.k, args.episodes, also=it.get("also"))
+        retrieval_ms = (time.time() - start) * 1000
+    finally:
+        _now.at = None
     history = LME.history_string(ctx)
     ev = LME.evidence(q, ctx)
     evidence_turns = [t["content"] for s in q["haystack_sessions"] for t in s if t.get("has_answer")]
     return {"prompt": LME.ANSWER_TEMPLATE.format(history, q["question_date"], q["question"]),
             "context_tokens": est_tokens(history), "retrieval_ms": retrieval_ms, "raw_tokens": it["raw_tokens"],
             "n_memories": len(ctx["facts"]) + len(ctx["episodes"]),
+            # for per-question diagnosis: excerpt sessions in rank order, and the sessions holding the answer
+            "trace": {"ranked_sessions": [e["session"] for e in ctx["episodes"]],
+                      "answer_sessions": [LME.session_file(s) for s in q.get("answer_session_ids", [])],
+                      "context": history},
             "evidence": {"turns": ev["turns"], "n_turns": ev["n_turns"], "all": ev["sess_all"],
+                         "turn_coverage": ev["turn_coverage"],
                          "session_any": ev["sess_any"], **ranking([e["text"] for e in ctx["episodes"]], evidence_turns)}
             if ev else None}
 
@@ -499,7 +512,10 @@ def recall_context(root: str, query: str, k: int, episodes: int, keep=None) -> t
     """rewire recall -> (context text, ranked excerpt texts, ms). `keep(excerpt_line)` drops lines (e.g. the future)."""
     brain = Brain(root)
     index = Index(brain)
-    index.refresh()
+    with _ROOT_LOCKS_GUARD:
+        lock = _ROOT_LOCKS[root]
+    with lock:  # questions on the same history: one builds the index, the others wait ("database is locked")
+        index.refresh()
     start = time.time()
     hits = ops.recall(brain, index, query, k=k, scope="all", episodes=episodes)
     ms = (time.time() - start) * 1000
@@ -705,6 +721,10 @@ def summarize(rows: list[dict], ledger: Ledger, args, est: dict | None) -> dict:
                "evidence_session_any": (sum(e["session_any"] for e in ev if "session_any" in e)
                                         / max(1, sum("session_any" in e for e in ev))) if any("session_any" in e for e in ev) else None,
                "compression": sum(r["raw_tokens"] for r in g) / max(1, sum(r["context_tokens"] for r in g))}
+        cov = [c for e in ev for c in e.get("turn_coverage", [])]
+        if cov:  # LongMemEval: how much of each evidence turn reached the context, not only its first words
+            out["evidence_turn_coverage"] = sum(cov) / len(cov)
+            out["evidence_turns_complete"] = sum(c >= 0.9 for c in cov) / len(cov)
         # retrieval vs answering: accuracy when every evidence turn was in the context, and when some were not
         with_ev = [r for r in judged if r.get("evidence")]
         hit = [r for r in with_ev if r["evidence"]["all"]]
@@ -782,6 +802,11 @@ def write_report(summary: dict, path: str) -> None:
         lines.append(f"| {name} | {f(g['MRR'])} | {f(g['context_precision'], True)} | "
                      f"{f(g['evidence_session_any'], True)} | {g['compression']:.1f}× | {g['retrieval_ms_p99']:.0f} | "
                      f"{f(g.get('answer_words_mean'))} |")
+    if any(g.get("evidence_turn_coverage") is not None for g in summary["groups"].values()):
+        lines += ["", "| category | evidence turn coverage (share of its sentences in the context) | evidence turns complete (≥90%) |",
+                  "|---|---|---|"]
+        for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
+            lines.append(f"| {name} | {f(g.get('evidence_turn_coverage'), True)} | {f(g.get('evidence_turns_complete'), True)} |")
     if any(g.get("J_clean") is not None for g in summary["groups"].values()):
         lines += ["", "| category | J | disputed gold excluded | J without them |", "|---|---|---|---|"]
         for name, g in sorted(summary["groups"].items(), key=lambda x: (x[0] == "overall", x[0])):
@@ -869,7 +894,7 @@ def main():
     ap.add_argument("--beam-sizes", default="100K", help="BEAM chat sizes: 100K,500K,1M")
     ap.add_argument("--personamem-size", default="32k", choices=["32k", "128k", "1M"])
     ap.add_argument("--k", type=int, default=30, help="memories (facts) recalled")
-    ap.add_argument("--expand-model", help="LoCoMo: this model writes up to 4 extra queries per question, passed to "
+    ap.add_argument("--expand-model", help="LoCoMo and LongMemEval: this model writes up to 4 extra queries per question, passed to "
                     "recall as `also` (what an agent calling rewire over MCP does)")
     ap.add_argument("--episodes", type=int, default=10, help="transcript excerpts recalled")
     default_model = os.environ.get("OPENROUTER_MODEL") or "openai/gpt-4o-mini"
@@ -895,7 +920,8 @@ def main():
 
     no_llm = args.retrieval_only or args.dry_run
     ledger = Ledger(args.max_cost)
-    client = None if no_llm else Client(ledger, reasoning_effort=args.reasoning_effort)
+    # --retrieval-only still calls --expand-model: the extra queries are part of recall, not of answering
+    client = None if no_llm and not args.expand_model else Client(ledger, reasoning_effort=args.reasoning_effort)
     args.answer_model, args.judge_model, args.ingest_model = (
         normalize_model(m) for m in (args.answer_model, args.judge_model, args.ingest_model))
     if args.expand_model:
@@ -933,6 +959,8 @@ def main():
         if it.get("errata"):
             row["errata"] = it["errata"]
         row.update({k: prep[k] for k in ("context_tokens", "raw_tokens", "retrieval_ms", "n_memories", "evidence")})
+        if prep.get("trace"):
+            row["trace"] = prep["trace"]
         row["answer_prompt_tokens_est"] = est_tokens(prep["prompt"])
         if no_llm:
             return row

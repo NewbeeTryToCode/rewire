@@ -209,14 +209,16 @@ pub fn judge_schema() -> Value {
     })
 }
 
-pub fn format_turns(turns: &[Turn]) -> Vec<String> {
+/// `limit` condenses long assistant turns (the extraction prompt); the stored transcript keeps them whole and
+/// recall condenses them around the query instead (index::condense), so a detail late in a long reply survives.
+pub fn format_turns(turns: &[Turn], limit: Option<usize>) -> Vec<String> {
     turns
         .iter()
         .map(|t| {
             // redacted before anything leaves the machine: these lines go to the LLM and into sessions/
             let mut text = security::redact(&security::strip_private(&t.text));
-            if t.role == "assistant" && text.chars().count() > ASSISTANT_CHARS {
-                text = format!("{} …[condensed]", take(&text, ASSISTANT_CHARS));
+            if let Some(limit) = limit.filter(|&l| t.role == "assistant" && text.chars().count() > l) {
+                text = format!("{} …[condensed]", take(&text, limit));
             }
             format!("[{} {}] {}", t.n, t.role, text)
         })
@@ -452,7 +454,7 @@ impl<'a> Consolidator<'a> {
             String::new()
         };
         let mut proposals: Vec<Meta> = Vec::new();
-        for (ci, chunk) in chunks(&format_turns(turns), self.brain.config.max_chunk_chars).iter().enumerate() {
+        for (ci, chunk) in chunks(&format_turns(turns, Some(ASSISTANT_CHARS)), self.brain.config.max_chunk_chars).iter().enumerate() {
             let prompt = format!(
                 "SESSION DATE: {date}\nSESSION PROJECT: {}\n\nKNOWN MEMORY:\n{}{known_skills}\n\nTRANSCRIPT:\n{chunk}",
                 project.as_deref().unwrap_or("(none)"),
@@ -752,7 +754,7 @@ impl<'a> Consolidator<'a> {
             return Vec::new();
         }
         let roles: &[&str] = if keep == "user" { &["user"] } else { &["user", "assistant"] };
-        turns.iter().zip(format_turns(turns)).filter(|(t, _)| roles.contains(&t.role.as_str())).map(|(_, l)| l).collect()
+        turns.iter().zip(format_turns(turns, None)).filter(|(t, _)| roles.contains(&t.role.as_str())).map(|(_, l)| l).collect()
     }
 
     #[allow(clippy::too_many_arguments)]
