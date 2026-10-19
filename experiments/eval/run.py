@@ -1025,6 +1025,7 @@ def main():
     ap.add_argument("--est-judge-out", type=int, default=60, help="dry-run: expected judge completion tokens")
     ap.add_argument("--price", action="append", default=[], metavar="MODEL=IN,OUT",
                     help="USD per 1M tokens for the dry-run when the catalog is unreachable")
+    ap.add_argument("--ingest-only", action="store_true", help="LoCoMo: build (and consolidate) the brains, then stop")
     ap.add_argument("--engine", choices=["python", "rust"], default="python",
                     help="rust: recall through the Rust binary (rust/target/release/rewire); latency includes process start")
     ap.add_argument("--label", default="run")
@@ -1131,6 +1132,10 @@ def main():
                     fut.result()
                 except Exception as exc:  # quota, budget or a failing session
                     errors.append(str(exc))
+        if args.ingest_only:
+            print(f"ingest-only: {len(convs) - len(errors)} of {len(convs)} conversations ingested"
+                  + (f"; first error: {errors[0]}" if errors else ""), flush=True)
+            return
         if errors:  # questions still run on the conversations whose ingest finished
             stopped = f"ingest stopped: {errors[0]}"
             items = [it for it in items if is_done(it["conv"])]
