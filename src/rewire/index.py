@@ -37,6 +37,11 @@ HOP_DECAY = 0.5
 # ("all", or "supersedes": only an outdated note forwarding to its replacement).
 SPREAD_HOPS = int(os.environ.get("REWIRE_SPREAD_HOPS", "2"))
 SPREAD_MODE = os.environ.get("REWIRE_SPREAD_MODE", "all")
+EP_GRAPH = os.environ.get("REWIRE_EP_GRAPH", "off")  # off | rescore | expand (experimental, see _entity_graph)
+EP_GRAPH_W = float(os.environ.get("REWIRE_EP_GRAPH_W", "0.25"))
+EP_GRAPH_DF = float(os.environ.get("REWIRE_EP_GRAPH_DF", "0.02"))
+EP_GRAPH_SEEDS = int(os.environ.get("REWIRE_EP_GRAPH_SEEDS", "3"))
+EP_GRAPH_NAMES = int(os.environ.get("REWIRE_EP_GRAPH_NAMES", "6"))
 ACT_MAX_AGE = 300  # seconds; activation ages in hours, so 5 minutes of staleness is invisible
 SCAN_MAX_AGE = 60  # seconds between full stat() scans when no directory changed
 
@@ -105,6 +110,7 @@ class Index:
         self._db = None
         self._mat = None  # cached (ids, scopes, active, matrix) for semantic search
         self._epmat = None
+        self._df: dict[str, int] = {}
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -169,6 +175,7 @@ class Index:
             if changed or ep_changed:
                 self._embed_pending(db)
                 self._mat = self._epmat = None
+                self._df = {}
             row = db.execute("SELECT v FROM meta WHERE k='act_at'").fetchone()
             stale = not row or time.time() - float(row[0]) > max_age
             if stale:
@@ -372,6 +379,8 @@ class Index:
         seeded = self._seed_episodes(seeds or [])
         for rid, bonus in seeded.items():
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
+        if EP_GRAPH != "off" and fused:
+            self._entity_graph(query, fused, seeded, cond, scopes, limit)
         window = window or text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
             f"SELECT rowid AS rid, path, date, text, first, last FROM episodes e WHERE rowid IN ({','.join('?' * len(fused))})"
@@ -416,6 +425,53 @@ class Index:
             if summary:
                 out[0]["summary"] = summary[:300]
         return out
+
+    # Experimental episode-level entity graph (REWIRE_EP_GRAPH, off by default). Excerpts are joined by the rare
+    # names they share (capitalised words found in at most EP_GRAPH_DF of the excerpts, so speaker names drop out),
+    # seeded from the best EP_GRAPH_SEEDS excerpts. "rescore": an excerpt already matched by the query gets a bonus
+    # of at most EP_GRAPH_W x the best score, tanh(0.5 x shared names). "expand": excerpts naming those entities
+    # join the fusion as a third ranked list at weight EP_GRAPH_W, so a second hop without the query's words can enter.
+    _NAME = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
+
+    def _doc_freq(self, word: str) -> int:
+        if word not in self._df:
+            self._df[word] = self.db.execute("SELECT count(*) FROM fts_ep WHERE fts_ep MATCH ?",
+                                             (f'"{word}"',)).fetchone()[0]
+        return self._df[word]
+
+    def _entity_graph(self, query: str, fused: dict[int, float], seeded: dict, cond: str,
+                      scopes: list[str] | None, limit: int) -> None:
+        total = self.db.execute("SELECT count(*) FROM episodes").fetchone()[0] or 1
+        cap = max(3, int(total * EP_GRAPH_DF))
+        asked = set(re.findall(r"\w+", query.lower()))
+        order = sorted(fused, key=lambda x: -fused[x])
+        seeds = order[:EP_GRAPH_SEEDS]
+        texts = {r[0]: r[1] for r in self.db.execute(
+            f"SELECT rowid, text FROM episodes WHERE rowid IN ({','.join('?' * len(seeds))})", seeds)}
+        names: set[str] = set()
+        for rid in seeds:
+            names |= {w.lower() for w in self._NAME.findall(texts.get(rid, ""))}
+        names = {w for w in names - asked if w not in text.STOPWORDS and 0 < self._doc_freq(w) <= cap}
+        names = set(sorted(names, key=lambda w: (self._doc_freq(w), w))[:EP_GRAPH_NAMES])
+        if not names:
+            return
+        scale = max(fused.values())
+        if EP_GRAPH == "rescore":
+            pool = [rid for rid in order[:limit] if rid not in seeds]
+            if not pool:
+                return
+            for rid, body in self.db.execute(
+                    f"SELECT rowid, text FROM episodes WHERE rowid IN ({','.join('?' * len(pool))})", pool):
+                shared = len(names & {w.lower() for w in self._NAME.findall(body)})
+                if shared:
+                    fused[rid] += EP_GRAPH_W * math.tanh(0.5 * shared) * scale
+        else:
+            match = " OR ".join(f'"{w}"' for w in sorted(names))
+            hits = [r[0] for r in self.db.execute(
+                "SELECT fts_ep.rowid FROM fts_ep JOIN episodes e ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ?"
+                f"{cond} ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?", (match, *(scopes or []), limit))]
+            for rank, rid in enumerate(hits):
+                fused[rid] = fused.get(rid, 0.0) + EP_GRAPH_W / (self.RRF_K + rank + 1)
 
     # Excerpts below the top EP_WHOLE keep only the turns that share a content word with the query, plus
     # EP_CONTEXT turns either side: 11% fewer excerpt tokens on LoCoMo, and at the same token budget
