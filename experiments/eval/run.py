@@ -140,9 +140,14 @@ class Cache:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+REPLICATE = 0
+
+
 def ask(client: Client | None, cache: Cache, stage: str, model: str, prompt: str, max_tokens: int) -> dict:
     """Cached LLM call. Returns the call record plus "cached" (True when nothing was spent now)."""
-    key = Cache.key(stage, model, prompt)
+    # --replicate N: answers and verdicts are drawn afresh (own cache entries); extra queries stay shared, so the
+    # recalled context is the same in every replicate and only answer/judge sampling varies
+    key = Cache.key(f"{stage}#{REPLICATE}" if REPLICATE and stage != "expand" else stage, model, prompt)
     hit = cache.get(key)
     # a reply cut off by max_tokens is reused only if the new limit is no larger than the one that cut it
     if hit and not (hit.get("finish_reason") == "length" and max_tokens > hit.get("max_tokens", 0)):
@@ -1025,6 +1030,8 @@ def main():
     ap.add_argument("--est-judge-out", type=int, default=60, help="dry-run: expected judge completion tokens")
     ap.add_argument("--price", action="append", default=[], metavar="MODEL=IN,OUT",
                     help="USD per 1M tokens for the dry-run when the catalog is unreachable")
+    ap.add_argument("--replicate", type=int, default=0,
+                    help="N > 0: answer and judge again into separate cache entries (run-to-run noise; see compare.py)")
     ap.add_argument("--ingest-only", action="store_true", help="LoCoMo: build (and consolidate) the brains, then stop")
     ap.add_argument("--engine", choices=["python", "rust"], default="python",
                     help="rust: recall through the Rust binary (rust/target/release/rewire); latency includes process start")
@@ -1046,6 +1053,8 @@ def main():
         provider.bad_log = os.path.join(args.out, "bad_json.jsonl")
     bench = BENCH[args.bench]
     os.makedirs(args.out, exist_ok=True)
+    global REPLICATE
+    REPLICATE = args.replicate
     cache = Cache(os.path.join(args.out, "cache", "llm.jsonl"))
 
     items = bench["items"](args)
