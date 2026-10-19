@@ -132,6 +132,20 @@ def aggregate(query: str) -> bool:
     return bool(AGGREGATE.search(query))
 
 
+ADVICE = re.compile(r"\b(recommend|suggest(ion)?s?|advice|tips?|ideas?|thoughts|what do you think|should i|good idea|"
+                    r"worth (it|trying)|any (advice|tips|ideas|suggestions))\b", re.I)
+RECALLED = re.compile(r"\b(remind|you (told|recommended|suggested|mentioned|provided|gave)|previous|last time|earlier)\b", re.I)
+
+
+def advice(query: str) -> bool:
+    """The message asks for a suggestion or an opinion, or is a statement rather than a question (an agent
+    replying to the user): the answer needs the user's preferences, not every near match. Not when it asks
+    to recall a suggestion given earlier ("remind me what you recommended")."""
+    if RECALLED.search(query):
+        return False
+    return bool(ADVICE.search(query)) or "?" not in query
+
+
 def time_window(query: str) -> tuple[str, str] | None:
     """Explicit time in the query -> (start, end) ISO dates, e.g. 'in July 2023' -> July 2023."""
     q = query.lower()
