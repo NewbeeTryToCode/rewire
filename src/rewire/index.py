@@ -37,11 +37,12 @@ HOP_DECAY = 0.5
 # ("all", or "supersedes": only an outdated note forwarding to its replacement).
 SPREAD_HOPS = int(os.environ.get("REWIRE_SPREAD_HOPS", "2"))
 SPREAD_MODE = os.environ.get("REWIRE_SPREAD_MODE", "all")
-EP_GRAPH = os.environ.get("REWIRE_EP_GRAPH", "off")  # off | rescore | expand (experimental, see _entity_graph)
+EP_GRAPH = os.environ.get("REWIRE_EP_GRAPH", "off")  # off | rescore | expand | add (experimental, see _entity_graph)
 EP_GRAPH_W = float(os.environ.get("REWIRE_EP_GRAPH_W", "0.25"))
 EP_GRAPH_DF = float(os.environ.get("REWIRE_EP_GRAPH_DF", "0.02"))
 EP_GRAPH_SEEDS = int(os.environ.get("REWIRE_EP_GRAPH_SEEDS", "3"))
 EP_GRAPH_NAMES = int(os.environ.get("REWIRE_EP_GRAPH_NAMES", "6"))
+EP_GRAPH_ADD = int(os.environ.get("REWIRE_EP_GRAPH_ADD", "2"))
 ACT_MAX_AGE = 300  # seconds; activation ages in hours, so 5 minutes of staleness is invisible
 SCAN_MAX_AGE = 60  # seconds between full stat() scans when no directory changed
 
@@ -379,7 +380,7 @@ class Index:
         seeded = self._seed_episodes(seeds or [])
         for rid, bonus in seeded.items():
             fused[rid] = fused.get(rid, 0.0) + bonus * scale
-        if EP_GRAPH != "off" and fused:
+        if EP_GRAPH in ("rescore", "expand") and fused:
             self._entity_graph(query, fused, seeded, cond, scopes, limit)
         window = window or text.time_window(query)
         rows = {r["rid"]: r for r in self.db.execute(
@@ -402,6 +403,9 @@ class Index:
                 best = sorted(pool, key=lambda rid: (-key[rid], pool.index(rid)))[:k]
             else:
                 best = sorted(pool, key=lambda rid: ce_rank[rid])[:k]
+        return self._format_episodes(query, best, rows, seeded)
+
+    def _format_episodes(self, query: str, best: list[int], rows: dict, seeded) -> list[dict]:
         best, texts = self._merge(best, rows)
         opened = set()
         for pos, rid in enumerate(best):
@@ -472,6 +476,49 @@ class Index:
                 f"{cond} ORDER BY bm25(fts_ep), e.path, e.first LIMIT ?", (match, *(scopes or []), limit))]
             for rank, rid in enumerate(hits):
                 fused[rid] = fused.get(rid, 0.0) + EP_GRAPH_W / (self.RRF_K + rank + 1)
+
+    def entity_neighbours(self, query: str, seed_ids: list[str], n: int, scopes: list[str] | None = None) -> list[dict]:
+        """REWIRE_EP_GRAPH=add: up to `n` excerpts joined to the recalled ones by rare names, shown after them
+        (they never displace a query match). A neighbour must share two names with the seeds, or one name and a
+        query word, so a name alone (a product, a city named in passing) does not bring in another topic."""
+        rids = [int(i[3:]) for i in seed_ids if i.startswith("ep:")]
+        if not rids or n <= 0:
+            return []
+        total = self.db.execute("SELECT count(*) FROM episodes").fetchone()[0] or 1
+        cap = max(3, int(total * EP_GRAPH_DF))
+        asked = set(re.findall(r"\w+", query.lower()))
+        seeds = rids[:EP_GRAPH_SEEDS]
+        names: set[str] = set()
+        for (body,) in self.db.execute(f"SELECT text FROM episodes WHERE rowid IN ({','.join('?' * len(seeds))})", seeds):
+            names |= {w.lower() for w in self._NAME.findall(body)}
+        names = {w for w in names - asked if w not in text.STOPWORDS and 0 < self._doc_freq(w) <= cap}
+        names = set(sorted(names, key=lambda w: (self._doc_freq(w), w))[:EP_GRAPH_NAMES])
+        if not names:
+            return []
+        cond = f" AND e.scope IN ({','.join('?' * len(scopes))})" if scopes else ""
+        match = " OR ".join(f'"{w}"' for w in sorted(names))
+        cands = self.db.execute(
+            "SELECT e.rowid AS rid, e.path, e.date, e.text, e.first, e.last FROM fts_ep JOIN episodes e"
+            f" ON e.rowid = fts_ep.rowid WHERE fts_ep MATCH ?{cond} ORDER BY bm25(fts_ep), e.path, e.first LIMIT 50",
+            (match, *(scopes or []))).fetchall()
+        shown = {(r["path"], t) for r in self.db.execute(
+            f"SELECT path, first, last FROM episodes WHERE rowid IN ({','.join('?' * len(rids))})", rids)
+            for t in range(r["first"], r["last"] + 1)}
+        picked = {}
+        for r in cands:
+            if r["rid"] in rids or r["first"] == 0 or any((r["path"], t) in shown for t in range(r["first"], r["last"] + 1)):
+                continue
+            shared = len(names & {w.lower() for w in self._NAME.findall(r["text"])})
+            if shared >= 2 or (shared == 1 and text.overlap(query, r["text"]) > 0):
+                picked[r["rid"]] = r
+                shown |= {(r["path"], t) for t in range(r["first"], r["last"] + 1)}
+                if len(picked) == n:
+                    break
+        out = self._format_episodes(query, list(picked), picked, set()) if picked else []
+        for hit in out:
+            hit.pop("summary", None)
+            hit["via"] = "graph"
+        return out
 
     # Excerpts below the top EP_WHOLE keep only the turns that share a content word with the query, plus
     # EP_CONTEXT turns either side: 11% fewer excerpt tokens on LoCoMo, and at the same token budget

@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 
+from . import index as index_mod
 from . import project as project_mod
 from . import schema, security, text
 from . import skills as skills_mod
@@ -71,6 +72,8 @@ def recall(brain: Brain, index: Index, query: str, k: int = 8, cwd: str | None =
 
     hits = top(fused_hits, k) if len(queries) > 1 else [firsts[i] for i in fused_hits]
     eps = top(fused_eps, episodes) if len(queries) > 1 else [firsts[i] for i in fused_eps]
+    if eps and index_mod.EP_GRAPH == "add":  # experimental: graph neighbours after the matches
+        eps += index.entity_neighbours(query, [e["id"] for e in eps], index_mod.EP_GRAPH_ADD, scopes)
     for hit in hits:  # re-scanned when shown: files can be edited by hand or arrive by sync
         why = security.blocked(hit["title"] + " " + hit["snippet"])
         if why:
