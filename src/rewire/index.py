@@ -33,6 +33,10 @@ SCHEMA = "9"
 REL_WEIGHT = {"part_of": 0.8, "depends_on": 0.8, "related_to": 0.6, "about": 0.5,
               "contradicts": 0.4, "supersedes": 0.2}
 HOP_DECAY = 0.5
+# Experimental, for measuring the graph (A/B): hops of spreading (0 = none) and which links spread
+# ("all", or "supersedes": only an outdated note forwarding to its replacement).
+SPREAD_HOPS = int(os.environ.get("REWIRE_SPREAD_HOPS", "2"))
+SPREAD_MODE = os.environ.get("REWIRE_SPREAD_MODE", "all")
 ACT_MAX_AGE = 300  # seconds; activation ages in hours, so 5 minutes of staleness is invisible
 SCAN_MAX_AGE = 60  # seconds between full stat() scans when no directory changed
 
@@ -728,7 +732,7 @@ class Index:
         via: dict[str, str] = {}
         if spread:
             frontier = sorted(rel.items(), key=lambda x: (-x[1], x[0]))[:10]
-            for hop in (1, 2):
+            for hop in range(1, SPREAD_HOPS + 1):
                 nxt: dict[str, float] = {}
                 for src, amount in frontier:
                     links = self.neighbors(src)
@@ -737,6 +741,8 @@ class Index:
                     fan = 1.0 + math.log(1 + len(links))
                     src_inactive = src in info and not info[src]["active"]
                     for dst, relation in links:
+                        if SPREAD_MODE == "supersedes" and not (src_inactive and relation == "supersedes"):
+                            continue
                         if src_inactive and relation == "supersedes":
                             gain = amount * 0.9  # an outdated memory points straight at its replacement
                         else:
