@@ -481,7 +481,15 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             let _g = writing(&brain);
             let ids: Vec<String> = if ids == ["all"] {
-                brain.iter_inbox().iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
+                // "all" never approves items the scan flagged (injection, secret): those need a look and their id
+                let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
+                    action == "approve" && !force && i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                });
+                for item in &flagged {
+                    eprintln!("skipped flagged item {} ({}): check it, then approve it by id", item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
+                              item.meta.get("flags").map(python_list).unwrap_or_default());
+                }
+                clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
             } else {
                 ids
             };
@@ -539,7 +547,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 ops::undo(&brain, &session)
             };
             match undone {
-                Ok(sha) => println!("reverted {sha}"),
+                Ok(summary) => println!("{summary}"),
                 Err(e) => fail(e),
             }
         }
