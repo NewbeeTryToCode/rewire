@@ -1,6 +1,6 @@
 //! High-level operations shared by the CLI, the MCP server and consolidation.
 
-use crate::brain::{err_str, is_set, out_str, Brain, Node};
+use crate::brain::{is_set, out_str, Brain, Node};
 use crate::index::{Hit, Index, SearchOpts};
 use crate::util::{now_iso, relpath, short_of, take};
 use crate::{project, schema, security, skills, text, Error, Meta, Result};
@@ -375,17 +375,97 @@ pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Take one session back out of memory, whether its changes were applied at consolidation or approved later from
+/// the inbox: notes it created are removed, notes it updated return to their content before it, notes it
+/// superseded or contradicted become current again, and its pending proposals and session record are dropped.
+/// Works on the files (and git history for earlier versions), so later sessions' changes stay.
 pub fn undo(brain: &Brain, session: &str) -> Result<String> {
-    let log = out_str(&brain.git(&["log", "--format=%H %s", &format!("--grep=consolidate .*{session}")]));
-    let Some(sha) = log.lines().next().and_then(|l| l.split_whitespace().next()).map(String::from) else {
-        return op(format!("no consolidation commit found for session {session}"));
-    };
-    let r = brain.git(&["revert", "--no-edit", &sha]);
-    if !r.status.success() {
-        brain.git(&["revert", "--abort"]);
-        return op(format!("git revert failed: {}", err_str(&r)));
+    let of_session = |v: Option<&Value>| crate::nodefmt::parse_source(v).is_some_and(|(_, s, _)| s == session);
+    let mut dropped = 0;
+    for item in brain.iter_inbox() {
+        if of_session(item.meta.get("source")) {
+            fs::remove_file(&item.path)?;
+            dropped += 1;
+        }
     }
-    Ok(sha)
+    let nodes = brain.iter_nodes();
+    let mine: Vec<&Node> = nodes.iter().filter(|n| of_session(n.meta.get("source"))).collect();
+    let ids: std::collections::HashSet<&str> = mine.iter().map(|n| n.id()).collect();
+    let slug = crate::util::slugify(session, 40);
+    let records: Vec<std::path::PathBuf> = fs::read_dir(brain.path(&["sessions"]))
+        .map(|days| {
+            days.flatten()
+                .flat_map(|d| fs::read_dir(d.path()).map(|f| f.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default())
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&format!("-{slug}.md"))))
+                .collect()
+        })
+        .unwrap_or_default();
+    if mine.is_empty() && dropped == 0 && records.is_empty() {
+        return op(format!("nothing in memory comes from session {session}"));
+    }
+    let (mut removed, mut restored, mut reopened) = (0, 0, 0);
+    for node in &mine {
+        for (rel, to) in crate::nodefmt::edges_of(&node.meta) {
+            if rel != "supersedes" && rel != "contradicts" {
+                continue;
+            }
+            let Some(target) = resolve_id(brain, &to) else { continue };
+            // still replaced by a note from another session: leave it retired
+            let replaced = nodes.iter().any(|n| {
+                !ids.contains(n.id())
+                    && n.id() != target.id()
+                    && !is_set(n.meta.get("retracted_at"))
+                    && crate::nodefmt::edges_of(&n.meta)
+                        .iter()
+                        .any(|(r, t)| (r == "supersedes" || r == "contradicts") && resolve_id(brain, t).is_some_and(|x| x.id() == target.id()))
+            });
+            if ids.contains(target.id()) || replaced {
+                continue;
+            }
+            let mut meta = target.meta.clone();
+            meta.insert("retracted_at".into(), Value::Null);
+            meta.insert("valid_to".into(), Value::Null);
+            brain.write_node(&meta, &target.body, Some(&target.path))?;
+            reopened += 1;
+        }
+        match version_before(brain, &node.path, session) {
+            Some(text) => {
+                crate::util::atomic_write(&node.path, &text)?;
+                restored += 1;
+            }
+            None => {
+                fs::remove_file(&node.path)?;
+                removed += 1;
+            }
+        }
+    }
+    for path in &records {
+        fs::remove_file(path)?;
+        if let Some(day) = path.parent() {
+            let _ = fs::remove_dir(day); // only when that day holds no other session
+        }
+    }
+    write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("undo session {session}"));
+    Ok(format!(
+        "{removed} note(s) removed, {restored} restored to their earlier version, {reopened} made current again, \
+         {dropped} proposal(s) dropped"
+    ))
+}
+
+/// A note file's content just before `session` first wrote it (from git), or None when the session created it.
+fn version_before(brain: &Brain, path: &Path, session: &str) -> Option<String> {
+    let rel = relpath(path, &brain.root);
+    let log = out_str(&brain.git(&["log", "--reverse", "--format=%H", "--", &rel]));
+    for sha in log.lines() {
+        let text = out_str(&brain.git(&["show", &format!("{sha}:{rel}")]));
+        let Ok((meta, _)) = crate::nodefmt::parse(&text) else { continue };
+        if crate::nodefmt::parse_source(meta.get("source")).is_some_and(|(_, s, _)| s == session) {
+            let before = brain.git(&["show", &format!("{sha}^:{rel}")]);
+            return before.status.success().then(|| String::from_utf8_lossy(&before.stdout).into_owned());
+        }
+    }
+    None
 }
 
 pub fn doctor(brain: &Brain) -> Vec<String> {

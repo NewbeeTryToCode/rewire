@@ -228,7 +228,11 @@ pub fn claude_code_settings(command: &str) -> Value {
 pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<String> {
     let settings_path = settings_path
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| crate::brain::expand_user("~/.claude/settings.json"));
+        .unwrap_or_else(|| {
+            // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does)
+            let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
+            crate::brain::expand_user(&dir).join("settings.json")
+        });
     let wanted = claude_code_settings("rewire");
     let mut lines = Vec::new();
     if write {
