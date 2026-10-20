@@ -12,6 +12,25 @@ fn op<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error::Op(msg.into()))
 }
 
+/// Scope of a note proposed without one: the project of the working directory, else global. A rule stated
+/// while working in a repository is most often about that repository.
+pub fn default_scope(brain: &Brain, cwd: Option<&str>) -> String {
+    project::detect(cwd, &brain.config.projects).map(|p| format!("project:{p}")).unwrap_or_else(|| "global".into())
+}
+
+/// No recalled note or excerpt shares two of the query's content words (one for a one-word query): what came
+/// back matched only loosely (vectors, activation), and the memory may simply not hold the answer.
+pub fn weak_match(query: &str, hits: &Value) -> bool {
+    let need = text::content_words(query).len().min(2);
+    if need == 0 {
+        return false;
+    }
+    let texts = hits.as_array().map(|a| a.as_slice()).unwrap_or_default().iter().map(|h| {
+        ["title", "snippet", "body", "text"].iter().filter_map(|k| h.get(*k).and_then(Value::as_str)).collect::<Vec<_>>().join(" ")
+    });
+    !texts.into_iter().any(|t| text::overlap(query, &t) >= need)
+}
+
 pub fn resolve_id(brain: &Brain, reference: &str) -> Option<Node> {
     let r = reference.trim().trim_matches(|c| c == '[' || c == ']');
     if r.chars().count() == 26 {
@@ -29,11 +48,15 @@ pub fn resolve_id(brain: &Brain, reference: &str) -> Option<Node> {
         return if hits.len() == 1 { hits.into_iter().next() } else { None };
     }
     let matches: Vec<Node> = brain.iter_nodes().into_iter().filter(|n| n.id().to_lowercase().ends_with(&r)).collect();
-    if matches.len() == 1 { matches.into_iter().next() } else { None }
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
 }
 
 /// Rank fusion of extra queries (standard reciprocal-rank-fusion constant).
-const RRF_K: f64 = 60.0;
+use crate::index::RRF_K;
 pub const MAX_ALSO: usize = 4;
 /// Excerpt budget multiplier for counting / total / ordering questions (text::aggregate).
 pub const AGGREGATE_EPISODES: usize = 2;
@@ -157,8 +180,11 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
                 continue;
             };
             let why = skills::blocked(&skill);
-            let (description, body) =
-                if why.is_empty() { (skill.description.clone(), skill.body.clone()) } else { (security::blocked_label(why), String::new()) };
+            let (description, body) = if why.is_empty() {
+                (skill.description.clone(), skill.body.clone())
+            } else {
+                (security::blocked_label(why), String::new())
+            };
             out.push(json!({"id": format!("skill:{}", skill.name), "type": "skill", "name": skill.name,
                             "description": description, "updated": skill.updated, "body": body}));
             events.push(event("use", &format!("skill:{}", skill.name), 0.5, session, harness));
@@ -276,9 +302,7 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter(|e| {
-                    e.get("rel").and_then(Value::as_str).is_some_and(|r| schema::RELATIONS.contains(&r)) && truthy(e.get("to"))
-                })
+                .filter(|e| e.get("rel").and_then(Value::as_str).is_some_and(|r| schema::RELATIONS.contains(&r)) && truthy(e.get("to")))
                 .map(|e| json!({"rel": e["rel"], "to": e["to"]}))
                 .collect()
         })
@@ -452,9 +476,9 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
                 !ids.contains(n.id())
                     && n.id() != target.id()
                     && !is_set(n.meta.get("retracted_at"))
-                    && crate::nodefmt::edges_of(&n.meta)
-                        .iter()
-                        .any(|(r, t)| (r == "supersedes" || r == "contradicts") && resolve_id(brain, t).is_some_and(|x| x.id() == target.id()))
+                    && crate::nodefmt::edges_of(&n.meta).iter().any(|(r, t)| {
+                        (r == "supersedes" || r == "contradicts") && resolve_id(brain, t).is_some_and(|x| x.id() == target.id())
+                    })
             });
             if ids.contains(target.id()) || replaced {
                 continue;
@@ -546,6 +570,22 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     } else {
         report.push(format!("sync: no remote (this brain lives only on this machine) · device {device}"));
     }
+    if brain.config.provider == "command" {
+        let program = shlex::split(&brain.config.command).and_then(|a| a.into_iter().next()).unwrap_or_default();
+        let found = !program.is_empty()
+            && (Path::new(&program).is_file()
+                || std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(&program).is_file())));
+        if !found {
+            report.push(format!(
+                "consolidation: `{program}` is not on PATH, so sessions are not consolidated (set the command in local.toml)"
+            ));
+        }
+    }
+    let settings =
+        crate::brain::expand_user(&std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into())).join("settings.json");
+    if !fs::read_to_string(&settings).is_ok_and(|t| t.contains(" hook session-start")) {
+        report.push("claude code: hooks not installed (`rewire install claude-code --write`)".into());
+    }
     if !brain.config.synced_llm_settings.is_empty() {
         report.push(format!(
             "IGNORED brain.toml [consolidation] {}: brain.toml syncs to every device, so what runs the LLM is set per \
@@ -589,8 +629,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     }
     let get = |t: &str| by_type.get(t).cloned().unwrap_or_default();
     let inbox = brain.iter_inbox();
-    let counts: Vec<String> =
-        schema::TYPES.iter().filter(|t| !get(t).is_empty()).map(|t| format!("{} {t}", get(t).len())).collect();
+    let counts: Vec<String> = schema::TYPES.iter().filter(|t| !get(t).is_empty()).map(|t| format!("{} {t}", get(t).len())).collect();
     let mut lines: Vec<String> = vec![
         "# Brain".into(),
         "".into(),
@@ -600,7 +639,11 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     if !inbox.is_empty() {
         lines.push(format!("\n**{} proposal(s) waiting for review** — run `rewire review` (see below).", inbox.len()));
     }
-    let section = |lines: &mut Vec<String>, title: &str, rows: &[&crate::index::NodeRow], limit: Option<usize>, describe: &dyn Fn(&crate::index::NodeRow) -> String| {
+    let section = |lines: &mut Vec<String>,
+                   title: &str,
+                   rows: &[&crate::index::NodeRow],
+                   limit: Option<usize>,
+                   describe: &dyn Fn(&crate::index::NodeRow) -> String| {
         if rows.is_empty() {
             return;
         }
@@ -616,7 +659,11 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         }
     };
     let scope_of = |r: &crate::index::NodeRow| {
-        if r.scope == "global" { String::new() } else { format!(" · {}", r.scope.split_once(':').map(|x| x.1).unwrap_or("")) }
+        if r.scope == "global" {
+            String::new()
+        } else {
+            format!(" · {}", r.scope.split_once(':').map(|x| x.1).unwrap_or(""))
+        }
     };
     section(&mut lines, "Rules (always applied)", &get("constraint"), None, &scope_of);
     section(&mut lines, "Preferences", &get("preference"), None, &scope_of);
@@ -625,8 +672,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         lines.extend(["".into(), "## Projects".into()]);
         hubs.sort_by(|a, b| a.title.cmp(&b.title));
         for hub in hubs {
-            let members: Vec<&crate::index::NodeRow> =
-                active.iter().filter(|r| r.scope == hub.scope && r.type_ != "project").collect();
+            let members: Vec<&crate::index::NodeRow> = active.iter().filter(|r| r.scope == hub.scope && r.type_ != "project").collect();
             lines.extend(["".into(), format!("### {} — {} memories", md_link(brain, &hub.path, &hub.title), members.len()), "".into()]);
             for r in members.iter().take(10) {
                 lines.push(format!("- {} · {}", md_link(brain, &r.path, &r.title), r.type_));
@@ -639,11 +685,8 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     let mut recent: Vec<&crate::index::NodeRow> = active.iter().filter(|r| r.type_ != "project").collect();
     recent.sort_by(|a, b| (b.recorded_at.as_str(), b.id.as_str()).cmp(&(a.recorded_at.as_str(), a.id.as_str())));
     section(&mut lines, "Recently learned", &recent, Some(10), &|r| format!(" · {} · {}", r.type_, take(&r.recorded_at, 10)));
-    let globals: Vec<&crate::index::NodeRow> = ["fact", "decision", "concept", "person"]
-        .iter()
-        .flat_map(|t| get(t))
-        .filter(|r| r.scope == "global")
-        .collect();
+    let globals: Vec<&crate::index::NodeRow> =
+        ["fact", "decision", "concept", "person"].iter().flat_map(|t| get(t)).filter(|r| r.scope == "global").collect();
     section(&mut lines, "General knowledge", &globals, Some(20), &|r| format!(" · {}", r.type_));
 
     let mut sessions: Vec<std::path::PathBuf> = Vec::new();

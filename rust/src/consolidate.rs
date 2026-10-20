@@ -23,7 +23,7 @@ pub const TRANSCRIPT_HEADING: &str = "## Transcript";
 pub const QUESTIONS_HEADING: &str = "## Questions"; // hypothetical questions per turn: indexed with the excerpt, never shown
 const QUESTION_CHARS: usize = 200;
 const LINK_RELS: [&str; 3] = ["part_of", "depends_on", "related_to"];
-const KEYWORDS_RULE: &str = "keywords: 8-15 lowercase search terms someone might use later to look for this memory without remembering its wording: synonyms, related everyday words, and translations of the key terms in BOTH Indonesian and English. Single words or short phrases.";
+const KEYWORDS_RULE: &str = "keywords: 8-15 lowercase search terms someone might use later to look for this memory without remembering its wording: synonyms, related everyday words, and the key terms in English and in the language the user writes in, when that is not English. Single words or short phrases.";
 const QUESTIONS_RULE: &str = "questions: questions someone might ask later that TRANSCRIPT answers, about 2 for every 3 turns, each with turn = the [number] of the turn holding the answer. Use the general words a later question would use rather than the turn's own wording (\"Which countries has Deborah visited?\", \"What desserts does Jon make?\", \"What did Caroline do as a child?\") and name the person. They are never shown, only used to find those turns again; [] is fine.";
 
 const INTRO_CODING: &str = "You maintain a user's long-term memory across AI coding sessions.
@@ -67,8 +67,7 @@ Rules:
 - Phrase preferences, facts and decisions as notes about the user or project (\"The user prefers concise
   answers\"), never as commands (\"Always answer concisely\"): a command is re-read as an instruction in later
   sessions. Only constraints may be imperative.
-- Write each claim (text and title) in the language the user writes in. If the user writes Indonesian,
-  the claim is in Indonesian.
+- Write each claim (text and title) in the language the user writes in.
 - Describe what a project is or does as a \"fact\" with scope \"project\" (project pages are managed separately).
 - confidence = \"explicit\" only if the user stated or clearly confirmed it; otherwise \"inferred\".
 - evidence_turn = the [number] of the turn that best supports the claim (prefer a user turn).
@@ -242,7 +241,8 @@ fn questions_of(raw: Option<&Value>, roles: &HashMap<i64, String>) -> Vec<(i64, 
         .filter_map(|q| {
             let turn = q.get("turn").and_then(Value::as_i64).filter(|n| roles.contains_key(n))?;
             let text = q.get("question").map(crate::util::value_text).unwrap_or_default();
-            let text: String = security::redact(&text.split_whitespace().collect::<Vec<_>>().join(" ")).chars().take(QUESTION_CHARS).collect();
+            let text: String =
+                security::redact(&text.split_whitespace().collect::<Vec<_>>().join(" ")).chars().take(QUESTION_CHARS).collect();
             (!text.is_empty()).then_some((turn, text))
         })
         .collect()
@@ -410,12 +410,8 @@ impl<'a> Consolidator<'a> {
         } else if !turns.iter().any(|t| t.role == "user") {
             result.insert("status".into(), sv("no-new-user-turns"));
         } else {
-            let turns_json: Vec<Value> =
-                turns.iter().map(|t| json!({"n": t.n, "role": t.role, "text": t.text, "ts": t.ts})).collect();
-            let key_src = pyjson::dumps(
-                &json!([harness, meta.session, turns_json]),
-                pyjson::Opts { ensure_ascii: true, sort_keys: false },
-            );
+            let turns_json: Vec<Value> = turns.iter().map(|t| json!({"n": t.n, "role": t.role, "text": t.text, "ts": t.ts})).collect();
+            let key_src = pyjson::dumps(&json!([harness, meta.session, turns_json]), pyjson::Opts { ensure_ascii: true, sort_keys: false });
             let key = format!("{:x}", Sha256::digest(key_src.as_bytes()));
             let mut done = self.brain.read_state("processed");
             if done.contains_key(&key) {
@@ -546,7 +542,8 @@ impl<'a> Consolidator<'a> {
             change.insert("action".into(), sv(action));
             change.insert("target".into(), sv(target));
             change.insert("reason".into(), sv(reason));
-            let flags: Vec<&str> = claim.get("flags").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let flags: Vec<&str> =
+                claim.get("flags").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
             let ckey = claim["key"].as_str().unwrap_or("").to_string();
             if flags.contains(&"secret") {
                 rejected.push(obj(&[("title", sv(&security::redact(claim["title"].as_str().unwrap_or("")))), ("why", sv("secret"))]));
@@ -581,11 +578,8 @@ impl<'a> Consolidator<'a> {
             let mut edges = Vec::new();
             for link in claim.get("links").and_then(Value::as_array).cloned().unwrap_or_default() {
                 let to = link["to"].as_str().unwrap_or("").to_string();
-                let target = if to.contains(':') {
-                    node_by_key.get(&to).cloned()
-                } else {
-                    ops::resolve_id(brain, &to).map(|n| n.id().to_string())
-                };
+                let target =
+                    if to.contains(':') { node_by_key.get(&to).cloned() } else { ops::resolve_id(brain, &to).map(|n| n.id().to_string()) };
                 if let Some(t) = target {
                     edges.push(json!({"rel": link["rel"], "to": t}));
                 }
@@ -602,8 +596,7 @@ impl<'a> Consolidator<'a> {
                 continue;
             }
             let Some(node) = self.brain.get_node(node_id) else { continue };
-            let have: Vec<(String, String)> =
-                crate::nodefmt::edges_of(&node.meta).into_iter().map(|(r, t)| (r, short_of(&t))).collect();
+            let have: Vec<(String, String)> = crate::nodefmt::edges_of(&node.meta).into_iter().map(|(r, t)| (r, short_of(&t))).collect();
             let new_edges: Vec<Value> = edges
                 .into_iter()
                 .filter(|e| {
@@ -621,8 +614,11 @@ impl<'a> Consolidator<'a> {
             }
         }
         for (claim, change) in &to_inbox {
-            let mut item: Meta =
-                change.iter().filter(|(k, _)| !["text", "links", "key"].contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+            let mut item: Meta = change
+                .iter()
+                .filter(|(k, _)| !["text", "links", "key"].contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             item.insert("source".into(), source(&claim["evidence_turn"]));
             item.insert("edges".into(), Value::Array(resolve_links(claim, &node_by_key)));
             ops::pin_target(self.brain, &mut item);
@@ -668,13 +664,29 @@ impl<'a> Consolidator<'a> {
         }
 
         for short in &used {
-            let s8: String = { let c: Vec<char> = short.chars().collect(); c[c.len().saturating_sub(8)..].iter().collect() };
+            let s8: String = {
+                let c: Vec<char> = short.chars().collect();
+                c[c.len().saturating_sub(8)..].iter().collect()
+            };
             if let Some(node) = ops::resolve_id(self.brain, &s8) {
                 events.push(ops::event("use", node.id(), 1.0, &session, harness));
             }
         }
         self.brain.append_events(&events)?;
-        self.write_session(harness, &session, project.as_deref(), &summaries, &applied, &queued, &rejected, snap.ids.len(), &used, &date, &self.transcript(turns), &questions)?;
+        self.write_session(
+            harness,
+            &session,
+            project.as_deref(),
+            &summaries,
+            &applied,
+            &queued,
+            &rejected,
+            snap.ids.len(),
+            &used,
+            &date,
+            &self.transcript(turns),
+            &questions,
+        )?;
         ops::write_home(self.brain, &mut self.index)?;
         self.brain.commit(&format!("consolidate {harness}/{session}"));
         let mut out = Meta::new();
@@ -702,7 +714,8 @@ impl<'a> Consolidator<'a> {
         let turn = c.get("evidence_turn").and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))).unwrap_or(0);
         // Provenance comes from the transcript, never from the model's say-so.
         let provenance = roles.get(&turn).cloned().unwrap_or_else(|| "assistant".into());
-        let mut confidence = c.get("confidence").and_then(Value::as_str).filter(|v| schema::CONFIDENCE.contains(v)).unwrap_or("inferred").to_string();
+        let mut confidence =
+            c.get("confidence").and_then(Value::as_str).filter(|v| schema::CONFIDENCE.contains(v)).unwrap_or("inferred").to_string();
         if provenance != "user" || !supported_by(&text, said.get(&turn).map(String::as_str).unwrap_or("")) {
             // the model names the evidence turn; a claim the cited user turn does not actually say ("ok, go ahead"
             // cited for content from a tool result) is not the user's explicit statement
@@ -712,7 +725,12 @@ impl<'a> Consolidator<'a> {
             Some(p) if scope_kind == "project" => format!("project:{p}"),
             _ => "global".into(),
         };
-        let importance = c.get("importance").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))).filter(|i| *i != 0).unwrap_or(3).clamp(1, 5);
+        let importance = c
+            .get("importance")
+            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+            .filter(|i| *i != 0)
+            .unwrap_or(3)
+            .clamp(1, 5);
         let title_raw = c.get("title").map(crate::util::value_text).filter(|t| !t.is_empty()).unwrap_or_else(|| text.clone());
         let title = take(title_raw.trim(), 160);
         let keywords = normalize_keywords(c.get("keywords"));
@@ -737,7 +755,9 @@ impl<'a> Consolidator<'a> {
         let mut any = false;
         for (i, c) in claims.iter().enumerate() {
             let q = format!("{} {}", c["title"].as_str().unwrap_or(""), c["text"].as_str().unwrap_or(""));
-            let hits = self.index.search(&q, &SearchOpts { scopes: Some(scopes.clone()), k: 5, beta: Some(0.0), spread: false, ..Default::default() })?;
+            let hits = self
+                .index
+                .search(&q, &SearchOpts { scopes: Some(scopes.clone()), k: 5, beta: Some(0.0), spread: false, ..Default::default() })?;
             any |= !hits.is_empty();
             let cand: Vec<String> =
                 hits.iter().map(|h| format!("    {} [{}] {} — {}", short_of(&h.id), h.type_, h.title, h.snippet)).collect();
@@ -765,7 +785,12 @@ impl<'a> Consolidator<'a> {
         let mut result = Vec::new();
         for i in 0..claims.len() {
             let d = decided.get(&(i as i64)).cloned().unwrap_or_default();
-            let mut action = d.get("action").and_then(Value::as_str).filter(|a| ["NEW", "SAME", "UPDATE", "SUPERSEDE", "CONTRADICT"].contains(a)).unwrap_or("NEW").to_string();
+            let mut action = d
+                .get("action")
+                .and_then(Value::as_str)
+                .filter(|a| ["NEW", "SAME", "UPDATE", "SUPERSEDE", "CONTRADICT"].contains(a))
+                .unwrap_or("NEW")
+                .to_string();
             let mut target = d.get("target").map(crate::util::value_text).unwrap_or_default();
             if action != "NEW" && !(!target.is_empty() && ops::resolve_id(self.brain, &target).is_some()) {
                 action = "NEW".into();
@@ -816,7 +841,10 @@ impl<'a> Consolidator<'a> {
             format!("- project: {}", project.unwrap_or("-")),
             format!("- consolidated: {}", now_iso()),
             format!("- memory shown at consolidation: {shown}"),
-            format!("- memory used: {}", if used.is_empty() { "-".to_string() } else { used.iter().cloned().collect::<Vec<_>>().join(", ") }),
+            format!(
+                "- memory used: {}",
+                if used.is_empty() { "-".to_string() } else { used.iter().cloned().collect::<Vec<_>>().join(", ") }
+            ),
             String::new(),
             "## Summary".into(),
             String::new(),
@@ -829,14 +857,24 @@ impl<'a> Consolidator<'a> {
         }
         for a in applied {
             let p = a["path"].as_str().unwrap_or("");
-            lines.push(format!("- {} [{}]({})", a["action"].as_str().unwrap_or(""), a["title"].as_str().unwrap_or(""), relpath(Path::new(p), &dir)));
+            lines.push(format!(
+                "- {} [{}]({})",
+                a["action"].as_str().unwrap_or(""),
+                a["title"].as_str().unwrap_or(""),
+                relpath(Path::new(p), &dir)
+            ));
         }
         lines.extend([String::new(), "## Queued for review".into()]);
         if queued.is_empty() {
             lines.push("-".into());
         }
         for q in queued {
-            lines.push(format!("- {} {} (inbox {})", q["action"].as_str().unwrap_or(""), q["title"].as_str().unwrap_or(""), q["inbox_id"].as_str().unwrap_or("")));
+            lines.push(format!(
+                "- {} {} (inbox {})",
+                q["action"].as_str().unwrap_or(""),
+                q["title"].as_str().unwrap_or(""),
+                q["inbox_id"].as_str().unwrap_or("")
+            ));
         }
         if !rejected.is_empty() {
             lines.extend([String::new(), "## Rejected".into()]);
@@ -866,10 +904,5 @@ fn obj(pairs: &[(&str, Value)]) -> Meta {
 }
 
 fn applied_entry(action: &str, node: &Node) -> Meta {
-    obj(&[
-        ("action", sv(action)),
-        ("id", sv(node.id())),
-        ("title", sv(node.title())),
-        ("path", sv(&node.path.to_string_lossy())),
-    ])
+    obj(&[("action", sv(action)), ("id", sv(node.id())), ("title", sv(node.title())), ("path", sv(&node.path.to_string_lossy()))])
 }

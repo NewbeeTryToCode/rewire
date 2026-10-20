@@ -31,9 +31,8 @@ pub fn now_iso() -> String {
 /// recalls every question as of the moment its brain finished ingesting.
 pub fn now_ts() -> f64 {
     static PINNED: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
-    let pinned = PINNED.get_or_init(|| {
-        std::env::var("REWIRE_NOW").ok().and_then(|v| parse_iso(v.trim())).map(|t| t.timestamp_micros() as f64 / 1e6)
-    });
+    let pinned = PINNED
+        .get_or_init(|| std::env::var("REWIRE_NOW").ok().and_then(|v| parse_iso(v.trim())).map(|t| t.timestamp_micros() as f64 / 1e6));
     pinned.unwrap_or_else(|| Utc::now().timestamp_micros() as f64 / 1e6)
 }
 
@@ -65,18 +64,18 @@ pub fn slugify(text: &str, max_len: usize) -> String {
     let slug = slug.trim_matches('-');
     let cut: String = slug.chars().take(max_len).collect();
     let cut = cut.trim_end_matches('-');
-    if cut.is_empty() { "node".to_string() } else { cut.to_string() }
+    if cut.is_empty() {
+        "node".to_string()
+    } else {
+        cut.to_string()
+    }
 }
 
 pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_file_name(format!(
-        "{}.tmp-{}",
-        path.file_name().unwrap().to_string_lossy(),
-        std::process::id()
-    ));
+    let tmp = path.with_file_name(format!("{}.tmp-{}", path.file_name().unwrap().to_string_lossy(), std::process::id()));
     {
         let mut fh = fs::File::create(&tmp)?;
         fh.write_all(content.as_bytes())?;
@@ -113,7 +112,11 @@ pub fn relpath(target: &Path, start: &Path) -> String {
     for c in &t[common..] {
         parts.push(c.as_os_str().to_string_lossy().into_owned());
     }
-    if parts.is_empty() { ".".into() } else { parts.join("/") }
+    if parts.is_empty() {
+        ".".into()
+    } else {
+        parts.join("/")
+    }
 }
 
 /// Python `round(x, 4)` (correctly rounded, half-even on the exact binary value).
@@ -121,11 +124,14 @@ pub fn round_to(x: f64, digits: usize) -> f64 {
     format!("{x:.digits$}").parse().unwrap_or(x)
 }
 
-
 /// Run a command with a deadline. stdout and stderr are drained on their own threads (a child blocked on a full
 /// pipe would otherwise hang until the deadline), stdin is written on another, and a child past the deadline is
 /// killed and reaped. Err(TimedOut) on the deadline.
-pub fn run_with_timeout(mut cmd: std::process::Command, input: Option<String>, timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
+pub fn run_with_timeout(
+    mut cmd: std::process::Command,
+    input: Option<String>,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
     use std::io::{Read, Write};
     use std::process::Stdio;
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());

@@ -13,8 +13,22 @@ use std::sync::OnceLock;
 pub const RELATED: &str = "## Related";
 const DERIVED: [&str; 3] = ["aliases", "tags", "status"];
 const ORDER: [&str; 16] = [
-    "id", "type", "title", "status", "aliases", "tags", "scope", "importance", "confidence", "provenance",
-    "valid_from", "valid_to", "recorded_at", "retracted_at", "source", "keywords",
+    "id",
+    "type",
+    "title",
+    "status",
+    "aliases",
+    "tags",
+    "scope",
+    "importance",
+    "confidence",
+    "provenance",
+    "valid_from",
+    "valid_to",
+    "recorded_at",
+    "retracted_at",
+    "source",
+    "keywords",
 ];
 
 fn stem_id() -> &'static Regex {
@@ -51,7 +65,13 @@ fn value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
-        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         other => other.to_string(),
     }
 }
@@ -114,22 +134,14 @@ pub fn parse_source(source: Option<&Value>) -> Option<(String, String, i64)> {
 pub fn edges_of(meta: &Meta) -> Vec<(String, String)> {
     meta.get("edges")
         .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|e| Some((e.get("rel")?.as_str()?.to_string(), e.get("to")?.as_str()?.to_string())))
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|e| Some((e.get("rel")?.as_str()?.to_string(), e.get("to")?.as_str()?.to_string()))).collect())
         .unwrap_or_default()
 }
 
 pub fn parse(text: &str) -> Result<(Meta, String), String> {
     let (mut meta, body) = fm::loads(text)?;
     let mut body = body;
-    let idx = if body.starts_with(&format!("{RELATED}\n")) {
-        Some(0)
-    } else {
-        body.find(&format!("\n{RELATED}\n"))
-    };
+    let idx = if body.starts_with(&format!("{RELATED}\n")) { Some(0) } else { body.find(&format!("\n{RELATED}\n")) };
     if let Some(i) = idx {
         body.truncate(i);
     }
@@ -266,8 +278,14 @@ mod tests {
 
     #[test]
     fn sources() {
-        assert_eq!(source_text(&json!({"harness": "codex", "session": "abcdef123456", "turn": 4})).unwrap(), "codex · abcdef123456 · turn 4");
-        assert_eq!(parse_source(Some(&json!("locomo · conv-26-session_4 · turn 3"))), Some(("locomo".into(), "conv-26-session_4".into(), 3)));
+        assert_eq!(
+            source_text(&json!({"harness": "codex", "session": "abcdef123456", "turn": 4})).unwrap(),
+            "codex · abcdef123456 · turn 4"
+        );
+        assert_eq!(
+            parse_source(Some(&json!("locomo · conv-26-session_4 · turn 3"))),
+            Some(("locomo".into(), "conv-26-session_4".into(), 3))
+        );
         assert_eq!(parse_source(Some(&json!("x · y"))), None);
     }
 }

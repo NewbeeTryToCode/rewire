@@ -1,28 +1,50 @@
 # rewire
 
-**Own the brain, transfer it anywhere.** Portable memory for agent harnesses: one "brain" that you own (a git repo of markdown files) that can be plugged into Claude Code, Codex, and other harnesses.
+**Own the memory, take it anywhere.** Long-term memory for coding agents (Claude Code, Codex) that lives in a git
+repo of markdown files you own, and that you can read, edit, review, sync and undo.
 
-- **Files are the source of truth.** A memory node is markdown with frontmatter; it can be read, edited, diffed, and opened in Obsidian.
-- **Synapses are computed, not stored.** Usage is recorded as append-only events; memory strength (ACT-R, `d=0.7`) is recomputed from the log. Rules and preferences never decay.
-- **Learns after each session.** Transcripts are consolidated by an LLM into atomic claims; things the user stated explicitly are saved immediately, and the rest go to the inbox for review.
-- **Safe by default.** Provenance is taken from the transcript (not from the model's claims), tool output never automatically becomes a rule, secrets are rejected, and every consolidation can be reverted with `undo`. Injected memory is always fenced in `<rewire-memory>` and rescanned when displayed (`[BLOCKED]` if it contains a secret or an injection).
-- **Knows procedures, not just facts.** Procedures that worked (deploy, release, setup) are proposed as *skills* (`skills/<name>/SKILL.md`) and go to the inbox for review.
+- **Episodic memory with no LLM bill.** Every session's transcript is kept (secrets redacted, `<private>` parts
+  removed) and searched with hybrid retrieval: SQLite FTS5 keywords plus optional offline static vectors. Recall
+  makes no LLM calls; the benchmark gains measured so far all come from this layer (`docs/evaluation.md`).
+- **A reviewed layer of facts, rules and skills on top.** After a session, an LLM proposes atomic notes and reusable
+  procedures. What the user explicitly said is saved; everything else waits in an inbox. Rules (constraints) always
+  go through review.
+- **Files are the source of truth.** A note is markdown with frontmatter (Obsidian-friendly); usage is an
+  append-only event log; the index is derived and rebuilt from the files at any time.
+- **Safe by default.** Provenance comes from the transcript and the cited turn must actually say the claim; tool
+  output never becomes a rule on its own; secrets are refused; memory is fenced as data and re-scanned when shown;
+  every session can be taken back with `rewire undo`. What runs the LLM is set per device, never synced.
+- **Experimental:** ordering by usage (ACT-R decay over the event log) and spreading activation over note links.
+  Neither has improved answer accuracy in our measurements so far (the link graph measured +0.0 points); they are
+  kept for ranking order and under evaluation, not as a claim.
 
-Architecture (L0/L1/L2): [`docs/design/architecture.md`](docs/design/architecture.md) · File format: [`docs/design/format.md`](docs/design/format.md) · Design: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Concept: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Simulation evidence: [`experiments/phase0`](experiments/phase0/README.md) · Iteration log: [`docs/iterations.md`](docs/iterations.md) · Evaluation: [`docs/evaluation.md`](docs/evaluation.md)
+Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · File format: [`docs/design/format.md`](docs/design/format.md) · Design: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Background and hypotheses: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Iteration log: [`docs/iterations.md`](docs/iterations.md) · Evaluation: [`docs/evaluation.md`](docs/evaluation.md)
 
 ## Installation
 
+Download a release binary (Linux x86_64, macOS arm64/x86_64) from the GitHub releases page and put `rewire` on
+your PATH, or build it:
+
 ```bash
-cargo install --git https://github.com/NewbeeTryToCode/rewire rewire   # a single Rust binary, SQLite bundled
+cargo install --locked --git https://github.com/NewbeeTryToCode/rewire rewire   # one binary, SQLite bundled
 rewire init                     # creates ~/brain (or set REWIRE_BRAIN)
 ```
 
-rewire is a single Rust binary ([`rust/`](rust/), no runtime). Recall over MCP, with the server warm, takes a few ms on a
-small brain and tens of ms on a ~50-session, ~115k-token history (measured: [`experiments/eval/latency.py`](experiments/eval/latency.py)). Consolidation uses `claude -p` by default (your existing Claude Code login); to use the API directly, set `provider = "anthropic"` in `brain.toml` and set `ANTHROPIC_API_KEY`.
+Recall over MCP, with the server warm, takes a few ms on a small brain and tens of ms on a ~50-session,
+~115k-token history (measured: [`experiments/eval/latency.py`](experiments/eval/latency.py)).
 
-The benchmark harness in [`experiments/eval`](experiments/eval) is Python (dataset loading, LLM answering and judging); it drives the Rust binary and has no implementation of its own.
+**Consolidation (the only LLM use)** runs after a session, in the background, about two calls per session. It is
+configured per device in `~/brain/local.toml` (not synced): by default Claude Code's `claude -p` with Sonnet and
+your existing login, with no tools, no MCP servers and no settings or hooks. To use the API directly, set
+`provider = "anthropic"` there and export `ANTHROPIC_API_KEY`. `rewire doctor` reports failed consolidations, and
+the session-start snapshot mentions them too.
 
-Semantic search (optional, offline): `rewire semantic install` copies the WordLlama model from a local `wordllama` Python package (`pip install wordllama`) or from `--from <dir>`. Without the model, recall uses keywords only (BM25 + stemming); with it, recall is hybrid (keywords + vectors).
+Semantic search (optional, offline): `rewire semantic install` copies the WordLlama model from a local `wordllama`
+Python package (`pip install wordllama`) or from `--from <dir>`. Without it recall uses keywords only (BM25 +
+stemming); with it, recall is hybrid.
+
+The benchmark harness in [`experiments/eval`](experiments/eval) is Python (dataset loading, LLM answering and
+judging); it drives the Rust binary and has no implementation of its own.
 
 ## Connect to a harness
 
@@ -43,7 +65,7 @@ rewire prime                      # snapshot injected at the start of a session
 rewire recall "storage decision"  # search memory
 rewire recall "deploy" --from 2026-09-01 --to 2026-09-30   # prefer a specific period
 rewire get <id>                   # or: rewire get skill:<name>
-rewire remember --type preference "Always write tests before features"   # goes to the inbox
+rewire remember --type preference "Always write tests before features"   # goes to the inbox (scope: this project, or --scope global)
 rewire review                     # view the inbox
 rewire review approve <id|all>    # --force if the target note has changed since it was proposed
 rewire consolidate --pending      # process pending transcripts
@@ -66,7 +88,8 @@ rewire sync                       # manual pull + push
 ```
 ~/brain/
 ├── README.md                     # home page for humans (generated automatically)
-├── brain.toml                    # parameters, budget, provider, project map
+├── brain.toml                    # parameters, budgets, project map (synced)
+├── local.toml                    # which LLM consolidates, on this device (never synced)
 ├── nodes/<type>/<slug>-<id>.md   # memory (constraint, preference, fact, decision, project, person, concept)
 ├── events/<device>/YYYY-MM.jsonl # usage log (merge=union, never conflicts)
 ├── sessions/YYYY-MM-DD/*.md      # summary of each consolidated session

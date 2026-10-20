@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let child = Command::new("git").arg("-C").arg(cwd).args(args).stdin(std::process::Stdio::null()).output();
-    let _ = Duration::from_secs(5); // git rev-parse/remote are local and fast; no timeout needed
     match child {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => String::new(),
