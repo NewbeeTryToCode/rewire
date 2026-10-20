@@ -72,6 +72,9 @@ pub enum Cmd {
         also: Vec<String>,
         #[arg(long)]
         json: bool,
+        /// with --json: each memory's whole body, valid_from, recorded_at and source (read without marking it used)
+        #[arg(long)]
+        full: bool,
     },
     /// read memory notes by id
     Get {
@@ -117,6 +120,14 @@ pub enum Cmd {
         #[arg(long)]
         force: bool,
         ids: Vec<String>,
+    },
+    /// import sessions from JSON lines (transcripts only, or consolidated with --llm); one JSON record per session on stdout
+    Import {
+        /// JSON lines, `-` for stdin: {"harness", "session", "date", "cwd", "turns": [{"n", "role", "text", "ts"}]}
+        file: PathBuf,
+        /// consolidate each session through the configured LLM provider (otherwise: transcripts only, no LLM)
+        #[arg(long)]
+        llm: bool,
     },
     /// rebuild the index
     Rebuild,
@@ -252,7 +263,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("{}", snap.text);
             }
         }
-        Cmd::Recall { query, k, episodes, scope, since, until, also, json: as_json } => {
+        Cmd::Recall { query, k, episodes, scope, since, until, also, json: as_json, full } => {
             let brain = open_brain(bp);
             let mut index = Index::new(&brain);
             index.refresh()?;
@@ -262,8 +273,84 @@ pub fn run(cli: Cli) -> Result<()> {
                 Err(Error::Op(e)) => fail(&e),
                 other => other?,
             };
-            let items: Vec<Value> = hits.iter().map(|h| h.to_json()).collect();
+            let mut items: Vec<Value> = hits.iter().map(|h| h.to_json()).collect();
+            if full {
+                for item in items.iter_mut().filter(|i| i["type"] != "episode") {
+                    let Some(node) = item["id"].as_str().and_then(|id| ops::resolve_id(&brain, id)) else { continue };
+                    let blocked = !crate::security::blocked(&format!("{} {}", node.title(), node.body)).is_empty();
+                    item["body"] = json!(if blocked { String::new() } else { node.body.clone() });
+                    for key in ["valid_from", "recorded_at", "source"] {
+                        item[key] = node.meta.get(key).cloned().unwrap_or(Value::Null);
+                    }
+                }
+            }
             if as_json { print_json(&Value::Array(items)) } else { print_items(&items) }
+        }
+        Cmd::Import { file, llm: use_llm } => {
+            let brain = open_brain(bp);
+            let text = if file.as_os_str() == "-" {
+                let mut t = String::new();
+                std::io::stdin().read_to_string(&mut t)?;
+                t
+            } else {
+                std::fs::read_to_string(&file)?
+            };
+            let usage = crate::llm::Usage::default();
+            let provider: Box<dyn crate::llm::Provider> =
+                if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
+            let mut con = Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
+            let _g = writing(&brain);
+            let mut written = 0;
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let s: Value = serde_json::from_str(line).map_err(|e| Error::Op(format!("bad session line: {e}")))?;
+                let field = |k: &str| s.get(k).and_then(|v| v.as_str()).map(String::from);
+                let harness = field("harness").unwrap_or_else(|| "import".into());
+                let session = field("session").unwrap_or_else(|| "unknown".into());
+                let turns: Vec<crate::transcripts::Turn> = s["turns"]
+                    .as_array()
+                    .map(|a| a.as_slice())
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| crate::transcripts::Turn {
+                        n: t["n"].as_u64().map(|n| n as usize).unwrap_or(i + 1),
+                        role: t["role"].as_str().unwrap_or("user").into(),
+                        text: t["text"].as_str().unwrap_or("").into(),
+                        ts: t["ts"].as_str().unwrap_or("").into(),
+                    })
+                    .collect();
+                let meta = crate::transcripts::SessionMeta { session: Some(session.clone()), cwd: field("cwd"), date: field("date") };
+                let before = (usage.calls.get(), usage.prompt_chars.get(), usage.completion_chars.get(), usage.seconds.get());
+                let start = std::time::Instant::now();
+                let mut rec = json!({"session": session, "turns": turns.len()});
+                let outcome = if use_llm {
+                    con.consolidate(&harness, &meta, &turns).map(|r| {
+                        for key in ["applied", "queued", "rejected"] {
+                            rec[key] = json!(r.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()));
+                        }
+                    })
+                } else {
+                    let date = meta.date.clone().unwrap_or_default();
+                    con.write_session(&harness, &session, None, &[], &[], &[], &[], 0, &Default::default(), &date, &con.transcript(&turns), &[])
+                };
+                rec["ok"] = json!(outcome.is_ok());
+                rec["seconds"] = json!(crate::util::round_to(start.elapsed().as_secs_f64(), 2));
+                rec["llm_calls"] = json!(usage.calls.get() - before.0);
+                rec["prompt_chars"] = json!(usage.prompt_chars.get() - before.1);
+                rec["completion_chars"] = json!(usage.completion_chars.get() - before.2);
+                rec["llm_seconds"] = json!(crate::util::round_to(usage.seconds.get() - before.3, 2));
+                if let Err(e) = &outcome {
+                    rec["error"] = json!(e.to_string().chars().take(300).collect::<String>());
+                }
+                println!("{}", pyjson::dumps_utf8(&rec));
+                if outcome.is_err() {
+                    std::process::exit(1); // sessions build on each other: stop at the first failure, a rerun resumes
+                }
+                written += 1;
+            }
+            if !use_llm && written > 0 {
+                brain.commit(&format!("import {written} session(s)"));
+            }
         }
         Cmd::Get { ids, session, json: as_json } => {
             let brain = open_brain(bp);

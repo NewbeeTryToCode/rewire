@@ -49,6 +49,47 @@ pub fn extract_json(text: &str) -> Result<Meta> {
     }
 }
 
+/// LLM work done by consolidation, for cost reports (`rewire import --llm`).
+#[derive(Debug, Default)]
+pub struct Usage {
+    pub calls: std::cell::Cell<u64>,
+    pub failed: std::cell::Cell<u64>,
+    pub prompt_chars: std::cell::Cell<u64>,
+    pub completion_chars: std::cell::Cell<u64>,
+    pub seconds: std::cell::Cell<f64>,
+}
+
+/// Wraps a provider and adds each call to `usage`.
+pub struct Counting<'a> {
+    pub inner: Box<dyn Provider + 'a>,
+    pub usage: &'a Usage,
+}
+
+impl Provider for Counting<'_> {
+    fn complete_json(&self, system: &str, prompt: &str, schema: &Value) -> Result<Meta> {
+        let start = Instant::now();
+        let out = self.inner.complete_json(system, prompt, schema);
+        let u = self.usage;
+        u.calls.set(u.calls.get() + 1);
+        u.seconds.set(u.seconds.get() + start.elapsed().as_secs_f64());
+        u.prompt_chars.set(u.prompt_chars.get() + (system.chars().count() + prompt.chars().count()) as u64);
+        match &out {
+            Ok(m) => u.completion_chars.set(u.completion_chars.get() + crate::pyjson::dumps_utf8(&Value::Object(m.clone())).chars().count() as u64),
+            Err(_) => u.failed.set(u.failed.get() + 1),
+        }
+        out
+    }
+}
+
+/// For work that must not call a model (writing transcripts only).
+pub struct NoProvider;
+
+impl Provider for NoProvider {
+    fn complete_json(&self, _: &str, _: &str, _: &Value) -> Result<Meta> {
+        llm("no LLM provider in this command")
+    }
+}
+
 pub struct CommandProvider {
     pub argv: Vec<String>,
     pub workdir: PathBuf,

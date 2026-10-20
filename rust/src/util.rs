@@ -27,8 +27,14 @@ pub fn now_iso() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// The clock recall ranks by (activation decays with age). REWIRE_NOW (RFC 3339) pins it, so a benchmark
+/// recalls every question as of the moment its brain finished ingesting.
 pub fn now_ts() -> f64 {
-    Utc::now().timestamp_micros() as f64 / 1e6
+    static PINNED: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    let pinned = PINNED.get_or_init(|| {
+        std::env::var("REWIRE_NOW").ok().and_then(|v| parse_iso(v.trim())).map(|t| t.timestamp_micros() as f64 / 1e6)
+    });
+    pinned.unwrap_or_else(|| Utc::now().timestamp_micros() as f64 / 1e6)
 }
 
 /// Parse "2026-10-11T11:05:54Z" (or any RFC 3339 / bare date) to UTC.

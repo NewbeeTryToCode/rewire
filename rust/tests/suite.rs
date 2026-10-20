@@ -1032,6 +1032,50 @@ fn cli_end_to_end() {
     assert!(out(run(&["doctor"], None)).contains("nodes valid: yes"));
     let hook = run(&["hook", "session-start"], Some(&json!({"cwd": tmp.path()}).to_string()));
     assert!(out(hook).contains("SQLite"));
+    // recall --full: whole body, valid_from and source, read without marking the note used
+    let full: Value = serde_json::from_str(&out(run(&["recall", "--json", "--full", "--episodes", "0", "sqlite"], None))).unwrap();
+    assert!(full[0]["body"].as_str().unwrap().contains("SQLite FTS5") && full[0].get("valid_from").is_some());
+}
+
+#[test]
+fn import_writes_transcripts_without_an_llm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire = |args: &[&str], input: &str| {
+        use std::io::Write;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_rewire"))
+            .arg("--brain")
+            .arg(&brain)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(rewire(&["init"], "").status.success());
+    let toml = brain.join("brain.toml");
+    std::fs::write(&toml, read(&toml).replace("profile = \"coding\"", "profile = \"general\"")).unwrap();
+    let sessions = [
+        json!({"harness": "chat", "session": "s1", "date": "2024-03-01",
+               "turns": [{"n": 1, "role": "user", "text": "I adopted a corgi named Biscuit"},
+                         {"n": 2, "role": "assistant", "text": "Congratulations on Biscuit!"}]}),
+        json!({"harness": "chat", "session": "s2", "date": "2024-04-02",
+               "turns": [{"n": 1, "role": "user", "text": "We are moving to Lisbon in June"}]}),
+    ];
+    let input = sessions.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("\n");
+    let out = rewire(&["import", "-"], &input);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let records: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|r| r["ok"] == true && r["llm_calls"] == 0));
+    let session = read(&brain.join("sessions").join("2024-03-01").join("chat-s1.md"));
+    assert!(session.contains("[1 user] I adopted a corgi named Biscuit") && session.contains("[2 assistant]"));
+    let hits: Value = serde_json::from_str(&String::from_utf8_lossy(&rewire(&["recall", "--json", "--episodes", "2", "corgi"], "").stdout)).unwrap();
+    assert_eq!(hits[0]["type"], "episode");
+    assert!(hits[0]["text"].as_str().unwrap().contains("Biscuit"));
 }
 
 #[test]
