@@ -35,7 +35,7 @@ fn text(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
-        Some(other) => crate::cli::py_str(other),
+        Some(other) => crate::util::value_text(other),
     }
 }
 

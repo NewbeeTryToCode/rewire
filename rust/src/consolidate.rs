@@ -241,7 +241,7 @@ fn questions_of(raw: Option<&Value>, roles: &HashMap<i64, String>) -> Vec<(i64, 
     qs.iter()
         .filter_map(|q| {
             let turn = q.get("turn").and_then(Value::as_i64).filter(|n| roles.contains_key(n))?;
-            let text = q.get("question").map(crate::cli::py_str).unwrap_or_default();
+            let text = q.get("question").map(crate::util::value_text).unwrap_or_default();
             let text: String = security::redact(&text.split_whitespace().collect::<Vec<_>>().join(" ")).chars().take(QUESTION_CHARS).collect();
             (!text.is_empty()).then_some((turn, text))
         })
@@ -361,7 +361,8 @@ impl<'a> Consolidator<'a> {
         let started = now_ts();
         let mut paths: BTreeSet<String> = pending.keys().cloned().collect();
         paths.extend(extra_paths.iter().map(|p| p.to_string_lossy().into_owned()));
-        paths.extend(tx::discover(since).into_iter().map(|p| p.to_string_lossy().into_owned()));
+        let (found, still_active) = tx::discover(since);
+        paths.extend(found.into_iter().map(|p| p.to_string_lossy().into_owned()));
         let mut results = Vec::new();
         for path in &paths {
             if !Path::new(path).exists() {
@@ -380,10 +381,9 @@ impl<'a> Consolidator<'a> {
             }
         }
         // merge with entries hooks added while we were working
-        let latest = self.brain.read_state("pending");
-        let remaining: Meta = latest.into_iter().filter(|(p, _)| !paths.contains(p)).collect();
-        self.brain.write_state("pending", &remaining)?;
-        scan.insert("since_ts".into(), json!(started));
+        self.brain.update_state("pending", |latest| latest.retain(|p, _| !paths.contains(p)))?;
+        // a transcript still being written is looked at again next time
+        scan.insert("since_ts".into(), json!(still_active.map_or(started, |a| a.min(started))));
         self.brain.write_state("scan", &scan)?;
         Ok(results)
     }
@@ -460,7 +460,8 @@ impl<'a> Consolidator<'a> {
 
         self.index.refresh()?;
         let snap = snapshot::build(self.brain, &mut self.index, None, project.as_deref())?;
-        let scope = format!("project:{}", project.as_deref().unwrap_or("None"));
+        // no project: only global notes (the empty scope string matches none)
+        let scope = project.as_deref().map(|p| format!("project:{p}")).unwrap_or_default();
         let known: Vec<String> = self
             .index
             .rows("active = 1 AND scope IN ('global', ?)", &[&scope as &dyn rusqlite::ToSql])?
@@ -490,14 +491,14 @@ impl<'a> Consolidator<'a> {
                 if known.is_empty() { "(empty)".to_string() } else { known.join("\n") }
             );
             let out = self.provider.complete_json(&system, &prompt, &schema_v)?;
-            summaries.push(security::redact(out.get("summary").map(crate::cli::py_str).unwrap_or_default().trim()));
+            summaries.push(security::redact(out.get("summary").map(crate::util::value_text).unwrap_or_default().trim()));
             if uses_skills(&profile) {
                 if let Some(Value::Array(ps)) = out.get("skills") {
                     proposals.extend(ps.iter().filter_map(|p| p.as_object().cloned()));
                 }
             }
             if let Some(Value::Array(ids)) = out.get("used_memory_ids") {
-                used.extend(ids.iter().map(|i| crate::cli::py_str(i).to_lowercase()));
+                used.extend(ids.iter().map(|i| crate::util::value_text(i).to_lowercase()));
             }
             questions.extend(questions_of(out.get("questions"), &roles));
             if let Some(Value::Array(cs)) = out.get("claims") {
@@ -513,10 +514,10 @@ impl<'a> Consolidator<'a> {
                             ls.iter()
                                 .filter(|l| {
                                     l.get("rel").and_then(Value::as_str).is_some_and(|r| LINK_RELS.contains(&r))
-                                        && l.get("to").is_some_and(|t| !crate::cli::py_str(t).is_empty())
+                                        && l.get("to").is_some_and(|t| !crate::util::value_text(t).is_empty())
                                 })
                                 .map(|l| {
-                                    let to = crate::cli::py_str(&l["to"]);
+                                    let to = crate::util::value_text(&l["to"]);
                                     let to = match to.strip_prefix("claim:") {
                                         Some(n) => format!("{ci}:{}", n.trim()),
                                         None => to.to_lowercase(),
@@ -631,7 +632,7 @@ impl<'a> Consolidator<'a> {
 
         // Skills are followed as instructions: always reviewed by the user, never applied directly.
         for p in &proposals {
-            let get = |k: &str| p.get(k).filter(|v| !v.is_null()).map(crate::cli::py_str).unwrap_or_default();
+            let get = |k: &str| p.get(k).filter(|v| !v.is_null()).map(crate::util::value_text).unwrap_or_default();
             let name = skills::normalize_name(&get("name"));
             let steps = security::strip_private(&get("steps")).trim().to_string();
             if name.is_empty() || steps.is_empty() {
@@ -687,7 +688,7 @@ impl<'a> Consolidator<'a> {
     }
 
     fn normalize_claim(&self, c: &Meta, roles: &HashMap<i64, String>, said: &HashMap<i64, String>, project: Option<&str>) -> Option<Meta> {
-        let text = security::strip_private(&c.get("text").map(crate::cli::py_str).unwrap_or_default()).trim().to_string();
+        let text = security::strip_private(&c.get("text").map(crate::util::value_text).unwrap_or_default()).trim().to_string();
         let mut ty = c.get("type").and_then(Value::as_str).unwrap_or("").to_string();
         if text.is_empty() || !schema::TYPES.contains(&ty.as_str()) {
             return None;
@@ -712,7 +713,7 @@ impl<'a> Consolidator<'a> {
             _ => "global".into(),
         };
         let importance = c.get("importance").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))).filter(|i| *i != 0).unwrap_or(3).clamp(1, 5);
-        let title_raw = c.get("title").map(crate::cli::py_str).filter(|t| !t.is_empty()).unwrap_or_else(|| text.clone());
+        let title_raw = c.get("title").map(crate::util::value_text).filter(|t| !t.is_empty()).unwrap_or_else(|| text.clone());
         let title = take(title_raw.trim(), 160);
         let keywords = normalize_keywords(c.get("keywords"));
         let flags = security::scan(&format!("{text} {title}"));
@@ -765,12 +766,12 @@ impl<'a> Consolidator<'a> {
         for i in 0..claims.len() {
             let d = decided.get(&(i as i64)).cloned().unwrap_or_default();
             let mut action = d.get("action").and_then(Value::as_str).filter(|a| ["NEW", "SAME", "UPDATE", "SUPERSEDE", "CONTRADICT"].contains(a)).unwrap_or("NEW").to_string();
-            let mut target = d.get("target").map(crate::cli::py_str).unwrap_or_default();
+            let mut target = d.get("target").map(crate::util::value_text).unwrap_or_default();
             if action != "NEW" && !(!target.is_empty() && ops::resolve_id(self.brain, &target).is_some()) {
                 action = "NEW".into();
                 target = String::new();
             }
-            result.push((action, target, d.get("reason").map(crate::cli::py_str).unwrap_or_default()));
+            result.push((action, target, d.get("reason").map(crate::util::value_text).unwrap_or_default()));
         }
         Ok(result)
     }

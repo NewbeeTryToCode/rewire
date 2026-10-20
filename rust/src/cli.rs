@@ -178,6 +178,18 @@ pub enum Cmd {
     },
 }
 
+/// Groups `get` calls from one shell into one session: the parent process id where there is one.
+fn shell_id() -> u32 {
+    #[cfg(unix)]
+    {
+        std::os::unix::process::parent_id()
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::id()
+    }
+}
+
 /// The environment variable that shows this command runs inside a coding agent's shell, if any.
 fn agent_shell() -> Option<&'static str> {
     ["CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"]
@@ -373,7 +385,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Get { ids, session, json: as_json } => {
             let brain = open_brain(bp);
-            let session = session.unwrap_or_else(|| format!("cli-{}", std::os::unix::process::parent_id()));
+            let session = session.unwrap_or_else(|| format!("cli-{}", shell_id()));
             let items = ops::get(&brain, &ids, &session, "cli")?;
             if as_json { print_json(&Value::Array(items)) } else { print_items(&items) }
         }

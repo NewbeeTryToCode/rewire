@@ -9,10 +9,38 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 pub const GITATTRIBUTES: &str = "events/**/*.jsonl merge=union\n";
+/// The derived index, device-local state and device-local settings never sync. A pulled `.gitignore` that drops
+/// any of them gets them back (and stops tracking what it let in). Returns notes for what was repaired.
+pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
+    let path = brain.path(&[".gitignore"]);
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    let missing: Vec<&str> = [".index/", ".state/", "local.toml"].into_iter().filter(|e| !current.lines().any(|l| l.trim() == *e)).collect();
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sep = if current.is_empty() || current.ends_with('\n') { "" } else { "\n" };
+    atomic_write(&path, &format!("{current}{sep}{}\n", missing.join("\n")))?;
+    if brain.path(&[".git"]).is_dir() {
+        for entry in &missing {
+            brain.git(&["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", entry.trim_end_matches('/')]);
+        }
+        brain.commit("keep device-local files out of sync");
+    }
+    Ok(vec![format!(".gitignore: restored {}", missing.join(", "))])
+}
+
+/// Git settings for every git call on a brain: an identity of its own, no signing prompt (a user's
+/// `commit.gpgsign` would make every commit fail silently), and maintenance in the foreground (a detached git left
+/// running races the next writer and cleanup).
+pub const GIT_CONFIG: [&str; 10] = [
+    "-c", "user.name=rewire", "-c", "user.email=rewire@localhost", "-c", "commit.gpgsign=false", "-c",
+    "gc.autoDetach=false", "-c", "maintenance.autoDetach=false",
+];
+
 pub const GITIGNORE: &str = ".index/\n.state/\nlocal.toml\n.obsidian/workspace*.json\n";
 const DIRS: [&str; 6] = ["nodes", "events", "sessions", "inbox", ".index", ".state"];
 
@@ -164,7 +192,10 @@ impl Brain {
         if root.exists() && fs::read_dir(&root)?.next().is_some() {
             return Err(Error::Op(format!("{} is not empty", root.display())));
         }
-        let out = Command::new("git").args(["clone", "-q", url]).arg(&root).output()?;
+        let mut cmd = Command::new("git");
+        cmd.args(["clone", "-q", url]).arg(&root).env("GIT_TERMINAL_PROMPT", "0"); // never wait on a credential prompt
+        let out = crate::util::run_with_timeout(cmd, None, Duration::from_secs(120))
+            .map_err(|e| Error::Op(format!("git clone failed: {e}")))?;
         if !out.status.success() {
             return Err(Error::Op(format!("git clone failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
         }
@@ -185,11 +216,7 @@ impl Brain {
         if !self.path(&["local.toml"]).exists() {
             atomic_write(&self.path(&["local.toml"]), config::LOCAL_TOML)?;
         }
-        let ignore = self.path(&[".gitignore"]);
-        let current = fs::read_to_string(&ignore).unwrap_or_default();
-        if !current.lines().any(|l| l.trim() == "local.toml") {
-            atomic_write(&ignore, &format!("{}{}local.toml\n", current, if current.ends_with('\n') || current.is_empty() { "" } else { "\n" }))?;
-        }
+        ensure_ignores(self)?;
         #[cfg(unix)]
         {
             // memory holds personal notes and transcripts: readable by this user only
@@ -403,6 +430,25 @@ impl Brain {
         Ok(())
     }
 
+    /// Read-modify-write a state file under a short lock of its own, so a hook adding an entry and a consolidation
+    /// removing others cannot overwrite each other. Independent of the writer lock (hooks must not wait on it).
+    pub fn update_state(&self, name: &str, change: impl FnOnce(&mut Meta)) -> Result<()> {
+        fs::create_dir_all(self.path(&[".state"]))?;
+        let fh = fs::OpenOptions::new().create(true).write(true).truncate(false).open(self.path(&[".state", &format!("{name}.lock")]))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !FileExt::try_lock_exclusive(&fh).unwrap_or(false) {
+            if Instant::now() >= deadline {
+                return Err(Error::Locked(format!("state {name} is busy")));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut state = self.read_state(name);
+        change(&mut state);
+        let written = self.write_state(name, &state);
+        let _ = FileExt::unlock(&fh);
+        written
+    }
+
     /// Exclusive lock for writers (consolidation, sync).
     pub fn lock(&self, timeout: Duration) -> Result<LockGuard> {
         fs::create_dir_all(self.path(&[".state"]))?;
@@ -422,28 +468,32 @@ impl Brain {
     // ---- git -------------------------------------------------------------
 
     pub fn git(&self, args: &[&str]) -> Output {
-        Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(["-c", "user.name=rewire", "-c", "user.email=rewire@localhost"])
-            // auto maintenance in the foreground: a detached git left running races the next writer (and cleanup)
-            .args(["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"])
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap_or_else(|e| Output {
-                status: failed_status(),
-                stdout: Vec::new(),
-                stderr: e.to_string().into_bytes(),
-            })
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(&self.root).args(GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0");
+        crate::util::run_with_timeout(cmd, None, Duration::from_secs(120)).unwrap_or_else(|e| Output {
+            status: failed_status(),
+            stdout: Vec::new(),
+            stderr: e.to_string().into_bytes(),
+        })
     }
 
+    /// Commit everything. A failure other than "nothing to commit" is reported on stderr (and by `doctor`, which
+    /// lists uncommitted changes): memory that never reaches git is never synced and cannot be undone.
     pub fn commit(&self, message: &str) -> bool {
         if !self.path(&[".git"]).is_dir() {
             return false;
         }
-        self.git(&["add", "-A"]);
-        self.git(&["commit", "-q", "-m", message]).status.success()
+        let add = self.git(&["add", "-A"]);
+        if !add.status.success() {
+            eprintln!("rewire: git add failed: {}", err_str(&add));
+            return false;
+        }
+        let out = self.git(&["commit", "-q", "-m", message]);
+        let quiet = format!("{}{}", out_str(&out), err_str(&out));
+        if !out.status.success() && !quiet.contains("nothing to commit") && !quiet.contains("nothing added") {
+            eprintln!("rewire: git commit failed: {}", quiet.trim());
+        }
+        out.status.success()
     }
 }
 

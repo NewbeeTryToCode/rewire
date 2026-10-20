@@ -231,7 +231,16 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&Path) -> bool, recurs
     }
 }
 
-pub fn discover(since_ts: f64) -> Vec<PathBuf> {
+/// Seconds a transcript must have been left untouched before lazy discovery consolidates it: a session still
+/// running in another window is picked up after it goes quiet (or at once through its SessionEnd hook), not one
+/// fragment at a time. REWIRE_IDLE_SECS overrides it.
+pub fn idle_secs() -> f64 {
+    std::env::var("REWIRE_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(300.0)
+}
+
+/// Transcripts changed since `since_ts` and idle for `idle_secs()`, and the oldest change time among the ones still
+/// active (to look at them again next time).
+pub fn discover(since_ts: f64) -> (Vec<PathBuf>, Option<f64>) {
     let claude_dir = crate::brain::expand_user(&std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into()));
     let codex_dir = crate::brain::expand_user(&std::env::var("CODEX_HOME").unwrap_or_else(|_| "~/.codex".into()));
     let mut paths = Vec::new();
@@ -249,18 +258,28 @@ pub fn discover(since_ts: f64) -> Vec<PathBuf> {
         },
         true,
     );
-    let mut out: Vec<PathBuf> = paths
-        .into_iter()
-        .filter(|p| {
-            fs::metadata(p)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .is_some_and(|d| d.as_secs_f64() >= since_ts)
-        })
-        .collect();
+    let now = crate::util::now_ts();
+    let (idle, mut out, mut active) = (idle_secs(), Vec::new(), None::<f64>);
+    for p in paths {
+        let Some(mtime) = fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64())
+        else {
+            continue;
+        };
+        if mtime < since_ts {
+            continue;
+        }
+        if now - mtime < idle {
+            active = Some(active.map_or(mtime, |a: f64| a.min(mtime)));
+        } else {
+            out.push(p);
+        }
+    }
     out.sort();
-    out
+    (out, active)
 }
 
 #[cfg(test)]

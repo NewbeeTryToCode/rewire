@@ -668,7 +668,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         lines.extend(["".into(), "## Waiting for review".into(), "".into()]);
         for item in inbox.iter().take(20) {
             let m = &item.meta;
-            let g = |k: &str| m.get(k).map(crate::cli::py_str).unwrap_or_else(|| "None".into());
+            let g = |k: &str| m.get(k).map(crate::util::value_text).filter(|t| !t.is_empty()).unwrap_or_else(|| "-".into());
             let target = match m.get("target").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                 Some(t) => format!(" → `{}`", short_of(t)),
                 None => String::new(),
@@ -691,7 +691,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     let text = lines.join("\n");
     let path = brain.path(&["README.md"]);
     if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
-        fs::write(&path, text)?;
+        crate::util::atomic_write(&path, &text)?;
     }
     Ok(path)
 }
