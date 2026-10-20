@@ -9,9 +9,9 @@ use crate::config::Config;
 use crate::transcripts::INTERNAL_MARKER;
 use crate::{Error, Meta, Result};
 use serde_json::{json, Value};
-use std::io::Write;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub trait Provider {
@@ -114,32 +114,15 @@ impl Provider for CommandProvider {
             crate::pyjson::dumps(schema, crate::pyjson::Opts { ensure_ascii: true, sort_keys: false })
         );
         let Some((prog, args)) = self.argv.split_first() else { return llm("empty command") };
-        let mut child = Command::new(prog)
-            .args(args)
-            .current_dir(&self.workdir)
-            .env("REWIRE_INTERNAL", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::Llm(format!("command provider failed: {e}")))?;
-        let mut stdin = child.stdin.take().unwrap();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(full.as_bytes());
-        });
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            if child.try_wait()?.is_some() {
-                break;
+        let mut cmd = Command::new(prog);
+        cmd.args(args).current_dir(&self.workdir).env("REWIRE_INTERNAL", "1");
+        let out = match crate::util::run_with_timeout(cmd, Some(full), self.timeout) {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return llm(format!("command provider failed: timed out after {}s", self.timeout.as_secs()))
             }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                return llm(format!("command provider failed: timed out after {}s", self.timeout.as_secs()));
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let _ = writer.join();
-        let out = child.wait_with_output()?;
+            Err(e) => return llm(format!("command provider failed: {e}")),
+        };
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect::<String>();
             return llm(format!("command exited {}: {err}", out.status.code().unwrap_or(-1)));

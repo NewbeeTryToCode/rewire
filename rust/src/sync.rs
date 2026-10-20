@@ -10,33 +10,21 @@ use crate::util::now_iso;
 use crate::{nodefmt, Error, Meta, Result};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 pub const GIT_TIMEOUT: u64 = 30;
 
 fn git(brain: &Brain, args: &[&str], timeout: u64) -> Result<Output> {
-    let mut child = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(&brain.root)
-        .args(["-c", "user.name=rewire", "-c", "user.email=rewire@localhost"])
-        .args(["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"]) // as Brain::git
+        .args(crate::brain::GIT_CONFIG)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0") // never hang on a credential prompt in a hook
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(timeout);
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(child.wait_with_output()?);
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            return Err(Error::Sync(format!("git {} timed out", args[0])));
-        }
-        std::thread::sleep(Duration::from_millis(20));
+        .env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt in a hook
+    match crate::util::run_with_timeout(cmd, None, Duration::from_secs(timeout)) {
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(Error::Sync(format!("git {} timed out", args[0]))),
+        other => Ok(other?),
     }
 }
 
@@ -83,7 +71,7 @@ fn enable_auto(brain: &mut Brain) -> Result<()> {
     } else {
         text = format!("{}\n\n[sync]\nauto = true\n", text.trim_end());
     }
-    std::fs::write(&path, text)?;
+    crate::util::atomic_write(&path, &text)?;
     brain.config.sync_auto = true;
     brain.commit("enable sync");
     Ok(())
@@ -112,7 +100,7 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                     let (m_theirs, b_theirs) = nodefmt::parse(&theirs).map_err(Error::Sync)?;
                     let (winner, m_lose, b_lose) =
                         if stamp(&m_theirs) > stamp(&m_ours) { (theirs, m_ours, b_ours) } else { (ours, m_theirs, b_theirs) };
-                    std::fs::write(&full, winner)?;
+                    crate::util::atomic_write(&full, &winner)?;
                     let mut item = Meta::new();
                     for k in ["type", "title", "scope", "importance", "confidence", "provenance"] {
                         item.insert(k.into(), m_lose.get(k).cloned().unwrap_or(Value::Null));
@@ -130,13 +118,21 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                 }
                 (ours, theirs) => {
                     // deleted on one side: keep the surviving content
-                    std::fs::write(&full, ours.or(theirs).unwrap_or_default())?;
+                    crate::util::atomic_write(&full, &ours.or(theirs).unwrap_or_default())?;
                     notes.push(format!("{path}: kept the side that was not deleted"));
                 }
             }
         } else {
             g(brain, &["checkout", "--ours", "--", path])?;
-            notes.push(format!("{path}: conflict, kept this device's version"));
+            if [".gitignore", ".gitattributes", "brain.toml"].contains(&path) {
+                notes.push(format!("{path}: conflict, kept this device's version"));
+            } else if let Some(theirs) = stage(brain, 3, path) {
+                // e.g. a skill edited on both devices: keep the other version next to it instead of dropping it
+                let other = format!("{path}.from-other-device");
+                crate::util::atomic_write(&brain.root.join(&other), &theirs)?;
+                g(brain, &["add", "--", &other])?;
+                notes.push(format!("{path}: conflict, kept this device's version; the other one is in {other}"));
+            }
         }
         g(brain, &["add", "--", path])?;
     }
@@ -166,11 +162,26 @@ pub fn pull(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     if behind == "0" {
         return Ok(vec!["already up to date".into()]);
     }
-    let r = g(brain, &["merge", "--no-edit", "--allow-unrelated-histories", &reference])?;
+    // the merge gets the caller's budget too (a hook has seconds); on a timeout or a failed resolve the merge is
+    // aborted, so no conflict markers are left for the next commit to sweep in
+    let r = match git(brain, &["merge", "--no-edit", "--allow-unrelated-histories", &reference], timeout.max(8)) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = g(brain, &["merge", "--abort"]);
+            return Err(e);
+        }
+    };
     let mut notes = vec![format!("pulled {behind} commit(s)")];
     if !r.status.success() {
-        notes.extend(resolve(brain)?);
+        match resolve(brain) {
+            Ok(n) => notes.extend(n),
+            Err(e) => {
+                let _ = g(brain, &["merge", "--abort"]);
+                return Err(e);
+            }
+        }
     }
+    notes.extend(crate::brain::ensure_ignores(brain)?);
     Ok(notes)
 }
 

@@ -80,6 +80,7 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     {
         let mut fh = fs::File::create(&tmp)?;
         fh.write_all(content.as_bytes())?;
+        fh.sync_all()?; // the rename must never expose an empty or half-written file after a crash
     }
     fs::rename(tmp, path)
 }
@@ -118,6 +119,60 @@ pub fn relpath(target: &Path, start: &Path) -> String {
 /// Python `round(x, 4)` (correctly rounded, half-even on the exact binary value).
 pub fn round_to(x: f64, digits: usize) -> f64 {
     format!("{x:.digits$}").parse().unwrap_or(x)
+}
+
+
+/// Run a command with a deadline. stdout and stderr are drained on their own threads (a child blocked on a full
+/// pipe would otherwise hang until the deadline), stdin is written on another, and a child past the deadline is
+/// killed and reaped. Err(TimedOut) on the deadline.
+pub fn run_with_timeout(mut cmd: std::process::Command, input: Option<String>, timeout: std::time::Duration) -> std::io::Result<std::process::Output> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let writer = child.stdin.take().map(|mut stdin| {
+        let data = input.unwrap_or_default();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(data.as_bytes());
+        })
+    });
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
+    Ok(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
+}
+
+/// A JSON value as plain text for memory content: a string as itself, null as "" (never "None"), anything else
+/// as its JSON text.
+pub fn value_text(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]

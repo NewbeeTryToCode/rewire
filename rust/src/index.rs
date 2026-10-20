@@ -23,7 +23,12 @@ use std::time::UNIX_EPOCH;
 pub const SCHEMA: &str = "9";
 const HOP_DECAY: f64 = 0.5;
 const ACT_MAX_AGE: f64 = 300.0;
-const SCAN_MAX_AGE: f64 = 60.0;
+/// Directory mtimes do not change on an in-place edit (an editor saving a note): the full stat scan runs at
+/// least this often, so a hand edit shows up in recall within seconds.
+const SCAN_MAX_AGE: f64 = 2.0;
+/// Rows embedded per refresh: the first build after `rewire semantic install` is spread over several refreshes
+/// instead of stalling one hook past its time limit (rows without vectors are found by keywords meanwhile).
+pub const EMBED_BATCH: usize = 256;
 const EP_WINDOW: usize = 6;
 const EP_STEP: usize = 4;
 pub const RRF_K: f64 = 60.0;
@@ -233,6 +238,8 @@ pub struct Index {
     /// cached (ids, scopes, vectors) of nodes and (rowids, vectors) of episodes for semantic search
     mat: Option<NodeVectors>,
     epmat: Option<EpisodeVectors>,
+    /// rows embedded per refresh (0 = all); hooks set EMBED_BATCH to stay within their time limit
+    pub embed_limit: usize,
 }
 
 fn mtime_ns(md: &fs::Metadata) -> i64 {
@@ -447,6 +454,7 @@ impl Index {
             seed_weight: 0.35,
             mat: None,
             epmat: None,
+            embed_limit: 0,
         }
     }
 
@@ -458,24 +466,51 @@ impl Index {
             db.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
             Ok(db)
         };
-        let db = open(&self.path)?;
+        let db = match open(&self.path) {
+            Ok(db) => db,
+            Err(_) => {
+                // unreadable (not a database): nobody can be using it, start over
+                self.remove_files();
+                open(&self.path)?
+            }
+        };
         let ok: Option<String> =
             db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get(0)).optional().unwrap_or(None);
-        if ok.as_deref() == Some(SCHEMA) {
-            let sem: Option<String> =
-                db.query_row("SELECT v FROM meta WHERE k='semantic'", [], |r| r.get(0)).optional().unwrap_or(None);
-            if sem.as_deref() == Some(sem_flag()) {
-                return Ok(db);
+        if ok.as_deref() != Some(SCHEMA) {
+            // missing or older schema: rebuilt from the files inside the same database file (see reset)
+            Self::reset(&db)?;
+        }
+        Ok(db)
+    }
+
+    /// Empty the index in place, in one write transaction. Other processes (an MCP server, a hook) keep valid
+    /// handles and see either the old index or the new one; deleting the files under them broke both.
+    /// Whether semantic search is on is not part of the identity: vectors missing for some rows are filled in
+    /// by `embed_pending`, and a process without the model simply ignores them.
+    fn reset(db: &Connection) -> Result<()> {
+        static TABLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let names: Vec<String> = TABLE
+            .get_or_init(|| regex::Regex::new(r"CREATE (?:VIRTUAL )?TABLE (\w+)").unwrap())
+            .captures_iter(DDL)
+            .map(|c| c[1].to_string())
+            .collect();
+        db.execute_batch("BEGIN IMMEDIATE")?;
+        let done = (|| -> Result<()> {
+            for name in &names {
+                db.execute_batch(&format!("DROP TABLE IF EXISTS {name}"))?;
+            }
+            db.execute_batch(DDL)?;
+            db.execute("INSERT INTO meta VALUES ('schema', ?)", [SCHEMA])?;
+            db.execute("INSERT INTO meta VALUES ('semantic', ?)", [sem_flag()])?;
+            Ok(())
+        })();
+        match done {
+            Ok(()) => Ok(db.execute_batch("COMMIT")?),
+            Err(e) => {
+                let _ = db.execute_batch("ROLLBACK");
+                Err(e)
             }
         }
-        // missing, older schema, or semantic model installed/removed since the build: rebuild from the files
-        drop(db);
-        self.remove_files();
-        let db = open(&self.path)?;
-        db.execute_batch(DDL)?;
-        db.execute("INSERT INTO meta VALUES ('schema', ?)", [SCHEMA])?;
-        db.execute("INSERT INTO meta VALUES ('semantic', ?)", [sem_flag()])?;
-        Ok(db)
     }
 
     fn remove_files(&self) {
@@ -497,8 +532,12 @@ impl Index {
     }
 
     pub fn rebuild(&mut self) -> Result<i64> {
-        self.close();
-        self.remove_files();
+        if self.db.is_none() {
+            self.db = Some(self.connect()?);
+        }
+        Self::reset(self.db.as_ref().unwrap())?;
+        self.mat = None;
+        self.epmat = None;
         self.refresh()?;
         Ok(self.db()?.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?)
     }
@@ -550,8 +589,8 @@ impl Index {
         };
         let ep_changed = self.sync_episodes(db)?;
         let any = !changed.is_empty() || ep_changed;
-        if any {
-            Self::embed_pending(db)?;
+        if any || Self::vectors_missing(db)? {
+            Self::embed_pending(db, self.embed_limit)?;
         }
         let row: Option<String> = db.query_row("SELECT v FROM meta WHERE k='act_at'", [], |r| r.get(0)).optional()?;
         let stale = match row.and_then(|v| v.parse::<f64>().ok()) {
@@ -571,12 +610,29 @@ impl Index {
     // ---- incremental sync ------------------------------------------------
 
     /// Vectors for nodes/episodes that have none yet (derived data, like everything here).
-    fn embed_pending(db: &Connection) -> Result<()> {
+    /// The model is installed but some rows have no vector yet (it was installed after they were indexed).
+    fn vectors_missing(db: &Connection) -> Result<bool> {
+        if !semantic::available() {
+            return Ok(false);
+        }
+        let missing: Option<i64> = db
+            .query_row(
+                "SELECT 1 WHERE EXISTS (SELECT 1 FROM nodes WHERE id NOT IN (SELECT id FROM vec)) \
+                 OR EXISTS (SELECT 1 FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec))",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(missing.is_some())
+    }
+
+    fn embed_pending(db: &Connection, limit: usize) -> Result<()> {
+        let limit = if limit == 0 { -1 } else { limit as i64 };
         if !semantic::available() {
             return Ok(());
         }
         let rows: Vec<(String, String, String, String)> = {
-            let mut st = db.prepare("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec)")?;
+            let mut st = db.prepare(&format!("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec) LIMIT {limit}"))?;
             let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             it.collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -586,7 +642,7 @@ impl Index {
                 let kw = serde_json::from_str::<Value>(meta)
                     .ok()
                     .and_then(|m| m.get("keywords").and_then(Value::as_array).cloned())
-                    .map(|a| a.iter().map(crate::cli::py_str).collect::<Vec<_>>().join(" "))
+                    .map(|a| a.iter().map(crate::util::value_text).collect::<Vec<_>>().join(" "))
                     .unwrap_or_default();
                 format!("{title}. {body} {kw}")
             })
@@ -597,7 +653,7 @@ impl Index {
             }
         }
         let eps: Vec<(i64, String)> = {
-            let mut st = db.prepare("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec)")?;
+            let mut st = db.prepare(&format!("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec) LIMIT {limit}"))?;
             let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             it.collect::<rusqlite::Result<Vec<_>>>()?
         };

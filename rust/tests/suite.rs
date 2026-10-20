@@ -705,7 +705,10 @@ fn install_claude_code_merges_settings() {
     let cmds = |v: &Value| -> Vec<String> {
         v["hooks"]["SessionStart"].as_array().unwrap().iter().flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string())).collect()
     };
-    assert_eq!(cmds(&hooks), vec!["other", "rewire hook session-start"]);
+    let got = cmds(&hooks);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0], "other");
+    assert!(got[1].ends_with(" hook session-start") && got[1].starts_with('/'), "hooks call the binary by full path: {got:?}");
     let backup: Value = serde_json::from_str(&read(&c.dir.join("settings.json.bak-rewire"))).unwrap();
     assert_eq!(cmds(&backup), vec!["other"]);
     assert!(hooks["hooks"].get("PreCompact").is_some());
@@ -1306,4 +1309,80 @@ fn approving_same_confirms_instead_of_duplicating() {
     assert_eq!(node.id(), pref.id());
     assert_eq!(c.brain.iter_nodes().len(), 1);
     assert!(ops::apply_change(&c.brain, &m(json!({"action": "MERGE", "type": "fact", "text": "x"})), None).is_err());
+}
+
+// ---- robustness review fixes (2026-10-20) ---------------------------------
+
+#[test]
+fn subprocess_output_larger_than_a_pipe_does_not_hang() {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "head -c 300000 /dev/zero | tr '\\0' x; head -c 200000 /dev/zero | tr '\\0' y >&2"]);
+    let out = rewire::util::run_with_timeout(cmd, None, std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(out.stdout.len(), 300000);
+    assert_eq!(out.stderr.len(), 200000);
+    let mut slow = Command::new("sleep");
+    slow.arg("5");
+    let err = rewire::util::run_with_timeout(slow, None, std::time::Duration::from_millis(200)).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[test]
+fn index_rebuild_keeps_open_handles_valid() {
+    let mut c = Case::new();
+    c.add("decision", "Use SQLite FTS5 for recall", json!({}));
+    let mut other = Index::new(&c.brain); // another process's handle
+    other.refresh().unwrap();
+    let before = std::fs::metadata(c.brain.path(&[".index", "brain.db"])).unwrap();
+    assert_eq!(c.index.rebuild().unwrap(), 1);
+    let after = std::fs::metadata(c.brain.path(&[".index", "brain.db"])).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(before.ino(), after.ino(), "the database file was replaced under other processes");
+    }
+    let _ = (before, after);
+    assert!(!other.search("sqlite recall", &SearchOpts::default()).unwrap().is_empty());
+}
+
+#[test]
+fn null_from_the_model_never_becomes_text() {
+    assert_eq!(rewire::util::value_text(&Value::Null), "");
+    let c = Case::new();
+    let mut cl = claim("Prefers concise answers", 2, "preference");
+    cl["title"] = Value::Null;
+    let r = run_fixture(&c.brain, Fake::new(vec![json!({"summary": null, "claims": [cl], "used_memory_ids": []})]));
+    let all = format!("{r:?}");
+    assert!(!all.contains("\"None\""), "{all}");
+    assert!(c.brain.iter_nodes().iter().all(|n| n.title() != "None"));
+}
+
+#[test]
+fn state_updates_from_two_writers_are_both_kept() {
+    let c = Case::new();
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let root = c.brain.root.clone();
+            std::thread::spawn(move || {
+                let b = Brain::open(Some(&root));
+                b.update_state("pending", |m| {
+                    m.insert(format!("t{i}"), json!("claude-code"));
+                })
+                .unwrap();
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(c.brain.read_state("pending").len(), 8);
+}
+
+#[test]
+fn a_pulled_gitignore_cannot_expose_device_local_files() {
+    let c = Case::new();
+    std::fs::write(c.brain.path(&[".gitignore"]), ".obsidian/\n").unwrap();
+    let notes = rewire::brain::ensure_ignores(&c.brain).unwrap();
+    assert!(notes[0].contains(".state/") && notes[0].contains("local.toml"));
+    let text = read(&c.brain.path(&[".gitignore"]));
+    assert!(text.contains(".index/") && text.contains(".state/") && text.contains("local.toml"));
 }
