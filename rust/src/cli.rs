@@ -178,6 +178,25 @@ pub enum Cmd {
     },
 }
 
+/// The environment variable that shows this command runs inside a coding agent's shell, if any.
+fn agent_shell() -> Option<&'static str> {
+    ["CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"]
+        .into_iter()
+        .find(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
+}
+
+/// Ask on the controlling terminal (not stdin, which a caller can fill) and read the answer from it.
+fn confirm_on_tty(question: &str) -> bool {
+    use std::io::{BufRead, Write};
+    let Ok(tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") else { return false };
+    let mut out = &tty;
+    if out.write_all(question.as_bytes()).is_err() || out.flush().is_err() {
+        return false;
+    }
+    let mut answer = String::new();
+    std::io::BufReader::new(&tty).read_line(&mut answer).is_ok() && matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("{msg}");
     std::process::exit(1)
@@ -364,8 +383,18 @@ pub fn run(cli: Cli) -> Result<()> {
             let provenance = if apply { "user" } else { "assistant" };
             let result = (|| -> Result<()> {
                 if apply {
-                    if !std::io::stdin().is_terminal() {
-                        fail("--apply is only allowed from an interactive terminal (agents use the review queue)");
+                    // --apply writes an explicit user memory with no review: only a person at a terminal may do it.
+                    // An agent's shell (even one inside a pseudo-terminal) is refused, and the person confirms on
+                    // the terminal itself.
+                    if let Some(marker) = agent_shell() {
+                        fail(format!("--apply is refused inside an agent session ({marker} is set): agents propose with `rewire remember`, the user approves with `rewire review`"));
+                    }
+                    if !std::io::stdin().is_terminal() || !confirm_on_tty(&format!("Save as your own explicit {type_}, with no review?\n  {text}\n[y/N] ")) {
+                        fail("--apply needs a person at the terminal to confirm (agents use the review queue)");
+                    }
+                    let why = crate::security::scan(&text);
+                    if !why.is_empty() {
+                        fail(format!("refused: text looks like it contains {}", why.join(" and ")));
                     }
                     let mut change = Meta::new();
                     for (k, v) in [

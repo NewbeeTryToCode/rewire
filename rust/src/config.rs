@@ -16,19 +16,14 @@ preferences = 800
 working = 2500
 
 [consolidation]
-# provider: "command" runs a CLI that reads the prompt on stdin and prints text,
-#           e.g. "claude -p" (uses your existing Claude Code login)
-# provider: "anthropic" calls the Anthropic Messages API (needs ANTHROPIC_API_KEY)
+# Which LLM consolidates (provider, command, model, effort) is set per device in local.toml, which is not
+# synced: a value here would reach, and run on, every device that pulls this brain.
 # profile: "coding" keeps durable working knowledge only (default);
 #          "general" remembers people, events and plans (a personal second brain).
 profile = "coding"
 # transcripts: keep a searchable, secret-redacted transcript in sessions/ ("episodes").
 #              "auto" = user turns for coding, everything for general; or "user" / "all" / "none".
 transcripts = "auto"
-provider = "command"
-command = "claude -p --output-format text"
-model = "claude-opus-5-5"
-effort = "medium"
 max_chunk_chars = 60000
 
 [sync]
@@ -65,6 +60,8 @@ pub struct Config {
     pub model: String,
     pub effort: String,
     pub max_chunk_chars: usize,
+    /// brain.toml (synced) tried to set provider/command/model/effort: ignored, reported by `doctor`
+    pub synced_llm_settings: Vec<String>,
     /// slug -> match patterns
     pub projects: IndexMap<String, Vec<String>>,
 }
@@ -80,14 +77,33 @@ impl Default for Config {
             profile: "coding".into(),
             transcripts: "auto".into(),
             provider: "command".into(),
-            command: "claude -p --output-format text".into(),
-            model: "claude-opus-5-5".into(),
+            command: DEFAULT_COMMAND.into(),
+            model: "claude-sonnet-5-5".into(),
             effort: "medium".into(),
             max_chunk_chars: 60000,
+            synced_llm_settings: Vec::new(),
             projects: IndexMap::new(),
         }
     }
 }
+
+/// Device-local settings (not synced): which LLM consolidates. Written by `rewire init`.
+pub const LOCAL_TOML: &str = r#"# rewire settings for this device only (not synced; see .gitignore)
+
+[consolidation]
+# provider: "command" runs a CLI that reads the prompt on stdin and prints text (default: Claude Code's
+#           `claude -p`, with your existing login, no tools, no MCP servers and no settings or hooks)
+# provider: "anthropic" calls the Anthropic Messages API (needs ANTHROPIC_API_KEY)
+provider = "command"
+command = "claude -p --model claude-sonnet-5-5 --output-format text --tools \"\" --strict-mcp-config --setting-sources \"\""
+model = "claude-sonnet-5-5"
+effort = "medium"
+"#;
+
+/// The default consolidation command: the model sees transcripts (untrusted text), so it gets no tools,
+/// no MCP servers and none of the user's settings or hooks.
+pub const DEFAULT_COMMAND: &str =
+    "claude -p --model claude-sonnet-5-5 --output-format text --tools \"\" --strict-mcp-config --setting-sources \"\"";
 
 /// `re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-") or "default"`
 pub fn slug(text: &str) -> String {
@@ -162,10 +178,25 @@ pub fn load(path: &Path) -> Config {
     }
     cfg.profile = string(con.get("profile")).unwrap_or(cfg.profile);
     cfg.transcripts = string(con.get("transcripts")).unwrap_or(cfg.transcripts);
-    cfg.provider = string(con.get("provider")).unwrap_or(cfg.provider);
-    cfg.command = string(con.get("command")).unwrap_or(cfg.command);
-    cfg.model = string(con.get("model")).unwrap_or(cfg.model);
-    cfg.effort = string(con.get("effort")).unwrap_or(cfg.effort);
+    // what runs on this machine comes from local.toml only; brain.toml syncs from the remote
+    const LEGACY_DEFAULTS: [&str; 3] = ["command", "claude -p --output-format text", "claude-opus-5-5"];
+    for key in ["provider", "command", "model", "effort"] {
+        if let Some(v) = string(con.get(key)) {
+            if !LEGACY_DEFAULTS.contains(&v.as_str()) && !(key == "effort" && v == "medium") {
+                cfg.synced_llm_settings.push(key.to_string());
+            }
+        }
+    }
+    let local = path
+        .parent()
+        .and_then(|dir| std::fs::read_to_string(dir.join("local.toml")).ok())
+        .and_then(|t| t.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("consolidation").and_then(|v| v.as_table()).cloned())
+        .unwrap_or_default();
+    cfg.provider = string(local.get("provider")).unwrap_or(cfg.provider);
+    cfg.command = string(local.get("command")).unwrap_or(cfg.command);
+    cfg.model = string(local.get("model")).unwrap_or(cfg.model);
+    cfg.effort = string(local.get("effort")).unwrap_or(cfg.effort);
     if let Some(v) = num(con.get("max_chunk_chars")) {
         cfg.max_chunk_chars = v as usize;
     }

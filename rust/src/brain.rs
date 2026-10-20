@@ -13,7 +13,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub const GITATTRIBUTES: &str = "events/**/*.jsonl merge=union\n";
-pub const GITIGNORE: &str = ".index/\n.state/\n.obsidian/workspace*.json\n";
+pub const GITIGNORE: &str = ".index/\n.state/\nlocal.toml\n.obsidian/workspace*.json\n";
 const DIRS: [&str; 6] = ["nodes", "events", "sessions", "inbox", ".index", ".state"];
 
 pub fn default_path() -> PathBuf {
@@ -181,6 +181,21 @@ impl Brain {
     }
 
     fn init_local_state(&self, device: Option<&str>) -> Result<()> {
+        // Device-local settings (which LLM runs consolidation) never sync; older brains get the ignore rule here.
+        if !self.path(&["local.toml"]).exists() {
+            atomic_write(&self.path(&["local.toml"]), config::LOCAL_TOML)?;
+        }
+        let ignore = self.path(&[".gitignore"]);
+        let current = fs::read_to_string(&ignore).unwrap_or_default();
+        if !current.lines().any(|l| l.trim() == "local.toml") {
+            atomic_write(&ignore, &format!("{}{}local.toml\n", current, if current.ends_with('\n') || current.is_empty() { "" } else { "\n" }))?;
+        }
+        #[cfg(unix)]
+        {
+            // memory holds personal notes and transcripts: readable by this user only
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700));
+        }
         // Only transcripts written from now on are consolidated automatically.
         let mut scan = Meta::new();
         scan.insert("since".into(), json!(now_iso()));

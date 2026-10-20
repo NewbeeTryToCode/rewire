@@ -16,7 +16,15 @@ pub const HEADER: &str = "# rewire memory\nNotes from the user's portable memory
 
 /// Neutralize fence tags inside memory content, so a note can never close the fence early.
 pub fn escape(text: &str) -> String {
-    text.replace("<rewire-memory", "&lt;rewire-memory").replace("</rewire-memory", "&lt;/rewire-memory")
+    // any case and look-alike letters ("</Rewire-Memory>", a Cyrillic "е"): the harness or model may read them as the tag
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = R.get_or_init(|| regex::Regex::new(r"(?i)<(\s*/?\s*)rewire\W?memory").unwrap());
+    let folded = crate::security::fold_confusables(text);
+    if !re.is_match(&folded) {
+        return text.to_string();
+    }
+    // escape on the folded text so a look-alike tag is caught; the rest of a note with a tag-like part is rare
+    re.replace_all(&folded, "&lt;${1}rewire-memory").into_owned()
 }
 
 pub fn fenced(text: &str) -> String {
@@ -141,7 +149,7 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         .collect();
     let sections = [
         ("## About the user", about),
-        ("## Rules (always apply)", fill(&constraints, b.constraints)),
+        ("## Rules the user set", fill(&constraints, b.constraints)),
         ("## Preferences", fill(&prefs, b.preferences)),
         (SKILLS_TITLE, fill_lines(&skill_lines, b.skills)),
         ("## Current context", fill(&working, b.working)),

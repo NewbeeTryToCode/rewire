@@ -251,8 +251,19 @@ fn truthy(v: Option<&Value>) -> bool {
 pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Result<Node> {
     let s = |k: &str| change.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let action = if truthy(change.get("action")) { s("action") } else { "NEW".into() };
+    if !["NEW", "SAME", "UPDATE", "SUPERSEDE", "CONTRADICT"].contains(&action.as_str()) {
+        return op(format!("unknown action {action:?}"));
+    }
+    if action == "SAME" {
+        // already in memory: approving it confirms the existing note instead of writing a duplicate
+        return resolve_id(brain, &s("target")).ok_or_else(|| Error::Op(format!("target not found: {}", s("target"))));
+    }
     let text = s("text").trim().to_string();
     let title = take(&if truthy(change.get("title")) { s("title") } else { text.clone() }, 160);
+    // every write path, reviewed or not: a secret never becomes a note
+    if security::scan(&format!("{title} {text}")).iter().any(|p| p == "secret") {
+        return op("refused: text looks like it contains a secret");
+    }
     let scope = if truthy(change.get("scope")) { s("scope") } else { "global".into() };
     let mut fields = Meta::new();
     for k in ["importance", "confidence", "provenance", "keywords", "valid_from"] {
@@ -311,12 +322,15 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
         if let Some(Value::Array(e)) = meta.get_mut("edges") {
             e.push(json!({"rel": rel, "to": target.id()}));
         }
+        // the new note first: a crash in between leaves both current, never neither
+        let node = brain.write_node(&meta, &text, None)?;
         let mut old = target.meta.clone();
         old.insert("retracted_at".into(), json!(now_iso()));
         if action == "SUPERSEDE" {
             old.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
         }
         brain.write_node(&old, &target.body, Some(&target.path))?;
+        return Ok(node);
     }
     brain.write_node(&meta, &text, None)
 }
@@ -336,8 +350,18 @@ pub fn pin_target(brain: &Brain, item: &mut Meta) {
 }
 
 /// Apply an inbox item. Returns what it became ("[id8] title" or "skill <name>").
+/// The file of an inbox item. Ids are ULIDs: anything else (a path such as "../nodes/x") is refused, so an id
+/// can never name a file outside the inbox.
+fn inbox_path(brain: &Brain, inbox_id: &str) -> Result<std::path::PathBuf> {
+    let ok = inbox_id.len() == 26 && inbox_id.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    if !ok {
+        return op(format!("not an inbox id: {inbox_id:?} (ids look like 01M5CR22VG093P636AQMVY10G3)"));
+    }
+    Ok(brain.path(&["inbox", &format!("{inbox_id}.md")]))
+}
+
 pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
-    let path = brain.path(&["inbox", &format!("{inbox_id}.md")]);
+    let path = inbox_path(brain, inbox_id)?;
     let Some(item) = brain.iter_inbox().into_iter().find(|i| i.path == path) else {
         return op(format!("inbox item not found: {inbox_id}"));
     };
@@ -367,7 +391,7 @@ pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
 }
 
 pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
-    let path = brain.path(&["inbox", &format!("{inbox_id}.md")]);
+    let path = inbox_path(brain, inbox_id)?;
     if !path.exists() {
         return op(format!("inbox item not found: {inbox_id}"));
     }
@@ -400,7 +424,20 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
                 .collect()
         })
         .unwrap_or_default();
-    if mine.is_empty() && dropped == 0 && records.is_empty() {
+    // notes this session wrote that a later session has changed since: left as they are, and reported
+    let marker = format!(" · {session} · turn");
+    let touched = out_str(&brain.git(&["log", "--format=", "--name-only", &format!("-G{}", regex::escape(&marker)), "--", "nodes"]));
+    let mut later: Vec<String> = touched
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|rel| brain.read_node(&brain.root.join(rel)))
+        .filter(|n| !of_session(n.meta.get("source")))
+        .map(|n| format!("[{}] {}", short_of(n.id()), n.title()))
+        .collect();
+    later.dedup();
+    if mine.is_empty() && dropped == 0 && records.is_empty() && later.is_empty() {
         return op(format!("nothing in memory comes from session {session}"));
     }
     let (mut removed, mut restored, mut reopened) = (0, 0, 0);
@@ -440,17 +477,24 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
         }
     }
     for path in &records {
-        fs::remove_file(path)?;
-        if let Some(day) = path.parent() {
-            let _ = fs::remove_dir(day); // only when that day holds no other session
-        }
+        // the record stays as the audit trail of what the session did and when it was undone
+        let mut text = fs::read_to_string(path)?;
+        text.push_str(&format!("\n## Undone\n\n{}\n", now_iso()));
+        crate::util::atomic_write(path, &text)?;
     }
     write_home(brain, &mut Index::new(brain))?;
     brain.commit(&format!("undo session {session}"));
-    Ok(format!(
+    let mut summary = format!(
         "{removed} note(s) removed, {restored} restored to their earlier version, {reopened} made current again, \
          {dropped} proposal(s) dropped"
-    ))
+    );
+    if !later.is_empty() {
+        summary.push_str(&format!(
+            "\nleft as they are, changed by a later session since (check them; `rewire undo` that session too if needed):\n  {}",
+            later.join("\n  ")
+        ));
+    }
+    Ok(summary)
 }
 
 /// A note file's content just before `session` first wrote it (from git), or None when the session created it.
@@ -501,6 +545,13 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         ));
     } else {
         report.push(format!("sync: no remote (this brain lives only on this machine) · device {device}"));
+    }
+    if !brain.config.synced_llm_settings.is_empty() {
+        report.push(format!(
+            "IGNORED brain.toml [consolidation] {}: brain.toml syncs to every device, so what runs the LLM is set per \
+             device in local.toml",
+            brain.config.synced_llm_settings.join(", ")
+        ));
     }
     let failed = brain.read_state("failed");
     if !failed.is_empty() {
