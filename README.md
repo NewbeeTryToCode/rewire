@@ -17,11 +17,12 @@ cargo install --git https://github.com/NewbeeTryToCode/rewire rewire   # a singl
 rewire init                     # creates ~/brain (or set REWIRE_BRAIN)
 ```
 
-The main implementation is the Rust binary in [`rust/`](rust/) (~9 MB, no runtime; `prime` ~20 ms, recall ~20 ms). Consolidation uses `claude -p` by default (your existing Claude Code login); to use the API directly, set `provider = "anthropic"` in `brain.toml` and set `ANTHROPIC_API_KEY`.
+rewire is a single Rust binary ([`rust/`](rust/), no runtime). Recall over MCP, with the server warm, takes a few ms on a
+small brain and tens of ms on a ~50-session, ~115k-token history (measured: [`experiments/eval/latency.py`](experiments/eval/latency.py)). Consolidation uses `claude -p` by default (your existing Claude Code login); to use the API directly, set `provider = "anthropic"` in `brain.toml` and set `ANTHROPIC_API_KEY`.
 
-The Python implementation in [`src/rewire`](src/rewire) remains as a **reference** (and for experiments/benchmarks). Both read and write exactly the same file format ([format.md](docs/design/format.md)), and their equivalence is tested: node files are byte-for-byte identical and recall results are identical ([experiments/conformance](experiments/conformance/recall_parity.py)). Python version: `pipx install git+https://github.com/NewbeeTryToCode/rewire`.
+The benchmark harness in [`experiments/eval`](experiments/eval) is Python (dataset loading, LLM answering and judging); it drives the Rust binary and has no implementation of its own.
 
-Semantic search (optional, offline): `rewire semantic install` copies the WordLlama model from a local `wordllama` Python package (`pip install wordllama`) or from `--from <dir>`. Without the model, recall uses keywords only (BM25 + stemming); with the model, the results are identical to the hybrid Python version.
+Semantic search (optional, offline): `rewire semantic install` copies the WordLlama model from a local `wordllama` Python package (`pip install wordllama`) or from `--from <dir>`. Without the model, recall uses keywords only (BM25 + stemming); with it, recall is hybrid (keywords + vectors).
 
 ## Connect to a harness
 
@@ -39,13 +40,14 @@ Harnesses without hooks can still be used: the agent runs `rewire prime` via ins
 
 ```bash
 rewire prime                      # snapshot injected at the start of a session
-rewire recall "keputusan storage" # search memory
+rewire recall "storage decision"  # search memory
 rewire recall "deploy" --from 2026-09-01 --to 2026-09-30   # prefer a specific period
 rewire get <id>                   # or: rewire get skill:<name>
-rewire remember --type preference "Selalu tulis test sebelum fitur"   # goes to the inbox
+rewire remember --type preference "Always write tests before features"   # goes to the inbox
 rewire review                     # view the inbox
 rewire review approve <id|all>    # --force if the target note has changed since it was proposed
 rewire consolidate --pending      # process pending transcripts
+rewire import sessions.jsonl      # import chat history (JSON lines); --llm also consolidates it
 rewire undo <session-id>          # revert the consolidation result of one session
 rewire doctor                     # check brain health
 rewire upgrade                    # rewrite memory to the latest format
@@ -77,7 +79,6 @@ rewire sync                       # manual pull + push
 ## Development
 
 ```bash
-cd rust && cargo test && cargo clippy --all-targets   # main implementation
-python -m unittest discover -s tests                  # Python reference
-python experiments/conformance/recall_parity.py --help # Rust vs Python on the same brain
+cd rust && cargo test && cargo clippy --all-targets   # the implementation
+python experiments/eval/run.py --help                 # benchmarks (LoCoMo, LongMemEval, BEAM, PersonaMem); see docs/evaluation.md
 ```

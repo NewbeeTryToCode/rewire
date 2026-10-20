@@ -1,6 +1,8 @@
 # LoCoMo: rewire vs Mem0, Zep and others
 
-Harness: [`run.py`](run.py) · Official prompts: [`official_prompts.py`](official_prompts.py) (copied verbatim from [mem0ai/memory-benchmarks](https://github.com/mem0ai/memory-benchmarks)) · Per-question results: [`results.json`](results.json)
+> **Historical.** This experiment ran on rewire's earlier Python implementation, which has been removed; its script is in git history (before the commit that removed `src/`). Current benchmarks run through [`experiments/eval`](../eval) on the Rust binary.
+
+Official prompts: [`../eval/locomo_prompts.py`](../eval/locomo_prompts.py) (copied verbatim from [mem0ai/memory-benchmarks](https://github.com/mem0ai/memory-benchmarks)) · Per-question results: [`results.json`](results.json)
 
 ## Setup
 

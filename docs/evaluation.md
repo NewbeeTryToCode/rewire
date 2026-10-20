@@ -18,8 +18,8 @@ metrics have no equivalent on leaderboards, but they are free and stable, so the
 
 | Benchmark | Contents | What is graded | Our protocol |
 |---|---|---|---|
-| **LoCoMo** | 10 long conversations (~27 sessions), 1,540 questions in categories 1–4 | single-hop, multi-hop, temporal, open-domain | Mem0's official answer prompt + judge (`experiments/locomo/official_prompts.py`); category 5 (adversarial) is excluded, as Mem0 does |
-| **LongMemEval_S** | 500 questions, each with a history of ~50 sessions (~115k tokens) | single-session (user / assistant / preference), multi-session, knowledge-update, temporal-reasoning, abstention (30 `_abs` questions) | Official answer template + official per-type judge prompt (`experiments/longmemeval/lme_prompts.py`) |
+| **LoCoMo** | 10 long conversations (~27 sessions), 1,540 questions in categories 1–4 | single-hop, multi-hop, temporal, open-domain | Mem0's official answer prompt + judge (`experiments/eval/locomo_prompts.py`); category 5 (adversarial) is excluded, as Mem0 does |
+| **LongMemEval_S** | 500 questions, each with a history of ~50 sessions (~115k tokens) | single-session (user / assistant / preference), multi-session, knowledge-update, temporal-reasoning, abstention (30 `_abs` questions) | Official answer template + official per-type judge prompt (`experiments/eval/lme_prompts.py`) |
 | **BEAM** (ICLR 2026) | 100 chats (100K: 20, 500K: 35, 1M: 35, 10M: 10), 2,000 questions, 10 categories × 2 questions per chat | abstention, contradiction resolution, event ordering, information extraction, instruction following, knowledge update, multi-session reasoning, preference following, summarization, temporal reasoning | RAG answer prompt + per-rubric-item judge (1 / 0.5 / 0), copied verbatim (`experiments/eval/beam_prompts.py`, MIT); question score = mean of the rubric. The 10M size is not supported yet; Kendall tau for event ordering is not computed yet (rubric score only) |
 | **PersonaMem** (COLM 2025) | 180+ persona histories, up to 60 sessions; 32k / 128k / 1M context versions | 7 question types, e.g. recalling user facts, following preference changes, new recommendations that fit the preferences | Multiple choice (a–d) with the official instructions and answer matching: **no LLM judge**. One brain per shared context; excerpts after the question's position are dropped so memory does not contain "the future" |
 
@@ -61,11 +61,14 @@ Data sources:
 | **All evidence** | Percentage of questions for which **all** evidence is in the context | no | run.py |
 | **MRR** | 1 / rank of the first excerpt containing evidence (0 if none), averaged: whether evidence is near the top or buried | no | run.py |
 | **Context precision** | Percentage of retrieved excerpts that contain evidence; the rest is *noise* that pollutes the context (noise ratio = 1 − precision) | no | run.py |
-| **Context tokens** | Size of the memory context per question (mean, p95; ≈ characters/4) | no | run.py |
+| **Context tokens** | Size of the memory context per question (mean, median, p95), counted with the GPT-4o tokenizer (o200k) when available, else characters/4 (reports before 2026-10-20 used characters/4; o200k counts are 3–28% lower on these benchmarks). Billed answer prompt tokens are reported separately per model | no | run.py |
 | **Compression ratio** | Full-history tokens ÷ rewire context tokens: how many times cheaper than sending the whole history (*full-context*) | no | run.py |
 | **Prompt / completion / reasoning tokens per response** | From the API `usage`, per stage (ingest / answer / judge) | yes | run.py |
 | **Cost (USD)** | `usage.cost` from OpenRouter, per stage and per question | yes | run.py |
-| **Latency** | Retrieval (ms, p50/p95/p99) and LLM calls (p50/p95) | — | run.py |
+| **Latency** | Recall (ms, p50/p95/p99): CLI wall time minus the process start measured on an empty brain; a warm MCP server, one call at a time: `latency.py`. LLM calls (p50/p95), and end to end per question (extra queries + recall + answer) | — | run.py, latency.py |
+| **Full-context baseline** | `--mode fullctx`: the whole history up to the question in place of recalled memory, same answer and judge models | yes | run.py |
+| **Ingest cost** (`--mode full`) | LLM calls, prompt/completion tokens and USD per session (logged by `llm_cmd.py`), seconds per session p50/p95, active nodes by type | yes | run.py |
+| **Event ordering** (BEAM) | (Kendall tau-b + 1) / 2 × F1 after the judge aligns the answer's items to the reference order, next to the rubric score | yes | run.py |
 | **J without disputed gold** (LoCoMo) | J after dropping the questions in `experiments/eval/locomo_errata.json`: speaker swapped in the question, gold contradicts the conversation, or the answer exists only in a photo. The official J remains the number that is compared | yes | run.py |
 | **Strict J / list items named** (LoCoMo) | For questions whose gold is a list, a list judge (same model as the judge) splits the gold and counts the items the answer mentions, paraphrases included. Strict J: a list answer is correct only if the judge accepts it **and** every item is mentioned | yes | run.py |
 | **Answer length** | Mean words per answer (long answers tend to be graded correct by a lenient judge) | — | results JSON |
@@ -311,8 +314,11 @@ estimated $1.30 with GPT-4o-mini. 1M, 140 questions (20 per type): context ≈12
   New secrets are only picked up in a **new session**. Never paste the key into the chat or commit it.
 - Models are written as ids (`nvidia/nemotron-3-ultra-550b-a55b:free`); model page URLs
   (`openrouter.ai/<id>`) are also accepted and normalized.
-- Python ≥ 3.11 only; the runner needs no extra packages (semantic search is optional: `pip install -e '.[semantic]'`;
-  without it recall uses keywords, the same as the §8 baseline).
+- The rewire binary: `cargo build --release --manifest-path rust/Cargo.toml` (the runner calls
+  `rust/target/release/rewire`, or `$REWIRE_BIN`). Semantic search is optional: `rewire semantic install`
+  (without it recall uses keywords, the same as the §8 baseline).
+- Python ≥ 3.11 for the runner. Optional: the `tokenizers` package, for GPT-4o-tokenizer context counts (the
+  tokenizer file is fetched from Hugging Face once; without it counts are characters / 4).
 
 ### Step 1: data (new session = new container, the old scratchpad is gone)
 

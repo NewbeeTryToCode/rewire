@@ -1,5 +1,5 @@
-//! Optional semantic search: offline static embeddings (WordLlama l2_supercat, 256 dims), the same
-//! model the Python reference uses. A vector is the mean of the token embeddings, L2-normalised.
+//! Optional semantic search: offline static embeddings (WordLlama l2_supercat, 256 dims). A vector is the
+//! mean of the token embeddings, L2-normalised.
 //!
 //! The model files are not part of the binary: `rewire semantic install` copies them from a local
 //! `wordllama` Python package (or a directory given with --from) into the model directory. Without

@@ -1,4 +1,4 @@
-//! rewire command line (same subcommands, flags and output as the Python reference).
+//! rewire command line.
 
 use crate::brain::{default_path, Brain};
 use crate::consolidate::Consolidator;

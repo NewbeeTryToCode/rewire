@@ -16,7 +16,7 @@ use std::sync::Mutex;
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn fix(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("tests").join("fixtures").join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
 }
 
 fn m(v: Value) -> Meta {
