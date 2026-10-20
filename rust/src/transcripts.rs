@@ -121,7 +121,13 @@ pub fn parse_claude_code(lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) 
                 let is_tool = content
                     .and_then(Value::as_array)
                     .is_some_and(|a| a.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")));
-                if is_tool { (tool_text(content), "tool") } else { (clean(&blocks_text(content, &["text"])), "user") }
+                // a compaction summary is written by the model, not said by the user
+                let summary = d.get("isCompactSummary").and_then(Value::as_bool) == Some(true);
+                if is_tool {
+                    (tool_text(content), "tool")
+                } else {
+                    (clean(&blocks_text(content, &["text"])), if summary { "tool" } else { "user" })
+                }
             }
             Some("assistant") => (strip_injected(&blocks_text(content, &["text"])).trim().to_string(), "assistant"),
             _ => continue,

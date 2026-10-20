@@ -48,11 +48,17 @@ def init(root: str, profile: str = "general", command: str | None = None) -> Non
     run(root, "init", "--device", "eval")
     path = os.path.join(root, "brain.toml")
     text = open(path, encoding="utf-8").read().replace('profile = "coding"', f'profile = "{profile}"')
-    if command:
-        text = re.sub(r'(?m)^provider = .*$', 'provider = "command"', text)
-        text = re.sub(r'(?m)^command = .*$', lambda _: "command = " + json.dumps(command), text)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
+    if command:  # what runs the LLM is device-local (local.toml), never in the synced brain.toml
+        local = os.path.join(root, "local.toml")
+        text = open(local, encoding="utf-8").read() if os.path.exists(local) else "[consolidation]\n"
+        text = re.sub(r'(?m)^provider = .*$', 'provider = "command"', text)
+        text = re.sub(r'(?m)^command = .*$', lambda _: "command = " + json.dumps(command), text)
+        if "command = " not in text:
+            text += "command = " + json.dumps(command) + "\n"
+        with open(local, "w", encoding="utf-8") as fh:
+            fh.write(text)
 
 
 def import_sessions(root: str, sessions: list[dict], llm: bool = False) -> list[dict]:

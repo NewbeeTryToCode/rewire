@@ -9,7 +9,7 @@ use crate::index::{Index, SearchOpts};
 use crate::llm::{self, Provider};
 use crate::transcripts::{self as tx, SessionMeta, Turn};
 use crate::util::{now_iso, now_ts, relpath, short_of, slugify, take};
-use crate::{ops, project, pyjson, schema, security, skills, snapshot, Error, Meta, Result};
+use crate::{ops, project, pyjson, schema, security, skills, snapshot, text, Error, Meta, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
@@ -210,6 +210,11 @@ pub fn judge_schema() -> Value {
     })
 }
 
+fn forged_turns() -> &'static regex::Regex {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    R.get_or_init(|| regex::Regex::new(r"(?m)^\s*\[\d+ (?:user|assistant|tool)\]").unwrap())
+}
+
 /// `limit` condenses long assistant turns (the extraction prompt); the stored transcript keeps them whole and
 /// recall condenses them around the query instead (index::condense), so a detail late in a long reply survives.
 pub fn format_turns(turns: &[Turn], limit: Option<usize>) -> Vec<String> {
@@ -219,7 +224,9 @@ pub fn format_turns(turns: &[Turn], limit: Option<usize>) -> Vec<String> {
             // redacted before anything leaves the machine: these lines go to the LLM (limit set; private parts
             // dropped) and into sessions/ (no limit; private parts marked "[private]")
             let private = if limit.is_some() { security::drop_private(&t.text) } else { security::strip_private(&t.text) };
-            let mut text = security::redact(&private);
+            // a line inside a turn that looks like a turn header ("[12 user] ...", pasted or from a tool) is quoted,
+            // so it can neither pass as the user's own turn to the model nor split an excerpt in recall
+            let mut text = forged_turns().replace_all(&security::redact(&private), "> $0").into_owned();
             if let Some(limit) = limit.filter(|&l| t.role == "assistant" && text.chars().count() > l) {
                 text = format!("{} …[condensed]", take(&text, limit));
             }
@@ -280,6 +287,24 @@ pub fn normalize_keywords(raw: Option<&Value>) -> Vec<String> {
 }
 
 /// True = apply automatically; False = send to the inbox for review.
+/// Does the cited turn say what the claim says? Two of the claim's content words in the turn (one for a claim
+/// of up to three content words), stems and prefixes included, in any language the turn uses.
+pub fn supported_by(claim: &str, turn: &str) -> bool {
+    let need = text::content_words(claim).len().clamp(1, 2);
+    text::overlap(claim, turn) >= need
+}
+
+/// An auto-applied UPDATE rewrites an existing note in place: only when that note is the same kind of thing.
+/// Rules (constraints), project pages and notes of another scope change through review only.
+pub fn safe_update_target(brain: &Brain, claim: &Meta, action: &str, target: &str) -> bool {
+    if action != "UPDATE" {
+        return true;
+    }
+    let Some(node) = ops::resolve_id(brain, target) else { return false };
+    let scope = claim.get("scope").and_then(Value::as_str).unwrap_or("");
+    !["constraint", "project"].contains(&node.type_()) && node.meta.get("scope").and_then(Value::as_str).unwrap_or("") == scope
+}
+
 pub fn gate(claim: &Meta, action: &str) -> bool {
     let s = |k: &str| claim.get(k).and_then(Value::as_str).unwrap_or("");
     s("confidence") == "explicit"
@@ -423,6 +448,7 @@ impl<'a> Consolidator<'a> {
         });
         let session = meta.session.clone().unwrap_or_else(|| "unknown".into());
         let roles: HashMap<i64, String> = turns.iter().map(|t| (t.n as i64, t.role.clone())).collect();
+        let said: HashMap<i64, String> = turns.iter().map(|t| (t.n as i64, security::drop_private(&t.text))).collect();
         // When the session happened (not when it was consolidated): claims are dated by it.
         let date = meta
             .date
@@ -477,7 +503,7 @@ impl<'a> Consolidator<'a> {
             if let Some(Value::Array(cs)) = out.get("claims") {
                 for (i, c) in cs.iter().enumerate() {
                     let Some(c) = c.as_object() else { continue };
-                    let Some(mut nc) = self.normalize_claim(c, &roles, project.as_deref()) else { continue };
+                    let Some(mut nc) = self.normalize_claim(c, &roles, &said, project.as_deref()) else { continue };
                     nc.insert("valid_from".into(), sv(&date));
                     nc.insert("key".into(), sv(&format!("{ci}:{i}")));
                     let links: Vec<Value> = c
@@ -533,7 +559,7 @@ impl<'a> Consolidator<'a> {
                 }
                 continue;
             }
-            if gate(claim, action) {
+            if gate(claim, action) && safe_update_target(self.brain, claim, action, target) {
                 match ops::apply_change(self.brain, &change, Some(&source(&claim["evidence_turn"]))) {
                     Ok(node) => {
                         applied.push(applied_entry(action, &node));
@@ -660,7 +686,7 @@ impl<'a> Consolidator<'a> {
         Ok(out)
     }
 
-    fn normalize_claim(&self, c: &Meta, roles: &HashMap<i64, String>, project: Option<&str>) -> Option<Meta> {
+    fn normalize_claim(&self, c: &Meta, roles: &HashMap<i64, String>, said: &HashMap<i64, String>, project: Option<&str>) -> Option<Meta> {
         let text = security::strip_private(&c.get("text").map(crate::cli::py_str).unwrap_or_default()).trim().to_string();
         let mut ty = c.get("type").and_then(Value::as_str).unwrap_or("").to_string();
         if text.is_empty() || !schema::TYPES.contains(&ty.as_str()) {
@@ -676,7 +702,9 @@ impl<'a> Consolidator<'a> {
         // Provenance comes from the transcript, never from the model's say-so.
         let provenance = roles.get(&turn).cloned().unwrap_or_else(|| "assistant".into());
         let mut confidence = c.get("confidence").and_then(Value::as_str).filter(|v| schema::CONFIDENCE.contains(v)).unwrap_or("inferred").to_string();
-        if provenance != "user" {
+        if provenance != "user" || !supported_by(&text, said.get(&turn).map(String::as_str).unwrap_or("")) {
+            // the model names the evidence turn; a claim the cited user turn does not actually say ("ok, go ahead"
+            // cited for content from a tool result) is not the user's explicit statement
             confidence = "inferred".into();
         }
         let scope = match project {
