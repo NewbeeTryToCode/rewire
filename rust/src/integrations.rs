@@ -224,18 +224,17 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
 }
 
 pub fn claude_code_settings(command: &str) -> Value {
-    let entry = |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
+    let entry =
+        |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
     json!({"hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)}})
 }
 
 pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<String> {
-    let settings_path = settings_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| {
-            // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does)
-            let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
-            crate::brain::expand_user(&dir).join("settings.json")
-        });
+    let settings_path = settings_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does)
+        let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
+        crate::brain::expand_user(&dir).join("settings.json")
+    });
     // the hooks call this binary by its full path: a hook shell may not have ~/.cargo/bin on PATH
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.to_string_lossy().into_owned());
     let command = exe.filter(|p| !p.contains(char::is_whitespace)).unwrap_or_else(|| "rewire".into());
@@ -254,7 +253,8 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<
         }
         let unexpected = |what: &str| Error::Op(format!("{}: {what}; fix it by hand or move it away", settings_path.display()));
         let obj = current.as_object_mut().ok_or_else(|| unexpected("not a JSON object"))?;
-        let hooks = obj.entry("hooks").or_insert_with(|| json!({})).as_object_mut().ok_or_else(|| unexpected("\"hooks\" is not an object"))?;
+        let hooks =
+            obj.entry("hooks").or_insert_with(|| json!({})).as_object_mut().ok_or_else(|| unexpected("\"hooks\" is not an object"))?;
         for (event, entries) in wanted["hooks"].as_object().into_iter().flatten() {
             let existing = hooks
                 .entry(event.clone())
@@ -266,7 +266,9 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<
             // already installed, by full path or (older installs) by bare name
             let present = existing.iter().any(|e| {
                 e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
-                    hs.iter().filter_map(|h| h.get("command").and_then(Value::as_str)).any(|c| c == wanted_cmd || (c.ends_with(&suffix) && c.contains("rewire")))
+                    hs.iter()
+                        .filter_map(|h| h.get("command").and_then(Value::as_str))
+                        .any(|c| c == wanted_cmd || (c.ends_with(&suffix) && c.contains("rewire")))
                 })
             });
             if !present {

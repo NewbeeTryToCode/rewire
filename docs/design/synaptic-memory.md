@@ -46,7 +46,7 @@ Consolidation = moving from episodic to semantic, exactly as sleep moves memorie
 | `person` | A person (including the user themselves) | `@me`, a coworker |
 | `project` | Project / repo / initiative | `rewire` |
 | `concept` | Idea, technology, term | "Hebbian learning", "SQLite" |
-| `preference` | How the user wants to work | "answer in Indonesian" |
+| `preference` | How the user wants to work | "answer in the user's language" |
 | `decision` | A decision + its rationale | "use files as the source of truth" |
 | `fact` | A factual statement that can change | "API X rate limit is 100/minute" |
 | `procedure` | Pointer to a skill | `skills/release/` |

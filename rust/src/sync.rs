@@ -17,11 +17,7 @@ pub const GIT_TIMEOUT: u64 = 30;
 
 fn git(brain: &Brain, args: &[&str], timeout: u64) -> Result<Output> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(&brain.root)
-        .args(crate::brain::GIT_CONFIG)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt in a hook
+    cmd.arg("-C").arg(&brain.root).args(crate::brain::GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt in a hook
     match crate::util::run_with_timeout(cmd, None, Duration::from_secs(timeout)) {
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(Error::Sync(format!("git {} timed out", args[0]))),
         other => Ok(other?),
@@ -41,7 +37,11 @@ pub fn remote_url(brain: &Brain) -> String {
 
 pub fn branch(brain: &Brain) -> String {
     let b = g(brain, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|o| out_str(&o)).unwrap_or_default();
-    if b.is_empty() { "main".into() } else { b }
+    if b.is_empty() {
+        "main".into()
+    } else {
+        b
+    }
 }
 
 pub fn set_remote(brain: &mut Brain, url: &str) -> Result<Vec<String>> {
@@ -84,7 +84,11 @@ fn stamp(meta: &Meta) -> String {
 
 fn stage(brain: &Brain, n: u8, path: &str) -> Option<String> {
     let o = g(brain, &["show", &format!(":{n}:{path}")]).ok()?;
-    if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).into_owned()) } else { None }
+    if o.status.success() {
+        Some(String::from_utf8_lossy(&o.stdout).into_owned())
+    } else {
+        None
+    }
 }
 
 /// Resolve merge conflicts in place. Returns human-readable notes.

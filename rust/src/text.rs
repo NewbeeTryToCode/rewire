@@ -40,7 +40,7 @@ fn en(term: &str) -> Vec<String> {
             let mut out = vec![format!("{base}{repl}")];
             match suffix {
                 "ies" | "es" => out.push(term[..term.len() - 1].to_string()), // movies -> movie, hikes -> hike
-                "ing" | "ed" => out.push(format!("{base}e")),                  // hiking -> hike, liked -> like
+                "ing" | "ed" => out.push(format!("{base}e")),                 // hiking -> hike, liked -> like
                 _ => {}
             }
             return out;
@@ -62,8 +62,21 @@ fn id(term: &str) -> Vec<String> {
     let words: BTreeSet<String> = [term.to_string(), base].into_iter().collect();
     for word in words {
         for (prefix, vowel_repl) in [
-            ("meny", "s"), ("peny", "s"), ("meng", "k"), ("peng", "k"), ("mem", "p"), ("pem", "p"), ("men", "t"),
-            ("pen", "t"), ("ber", ""), ("ter", ""), ("me", ""), ("pe", ""), ("di", ""), ("ke", ""), ("se", ""),
+            ("meny", "s"),
+            ("peny", "s"),
+            ("meng", "k"),
+            ("peng", "k"),
+            ("mem", "p"),
+            ("pem", "p"),
+            ("men", "t"),
+            ("pen", "t"),
+            ("ber", ""),
+            ("ter", ""),
+            ("me", ""),
+            ("pe", ""),
+            ("di", ""),
+            ("ke", ""),
+            ("se", ""),
         ] {
             if word.starts_with(prefix) && clen(&word) - clen(prefix) >= 3 {
                 let rest = &word[prefix.len()..];
@@ -105,7 +118,11 @@ pub fn match_expression(query: &str) -> Option<String> {
         }
         parts.push(if alts.len() > 1 { format!("({})", alts.join(" OR ")) } else { alts.remove(0) });
     }
-    if parts.is_empty() { None } else { Some(parts.join(" OR ")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" OR "))
+    }
 }
 
 pub fn content_words(query: &str) -> Vec<String> {
@@ -127,16 +144,17 @@ pub fn overlap(query: &str, doc: &str) -> usize {
         .iter()
         .filter(|w| {
             tokens.contains(w.as_str())
-                || stems(w).iter().chain(std::iter::once(*w)).any(|s| tokens.iter().any(|t| *t == s.as_str() || (clen(s) >= 4 && t.starts_with(s.as_str()))))
+                || stems(w)
+                    .iter()
+                    .chain(std::iter::once(*w))
+                    .any(|s| tokens.iter().any(|t| *t == s.as_str() || (clen(s) >= 4 && t.starts_with(s.as_str()))))
         })
         .count()
 }
 
 fn month_number(name: &str) -> Option<u32> {
-    const FULL: [&str; 12] = [
-        "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
-        "december",
-    ];
+    const FULL: [&str; 12] =
+        ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
     if let Some(i) = FULL.iter().position(|m| *m == name) {
         return Some(i as u32 + 1);
     }
@@ -234,8 +252,22 @@ pub fn time_window(query: &str) -> Option<(String, String)> {
 
 /// The question is about the past ("used to", "first", "dulu"): superseded memories are relevant.
 pub fn history_intent(query: &str) -> bool {
-    const WORDS: [&str; 14] = ["used to", "previously", "originally", "formerly", "first", "earlier", "before", "old",
-        "dulu", "sebelumnya", "awalnya", "pertama", "semula", "pernah"];
+    const WORDS: [&str; 14] = [
+        "used to",
+        "previously",
+        "originally",
+        "formerly",
+        "first",
+        "earlier",
+        "before",
+        "old",
+        "dulu",
+        "sebelumnya",
+        "awalnya",
+        "pertama",
+        "semula",
+        "pernah",
+    ];
     // (?i) also folds U+212A KELVIN SIGN to k (to_lowercase does too) and U+017F LONG S to s
     let low = query.to_lowercase().replace('\u{17f}', "s");
     if !WORDS.iter().any(|w| low.contains(w)) {

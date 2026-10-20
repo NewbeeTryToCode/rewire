@@ -15,7 +15,13 @@ pub fn py_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => "None".into(),
-        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         other => pyjson::dumps_utf8(other),
     }
 }
@@ -91,8 +97,9 @@ pub enum Cmd {
         text: Vec<String>,
         #[arg(long = "type", default_value = "fact", value_parser = ["constraint", "preference", "fact", "decision", "person", "concept"])]
         type_: String,
-        #[arg(long, default_value = "global")]
-        scope: String,
+        /// global | project:<slug> (default: the project of the current directory, else global)
+        #[arg(long)]
+        scope: Option<String>,
         #[arg(long, default_value_t = 3)]
         importance: i64,
         /// save immediately (interactive terminal only)
@@ -300,7 +307,18 @@ pub fn run(cli: Cli) -> Result<()> {
             index.refresh()?;
             let here = cwd();
             let refers_to = (since.is_some() || until.is_some()).then(|| json!({"from": since, "to": until}));
-            let hits = match ops::recall(&brain, &mut index, &query.join(" "), k, Some(&here), scope.as_deref(), None, episodes, refers_to.as_ref(), &also) {
+            let hits = match ops::recall(
+                &brain,
+                &mut index,
+                &query.join(" "),
+                k,
+                Some(&here),
+                scope.as_deref(),
+                None,
+                episodes,
+                refers_to.as_ref(),
+                &also,
+            ) {
                 Err(Error::Op(e)) => fail(&e),
                 other => other?,
             };
@@ -315,7 +333,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            if as_json { print_json(&Value::Array(items)) } else { print_items(&items) }
+            if as_json {
+                print_json(&Value::Array(items))
+            } else {
+                print_items(&items)
+            }
         }
         Cmd::Import { file, llm: use_llm } => {
             let brain = open_brain(bp);
@@ -329,7 +351,8 @@ pub fn run(cli: Cli) -> Result<()> {
             let usage = crate::llm::Usage::default();
             let provider: Box<dyn crate::llm::Provider> =
                 if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
-            let mut con = Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
+            let mut con =
+                Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
             let _g = writing(&brain);
             let mut written = 0;
             for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -362,7 +385,20 @@ pub fn run(cli: Cli) -> Result<()> {
                     })
                 } else {
                     let date = meta.date.clone().unwrap_or_default();
-                    con.write_session(&harness, &session, None, &[], &[], &[], &[], 0, &Default::default(), &date, &con.transcript(&turns), &[])
+                    con.write_session(
+                        &harness,
+                        &session,
+                        None,
+                        &[],
+                        &[],
+                        &[],
+                        &[],
+                        0,
+                        &Default::default(),
+                        &date,
+                        &con.transcript(&turns),
+                        &[],
+                    )
                 };
                 rec["ok"] = json!(outcome.is_ok());
                 rec["seconds"] = json!(crate::util::round_to(start.elapsed().as_secs_f64(), 2));
@@ -387,10 +423,15 @@ pub fn run(cli: Cli) -> Result<()> {
             let brain = open_brain(bp);
             let session = session.unwrap_or_else(|| format!("cli-{}", shell_id()));
             let items = ops::get(&brain, &ids, &session, "cli")?;
-            if as_json { print_json(&Value::Array(items)) } else { print_items(&items) }
+            if as_json {
+                print_json(&Value::Array(items))
+            } else {
+                print_items(&items)
+            }
         }
         Cmd::Remember { text, type_, scope, importance, apply } => {
             let brain = open_brain(bp);
+            let scope = scope.unwrap_or_else(|| ops::default_scope(&brain, Some(&cwd())));
             let text = text.join(" ");
             let provenance = if apply { "user" } else { "assistant" };
             let result = (|| -> Result<()> {
@@ -401,7 +442,9 @@ pub fn run(cli: Cli) -> Result<()> {
                     if let Some(marker) = agent_shell() {
                         fail(format!("--apply is refused inside an agent session ({marker} is set): agents propose with `rewire remember`, the user approves with `rewire review`"));
                     }
-                    if !std::io::stdin().is_terminal() || !confirm_on_tty(&format!("Save as your own explicit {type_}, with no review?\n  {text}\n[y/N] ")) {
+                    if !std::io::stdin().is_terminal()
+                        || !confirm_on_tty(&format!("Save as your own explicit {type_}, with no review?\n  {text}\n[y/N] "))
+                    {
                         fail("--apply needs a person at the terminal to confirm (agents use the review queue)");
                     }
                     let why = crate::security::scan(&text);
@@ -444,10 +487,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 if pending || files.is_empty() {
                     con.run_pending(&files)
                 } else {
-                    files
-                        .iter()
-                        .map(|f| con.run_file(&crate::brain::absolute(f), harness.as_deref()))
-                        .collect()
+                    files.iter().map(|f| con.run_file(&crate::brain::absolute(f), harness.as_deref())).collect()
                 }
             })();
             let results = match results {
@@ -500,7 +540,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 for item in items {
                     let m = &item.meta;
                     let g = |k: &str| m.get(k).map(py_str).unwrap_or_default();
-                    let target = m.get("target").filter(|t| crate::brain::is_set(Some(t))).map(|t| format!(" → {}", py_str(t))).unwrap_or_default();
+                    let target =
+                        m.get("target").filter(|t| crate::brain::is_set(Some(t))).map(|t| format!(" → {}", py_str(t))).unwrap_or_default();
                     let action = m.get("action").map(py_str).unwrap_or_else(|| "NEW".into());
                     let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
                     println!(
@@ -527,8 +568,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     action == "approve" && !force && i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
                 });
                 for item in &flagged {
-                    eprintln!("skipped flagged item {} ({}): check it, then approve it by id", item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
-                              item.meta.get("flags").map(python_list).unwrap_or_default());
+                    eprintln!(
+                        "skipped flagged item {} ({}): check it, then approve it by id",
+                        item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
+                        item.meta.get("flags").map(python_list).unwrap_or_default()
+                    );
                 }
                 clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
             } else {

@@ -107,6 +107,27 @@ fn fill_lines(lines: &[String], budget: usize) -> (Vec<String>, usize) {
     (out, left)
 }
 
+/// Inbox items waiting before the snapshot mentions them.
+pub const INBOX_NOTICE: usize = 10;
+
+/// Problems the user would otherwise never see (hooks run silently): failed consolidations, a growing inbox,
+/// LLM settings ignored because they came from the synced brain.toml.
+pub fn health_notes(brain: &Brain) -> Vec<String> {
+    let mut notes = Vec::new();
+    let failed = brain.read_state("failed").len();
+    if failed > 0 {
+        notes.push(format!("- {failed} session(s) could not be consolidated, so nothing was learned from them: `rewire doctor`"));
+    }
+    let inbox = brain.iter_inbox().len();
+    if inbox >= INBOX_NOTICE {
+        notes.push(format!("- {inbox} proposed memories wait for review: `rewire review`"));
+    }
+    if !brain.config.synced_llm_settings.is_empty() {
+        notes.push("- brain.toml tries to set which LLM runs consolidation; that is ignored (see `rewire doctor`)".into());
+    }
+    notes
+}
+
 pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Option<&str>) -> Result<Snapshot> {
     let project = match project {
         Some(p) => Some(p.to_string()),
@@ -131,10 +152,8 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         }
         None => Vec::new(),
     };
-    working.extend(index.rows(
-        &format!("{base} AND type IN ('fact','decision','person','concept') ORDER BY b DESC, importance DESC"),
-        &sp,
-    )?);
+    working
+        .extend(index.rows(&format!("{base} AND type IN ('fact','decision','person','concept') ORDER BY b DESC, importance DESC"), &sp)?);
     let about = fill(&profile, b.profile);
     let shown: std::collections::HashSet<String> =
         about.0.iter().filter_map(|l| l.rsplit_once('[').map(|(_, r)| r.trim_end_matches(']').to_string())).collect();
@@ -170,6 +189,10 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
                 ids.push(rest.trim_end_matches(']').to_string());
             }
         }
+    }
+    let health = health_notes(brain);
+    if !health.is_empty() {
+        parts.push(format!("## Memory upkeep (tell the user)\n{}\n", health.join("\n")));
     }
     let empty = sections.iter().all(|(_, (l, _))| l.is_empty());
     let text = format!("{FENCE_OPEN}\n{}{FENCE_CLOSE}\n", parts.join("\n"));

@@ -183,11 +183,19 @@ pub fn parse_codex(lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) {
 }
 
 pub fn guess_harness(path: &Path) -> &'static str {
-    if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rollout-")) { "codex" } else { "claude-code" }
+    if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rollout-")) {
+        "codex"
+    } else {
+        "claude-code"
+    }
 }
 
 fn parse(harness: &str, lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) {
-    if harness == "codex" { parse_codex(lines) } else { parse_claude_code(lines) }
+    if harness == "codex" {
+        parse_codex(lines)
+    } else {
+        parse_claude_code(lines)
+    }
 }
 
 /// Parse lines after start_line. Returns (harness, meta, turns, last_line).

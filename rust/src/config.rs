@@ -119,7 +119,11 @@ pub fn slug(text: &str) -> String {
         }
     }
     let t = out.trim_matches('-');
-    if t.is_empty() { "default".into() } else { t.into() }
+    if t.is_empty() {
+        "default".into()
+    } else {
+        t.into()
+    }
 }
 
 pub fn default_device() -> String {
@@ -128,12 +132,14 @@ pub fn default_device() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
-        .or_else(|| {
-            std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        })
+        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()))
         .unwrap_or_default();
     let first = host.split('.').next().unwrap_or("").to_string();
-    if first.is_empty() { "default".into() } else { first.to_lowercase() }
+    if first.is_empty() {
+        "default".into()
+    } else {
+        first.to_lowercase()
+    }
 }
 
 fn num(v: Option<&toml::Value>) -> Option<f64> {

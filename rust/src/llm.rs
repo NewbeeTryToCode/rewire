@@ -74,7 +74,9 @@ impl Provider for Counting<'_> {
         u.seconds.set(u.seconds.get() + start.elapsed().as_secs_f64());
         u.prompt_chars.set(u.prompt_chars.get() + (system.chars().count() + prompt.chars().count()) as u64);
         match &out {
-            Ok(m) => u.completion_chars.set(u.completion_chars.get() + crate::pyjson::dumps_utf8(&Value::Object(m.clone())).chars().count() as u64),
+            Ok(m) => u
+                .completion_chars
+                .set(u.completion_chars.get() + crate::pyjson::dumps_utf8(&Value::Object(m.clone())).chars().count() as u64),
             Err(_) => u.failed.set(u.failed.get() + 1),
         }
         out
@@ -139,7 +141,8 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(model: &str, effort: &str) -> Result<AnthropicProvider> {
-        let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| Error::Llm("set ANTHROPIC_API_KEY to use the anthropic provider".into()))?;
+        let key =
+            std::env::var("ANTHROPIC_API_KEY").map_err(|_| Error::Llm("set ANTHROPIC_API_KEY to use the anthropic provider".into()))?;
         Ok(AnthropicProvider { model: model.into(), effort: effort.into(), key })
     }
 }

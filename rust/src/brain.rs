@@ -18,7 +18,8 @@ pub const GITATTRIBUTES: &str = "events/**/*.jsonl merge=union\n";
 pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
     let path = brain.path(&[".gitignore"]);
     let current = fs::read_to_string(&path).unwrap_or_default();
-    let missing: Vec<&str> = [".index/", ".state/", "local.toml"].into_iter().filter(|e| !current.lines().any(|l| l.trim() == *e)).collect();
+    let missing: Vec<&str> =
+        [".index/", ".state/", "local.toml"].into_iter().filter(|e| !current.lines().any(|l| l.trim() == *e)).collect();
     if missing.is_empty() {
         return Ok(Vec::new());
     }
@@ -37,8 +38,16 @@ pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
 /// `commit.gpgsign` would make every commit fail silently), and maintenance in the foreground (a detached git left
 /// running races the next writer and cleanup).
 pub const GIT_CONFIG: [&str; 10] = [
-    "-c", "user.name=rewire", "-c", "user.email=rewire@localhost", "-c", "commit.gpgsign=false", "-c",
-    "gc.autoDetach=false", "-c", "maintenance.autoDetach=false",
+    "-c",
+    "user.name=rewire",
+    "-c",
+    "user.email=rewire@localhost",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "gc.autoDetach=false",
+    "-c",
+    "maintenance.autoDetach=false",
 ];
 
 pub const GITIGNORE: &str = ".index/\n.state/\nlocal.toml\n.obsidian/workspace*.json\n";
@@ -194,8 +203,8 @@ impl Brain {
         }
         let mut cmd = Command::new("git");
         cmd.args(["clone", "-q", url]).arg(&root).env("GIT_TERMINAL_PROMPT", "0"); // never wait on a credential prompt
-        let out = crate::util::run_with_timeout(cmd, None, Duration::from_secs(120))
-            .map_err(|e| Error::Op(format!("git clone failed: {e}")))?;
+        let out =
+            crate::util::run_with_timeout(cmd, None, Duration::from_secs(120)).map_err(|e| Error::Op(format!("git clone failed: {e}")))?;
         if !out.status.success() {
             return Err(Error::Op(format!("git clone failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
         }
@@ -278,7 +287,11 @@ impl Brain {
     /// Path of the node whose id ends with short_id (file names carry the suffix).
     pub fn locate(&self, short_id: &str) -> Option<PathBuf> {
         let hits = self.node_files(Some(&short_id.to_lowercase()));
-        if hits.len() == 1 { hits.into_iter().next() } else { None }
+        if hits.len() == 1 {
+            hits.into_iter().next()
+        } else {
+            None
+        }
     }
 
     pub fn iter_nodes(&self) -> Vec<Node> {
@@ -330,10 +343,8 @@ impl Brain {
             }
         };
         let mut meta = meta.clone();
-        let edges: Vec<Value> = nodefmt::edges_of(&meta)
-            .into_iter()
-            .map(|(rel, to)| json!({"rel": rel, "to": nodefmt::short(&to)}))
-            .collect();
+        let edges: Vec<Value> =
+            nodefmt::edges_of(&meta).into_iter().map(|(rel, to)| json!({"rel": rel, "to": nodefmt::short(&to)})).collect();
         meta.insert("edges".into(), Value::Array(edges));
         let text = nodefmt::render(&meta, body, &path, &|s| self.locate(s));
         atomic_write(&path, &text)?;
@@ -423,10 +434,7 @@ impl Brain {
     }
 
     pub fn write_state(&self, name: &str, data: &Meta) -> Result<()> {
-        atomic_write(
-            &self.path(&[".state", &format!("{name}.json")]),
-            &pyjson::dumps_indent1_sorted(&Value::Object(data.clone())),
-        )?;
+        atomic_write(&self.path(&[".state", &format!("{name}.json")]), &pyjson::dumps_indent1_sorted(&Value::Object(data.clone())))?;
         Ok(())
     }
 

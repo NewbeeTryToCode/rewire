@@ -2,8 +2,8 @@
 //!
 //! Kept fresh incrementally: only node files whose mtime/size changed are re-parsed, only bytes
 //! appended to event logs are read, and activation is recomputed for touched nodes (all nodes once it
-//! is older than ACT_MAX_AGE). Semantic vectors are not part of this implementation (keyword recall
-//! scored as well on LoCoMo; see experiments/locomo).
+//! is older than ACT_MAX_AGE). With the optional WordLlama model installed, nodes and excerpts also get
+//! static vectors, fused with the keyword ranking (see semantic.rs).
 
 use crate::activation::{self, FLOOR, MIN_AGE_H};
 use crate::brain::Brain;
@@ -72,7 +72,11 @@ pub const SEM_WEIGHT: f64 = 0.15;
 pub const SEM_TOP: usize = 10;
 
 fn sem_flag() -> &'static str {
-    if semantic::available() { "1" } else { "0" }
+    if semantic::available() {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 /// (ids, scopes, vectors) of every node with a vector.
@@ -273,7 +277,11 @@ fn merge_excerpts(best: &[i64], rows: &HashMap<i64, EpRow>) -> Vec<(i64, String)
         }
         // a session summary (turn 0) is never merged; neither are runs that reuse turn numbers
         let target = groups.iter_mut().find(|g| {
-            *lo > 0 && g.lo > 0 && g.path == path && *lo <= g.hi + 1 && *hi >= g.lo - 1
+            *lo > 0
+                && g.lo > 0
+                && g.path == path
+                && *lo <= g.hi + 1
+                && *hi >= g.lo - 1
                 && lines.iter().all(|(n, l)| g.lines.get(n).is_none_or(|x| x == l))
         });
         match target {
@@ -393,7 +401,8 @@ fn condense_line(query: &str, line: &str, limit: usize) -> String {
     for (i, s) in segs.iter().enumerate() {
         // a numbered item asked for by its position
         let numbered = words.iter().filter(|w| w.chars().all(|c| c.is_ascii_digit())).any(|w| {
-            s.strip_prefix(w.as_str()).is_some_and(|r| (r.starts_with('.') || r.starts_with(')')) && r[1..].starts_with(char::is_whitespace))
+            s.strip_prefix(w.as_str())
+                .is_some_and(|r| (r.starts_with('.') || r.starts_with(')')) && r[1..].starts_with(char::is_whitespace))
         });
         if numbered {
             scores[i] += 5.0;
@@ -474,8 +483,7 @@ impl Index {
                 open(&self.path)?
             }
         };
-        let ok: Option<String> =
-            db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get(0)).optional().unwrap_or(None);
+        let ok: Option<String> = db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get(0)).optional().unwrap_or(None);
         if ok.as_deref() != Some(SCHEMA) {
             // missing or older schema: rebuilt from the files inside the same database file (see reset)
             Self::reset(&db)?;
@@ -632,7 +640,8 @@ impl Index {
             return Ok(());
         }
         let rows: Vec<(String, String, String, String)> = {
-            let mut st = db.prepare(&format!("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec) LIMIT {limit}"))?;
+            let mut st =
+                db.prepare(&format!("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec) LIMIT {limit}"))?;
             let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             it.collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -653,7 +662,8 @@ impl Index {
             }
         }
         let eps: Vec<(i64, String)> = {
-            let mut st = db.prepare(&format!("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec) LIMIT {limit}"))?;
+            let mut st =
+                db.prepare(&format!("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec) LIMIT {limit}"))?;
             let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             it.collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -1048,7 +1058,9 @@ impl Index {
                 for part in ids.chunks(500) {
                     let q = format!("SELECT id, recorded_at FROM nodes WHERE id IN ({})", marks(part.len()));
                     let mut st = db.prepare(&q)?;
-                    for r in st.query_map(params_from_iter(part), |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))? {
+                    for r in
+                        st.query_map(params_from_iter(part), |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?
+                    {
                         nodes.push(r?);
                     }
                     let q = format!("SELECT node, t, w FROM uses WHERE node IN ({})", marks(part.len()));
@@ -1167,10 +1179,7 @@ impl Index {
         let window = opts.window.clone().or_else(|| text::time_window(query)); // an explicit window comes from the calling model
         if let Some((start, end)) = &window {
             // dated memories inside the asked window join the candidates
-            let rows = self.rows(
-                "json_extract(meta, '$.valid_from') BETWEEN ? AND ? LIMIT 200",
-                &[start as &dyn rusqlite::ToSql, end],
-            )?;
+            let rows = self.rows("json_extract(meta, '$.valid_from') BETWEEN ? AND ? LIMIT 200", &[start as &dyn rusqlite::ToSql, end])?;
             for r in rows {
                 if scopes.as_ref().is_none_or(|s| s.contains(&r.scope)) {
                     fused.insert(r.id.clone());
@@ -1342,12 +1351,22 @@ impl Index {
             let ids: Vec<i64> = fused.keys().cloned().collect();
             let db = self.db()?;
             for part in ids.chunks(500) {
-                let sql = format!("SELECT rowid, path, date, text, first, last FROM episodes e WHERE rowid IN ({}){cond}", marks(part.len()));
+                let sql =
+                    format!("SELECT rowid, path, date, text, first, last FROM episodes e WHERE rowid IN ({}){cond}", marks(part.len()));
                 let mut st = db.prepare(&sql)?;
                 let mut p: Vec<rusqlite::types::Value> = part.iter().map(|&i| i.into()).collect();
                 p.extend(scope_params.iter().cloned().map(Into::into));
                 for r in st.query_map(params_from_iter(p), |r| {
-                    Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0), r.get::<_, Option<i64>>(5)?.unwrap_or(0))))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        (
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                            r.get::<_, String>(3)?,
+                            r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        ),
+                    ))
                 })? {
                     let (rid, v) = r?;
                     rows.insert(rid, v);
@@ -1473,7 +1492,8 @@ impl Index {
                 by_name.insert(name.clone(), rows);
             }
             for &(rid, first, last) in &by_name[&name] {
-                if first.is_some_and(|f| f <= turn) && last.is_some_and(|l| l >= turn) {  // NULL never matches, as in SQL
+                if first.is_some_and(|f| f <= turn) && last.is_some_and(|l| l >= turn) {
+                    // NULL never matches, as in SQL
                     *out.entry(rid).or_insert(0.0) += bonus;
                 }
             }

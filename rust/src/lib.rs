@@ -48,9 +48,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Locked(m) | Error::Op(m) | Error::Schema(m) | Error::Llm(m) | Error::Sync(m) | Error::Other(m) => {
-                f.write_str(m)
-            }
+            Error::Locked(m) | Error::Op(m) | Error::Schema(m) | Error::Llm(m) | Error::Sync(m) | Error::Other(m) => f.write_str(m),
         }
     }
 }
