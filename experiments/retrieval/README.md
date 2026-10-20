@@ -1,5 +1,7 @@
 # Retrieval quality
 
+> **Historical.** This experiment ran on rewire's earlier Python implementation, which has been removed; its script is in git history (before the commit that removed `src/`). Current benchmarks run through [`experiments/eval`](../eval) on the Rust binary.
+
 Measures whether `recall` returns the right memory, not how fast it is (that is in [`../perf`](../perf/README.md)).
 
 ## Data

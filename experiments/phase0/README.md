@@ -1,6 +1,8 @@
 # Phase 0 — Activation model simulation
 
-Script: [`sim.py`](sim.py) · Raw results: [`results.md`](results.md) · Run: `python3 experiments/phase0/sim.py` (stdlib only)
+> **Historical.** This experiment ran on rewire's earlier Python implementation, which has been removed; its script is in git history (before the commit that removed `src/`). Current benchmarks run through [`experiments/eval`](../eval) on the Rust binary.
+
+Raw results: [`results.md`](results.md)
 
 ## Setup
 

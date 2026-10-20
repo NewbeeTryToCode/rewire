@@ -1,7 +1,7 @@
 //! JSON text exactly as Python's `json.dumps` writes it (separators `", "` / `": "`).
 //!
-//! The on-disk format (docs/design/format.md) was defined by the Python reference, so files written here
-//! must be byte-identical: frontmatter values, event lines and inbox items all go through this.
+//! The on-disk format (docs/design/format.md) was first written by a Python implementation (since removed), so
+//! brains made by it read and diff unchanged: frontmatter values, event lines and inbox items all go through this.
 
 use serde_json::Value;
 use std::fmt::Write;

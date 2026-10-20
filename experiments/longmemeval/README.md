@@ -1,6 +1,8 @@
 # LongMemEval: rewire
 
-Harness: [`run.py`](run.py) · Official prompts: [`lme_prompts.py`](lme_prompts.py) (copied verbatim from [xiaowu0162/LongMemEval](https://github.com/xiaowu0162/LongMemEval))
+> **Historical.** This experiment ran on rewire's earlier Python implementation, which has been removed; its script is in git history (before the commit that removed `src/`). Current benchmarks run through [`experiments/eval`](../eval) on the Rust binary.
+
+Official prompts: [`../eval/lme_prompts.py`](../eval/lme_prompts.py) (copied verbatim from [xiaowu0162/LongMemEval](https://github.com/xiaowu0162/LongMemEval))
 
 ## Why LongMemEval after LoCoMo
 

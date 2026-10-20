@@ -59,13 +59,14 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
 
 Benchmarks are expensive only because they replay hundreds of sessions through consolidation and then use
 an LLM to answer and to judge every question. Retrieval itself can be evaluated without any LLM
-(`experiments/locomo/evidence.py`, `experiments/longmemeval/run.py --retrieval-only`).
+(`experiments/eval/run.py --retrieval-only`).
 
 ## Boundaries
 
 - rewire never manages the prompt; L0 belongs to the harness. This keeps rewire portable.
-- The on-disk format ([format.md](format.md)) is the contract. Any implementation (the Python reference,
-  the Rust binary) must read and write it identically; the index is not part of the contract.
+- The on-disk format ([format.md](format.md)) is the contract. Any implementation must read and write it
+  identically (rewire is implemented in Rust; brains written by the earlier Python implementation read unchanged);
+  the index is not part of the contract.
 - Memory is data, not instructions: snapshots and recall results are framed as notes about the user.
 
 ## Measured
