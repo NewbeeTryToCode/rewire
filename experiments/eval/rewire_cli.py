@@ -23,7 +23,9 @@ AGENT_MARKERS = ("CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWO
 
 
 def environment() -> dict:
-    return {k: v for k, v in os.environ.items() if k not in AGENT_MARKERS}
+    env = {k: v for k, v in os.environ.items() if k not in AGENT_MARKERS}
+    env["REWIRE_NOT_AN_AGENT"] = "1"  # the run itself may be started from an agent session
+    return env
 
 
 def check() -> None:

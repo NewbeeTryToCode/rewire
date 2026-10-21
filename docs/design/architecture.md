@@ -9,7 +9,7 @@ files in a private git repository; any harness attaches to it through hooks, an 
 |---|---|---|---|
 | **L0 — Working memory** | the active prompt context of the current session, bounded by compaction | inside the harness | the **harness**; rewire only fills it (snapshot at session start, `recall` on demand) and saves it before it is lost (SessionEnd / PreCompact) |
 | **L1 — Episodic memory** | what happened in each past session: a summary plus the secret-redacted transcript, cut into searchable excerpts | `sessions/<date>/<harness>-<session>.md` | rewire |
-| **L2 — Semantic memory** | atomic, typed claims (constraint, preference, fact, decision, project, person, concept) linked in a graph; bitemporal; superseded instead of overwritten; strength from use (ACT-R activation) | `nodes/<type>/<slug>-<id8>.md` + `events/<device>/<month>.jsonl` | rewire |
+| **L2 — Semantic memory** | atomic, typed claims (constraint, preference, fact, decision, project, person, concept) linked in a graph; bitemporal; superseded instead of overwritten; optional ordering by use (experimental ACT-R decay, off by default, no measured accuracy gain) | `nodes/<type>/<slug>-<id8>.md` + `events/<device>/<month>.jsonl` | rewire |
 | **L2 — Procedural memory** | reusable procedures that worked (deploy, release, setup recipes), as Agent Skills; proposed by consolidation, always reviewed | `skills/<name>/SKILL.md` | rewire |
 
 The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at any time.
@@ -53,7 +53,7 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
 
 | Operation | LLM calls | Notes |
 |---|---|---|
-| `prime`, per-prompt hook, `recall`, `get`, index refresh | **0** | SQLite FTS5 + activation + graph spreading (+ optional local WordLlama vectors) |
+| `prime`, per-prompt hook, `recall`, `get`, index refresh | **0** | SQLite FTS5 (+ optional local WordLlama vectors; experimental activation re-weighting and link spreading are off by default, both unproven) |
 | consolidation | ~2 per session (extract per transcript chunk + one judge) | background, after the session |
 | `remember` (agent proposal) | 0 | queued for human review |
 
@@ -73,8 +73,9 @@ an LLM to answer and to judge every question. Retrieval itself can be evaluated 
 
 | Benchmark | Result | Report |
 |---|---|---|
-| LoCoMo (1,540 questions, Mem0's judge) | 94.0–94.9% | [experiments/locomo](../../experiments/locomo/README.md) |
-| LongMemEval_S (500 questions, official judge prompts), L1 only | 85.4% (10 excerpts); multi-session 83.5% and temporal 90.6% with 20 excerpts | [experiments/longmemeval](../../experiments/longmemeval/README.md) |
+| LoCoMo 40 + 40 multi-hop sample, Rust, 3 replicates, Haiku answers and judge | episodes 89.6%, full 91.2% (+1.7 [−4.2, +7.5]) | [2026-10-20-locomo-full-graph-ablation.md](../../experiments/eval/results/2026-10-20-locomo-full-graph-ablation.md) |
+| LoCoMo (1,540 questions, Mem0's judge) — historical: removed Python engine, full mode, same-family judge, not re-run | 94.0–94.9% | [experiments/locomo](../../experiments/locomo/README.md) |
+| LongMemEval_S (500 questions, official judge prompts), L1 only — historical, Python engine | 85.4% (10 excerpts); multi-session 83.5% and temporal 90.6% with 20 excerpts | [experiments/longmemeval](../../experiments/longmemeval/README.md) |
 
 ## Roadmap
 

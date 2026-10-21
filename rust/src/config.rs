@@ -7,7 +7,9 @@ schema = 1
 [activation]
 model = "actr"
 d = 0.7                  # decay; tuned in experiments/phase0
-recall_beta = 0.3        # weight of activation in recall ranking (0 = off)
+recall_beta = 0.0        # weight of activation in recall ranking (0 = off); experimental, never ablated, so off
+spread = "supersedes"    # recall follows links: "supersedes" (an outdated note leads to its replacement), "full"
+                         # (2-hop spreading over every link; experimental, +0.0 measured) or "off"
 
 [budgets]                # characters (~4 chars per token)
 profile = 600            # "About the user": people and the most important global facts
@@ -52,17 +54,25 @@ pub struct Config {
     pub sync_auto: bool,
     pub d: f64,
     pub recall_beta: f64,
+    /// which links recall follows: "supersedes", "full" or "off"
+    pub spread: String,
     pub budgets: Budgets,
     pub profile: String,
     /// in effect on this device: local.toml, else brain.toml
     pub transcripts: String,
     /// as brain.toml (synced) sets it; a pull that changes it is reported
     pub synced_transcripts: String,
+    pub synced_profile: String,
+    /// local.toml pins transcripts / profile on this device
+    pub local_transcripts: bool,
+    pub local_profile: bool,
     pub provider: String,
     pub command: String,
     pub model: String,
     pub effort: String,
     pub max_chunk_chars: usize,
+    /// brain.toml could not be parsed: defaults are used, and `doctor` and the snapshot say so
+    pub error: Option<String>,
     /// brain.toml (synced) tried to set provider/command/model/effort: ignored, reported by `doctor`
     pub synced_llm_settings: Vec<String>,
     /// slug -> match patterns
@@ -75,16 +85,21 @@ impl Default for Config {
             device: String::new(),
             sync_auto: false,
             d: 0.7,
-            recall_beta: 0.3,
+            recall_beta: 0.0,
+            spread: "supersedes".into(),
             budgets: Budgets { profile: 600, constraints: 1500, preferences: 800, working: 2500, skills: 400 },
             profile: "coding".into(),
             transcripts: "auto".into(),
             synced_transcripts: "auto".into(),
+            synced_profile: "coding".into(),
+            local_transcripts: false,
+            local_profile: false,
             provider: "command".into(),
             command: DEFAULT_COMMAND.into(),
             model: "claude-sonnet-5-5".into(),
             effort: "medium".into(),
             max_chunk_chars: 60000,
+            error: None,
             synced_llm_settings: Vec::new(),
             projects: IndexMap::new(),
         }
@@ -139,7 +154,11 @@ pub fn default_device() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
-        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()))
+        .or_else(|| {
+            crate::util::run_with_timeout(std::process::Command::new("hostname"), None, std::time::Duration::from_secs(2))
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
         .unwrap_or_default();
     let first = host.split('.').next().unwrap_or("").to_string();
     if first.is_empty() {
@@ -165,7 +184,13 @@ fn string(v: Option<&toml::Value>) -> Option<String> {
 pub fn load(path: &Path) -> Config {
     let mut cfg = Config::default();
     let Ok(text) = std::fs::read_to_string(path) else { return cfg };
-    let Ok(raw) = text.parse::<toml::Table>() else { return cfg };
+    let raw = match text.parse::<toml::Table>() {
+        Ok(raw) => raw,
+        Err(e) => {
+            cfg.error = Some(e.message().to_string());
+            return cfg;
+        }
+    };
     let section = |name: &str| raw.get(name).and_then(|v| v.as_table()).cloned().unwrap_or_default();
     let act = section("activation");
     let con = section("consolidation");
@@ -174,6 +199,9 @@ pub fn load(path: &Path) -> Config {
     cfg.sync_auto = section("sync").get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
     cfg.d = num(act.get("d")).unwrap_or(cfg.d);
     cfg.recall_beta = num(act.get("recall_beta")).unwrap_or(cfg.recall_beta);
+    if let Some(v) = string(act.get("spread")).filter(|v| ["supersedes", "full", "off"].contains(&v.as_str())) {
+        cfg.spread = v;
+    }
     if let Some(v) = num(budgets.get("profile")) {
         cfg.budgets.profile = v as usize;
     }
@@ -189,7 +217,7 @@ pub fn load(path: &Path) -> Config {
     if let Some(v) = num(budgets.get("working")) {
         cfg.budgets.working = v as usize;
     }
-    cfg.profile = string(con.get("profile")).unwrap_or(cfg.profile);
+    cfg.synced_profile = string(con.get("profile")).unwrap_or(cfg.synced_profile);
     cfg.synced_transcripts = string(con.get("transcripts")).unwrap_or(cfg.synced_transcripts);
     // what runs on this machine comes from local.toml only; brain.toml syncs from the remote
     const LEGACY_DEFAULTS: [&str; 3] = ["command", "claude -p --output-format text", "claude-opus-5-5"];
@@ -211,7 +239,10 @@ pub fn load(path: &Path) -> Config {
     cfg.model = string(local.get("model")).unwrap_or(cfg.model);
     cfg.effort = string(local.get("effort")).unwrap_or(cfg.effort);
     // how much of each transcript is kept (and synced) can be pinned per device
+    cfg.local_transcripts = local.contains_key("transcripts");
     cfg.transcripts = string(local.get("transcripts")).unwrap_or_else(|| cfg.synced_transcripts.clone());
+    cfg.local_profile = local.contains_key("profile");
+    cfg.profile = string(local.get("profile")).unwrap_or_else(|| cfg.synced_profile.clone());
     if let Some(v) = num(con.get("max_chunk_chars")) {
         cfg.max_chunk_chars = v as usize;
     }

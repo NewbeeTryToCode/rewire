@@ -1,6 +1,9 @@
 # Design: Synaptic Memory for rewire
 
-> Status: **draft for review**. Nothing has been implemented yet.
+> Status: **background and hypotheses**, not a description of the shipped system. Implemented: §3.1 base-level
+> activation (ranking only, experimental, off by default), spreading over links (only from an outdated note to its
+> replacement by default; full spreading measured +0.0), supersession. Not implemented: Hebbian edges (§3.2), tiers,
+> lateral inhibition, replay.
 > Follows on from the [memory approaches research](../research/memory-approaches.md) and [Karpathy LLM Wiki](../research/karpathy-llm-wiki.md).
 >
 > **Rev 2:** the MVP specification is in [mvp-spec.md](mvp-spec.md). The Phase 0 results changed the defaults: `d = 0.7`, an **active project scope** and a **separate constraint budget** are mandatory, and Hebbian learning is deferred to v0.2 ([details](../../experiments/phase0/README.md)).
@@ -75,7 +78,7 @@ This mimics the brain: there is structured knowledge, and there are associations
 
 ## 3. The "synapse" model: the math
 
-Foundation: **ACT-R** (Anderson's cognitive model), which has been validated for decades against human memory data, plus **Hebbian learning** for edges and **spreading activation** for retrieval.
+Foundation: **ACT-R** (Anderson's cognitive model), which has been validated for decades against human memory data (that validation is about human memory, not agent retrieval), plus **Hebbian learning** for edges and **spreading activation** for retrieval.
 
 ### 3.1 Node strength — base-level activation
 

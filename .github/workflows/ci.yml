@@ -23,7 +23,11 @@ jobs:
       - run: python -m py_compile experiments/eval/*.py
 
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: rust

@@ -19,17 +19,42 @@ pub const GITATTRIBUTES: &str = "events/**/*.jsonl merge=union\n";
 /// runs, so a commit that tracks one is refused on pull and clone (git overwrites ignored files on a merge).
 pub const LOCAL_ONLY: [&str; 3] = [".index", ".state", "local.toml"];
 
-/// Device-local paths that `rev` (a commit) tracks, or the git index when `rev` is None.
-pub fn tracked_local(brain: &Brain, rev: Option<&str>) -> Vec<String> {
+/// Entries of a commit (`rev`) or of the git index (None) that a brain must never receive from another device,
+/// as "path (why)": device-local files in any letter case (case-insensitive file systems check out `Local.toml` as
+/// local.toml), symlinks (they let a note or skill read or write outside the brain), submodules and git-lfs
+/// settings (they make git fetch from elsewhere).
+pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
     if !brain.path(&[".git"]).exists() {
         return Vec::new();
     }
-    let mut args = match rev {
-        Some(r) => vec!["ls-tree", "-r", "--name-only", r, "--"],
-        None => vec!["ls-files", "--"],
+    let out = match rev {
+        Some(r) => brain.git(&["ls-tree", "-r", "-z", "--full-tree", r]),
+        None => brain.git(&["ls-files", "-s", "-z"]),
     };
-    args.extend(LOCAL_ONLY);
-    out_str(&brain.git(&args)).lines().map(String::from).collect()
+    if !out.status.success() {
+        // fail closed: what cannot be listed cannot be called safe
+        return vec![format!("? (git could not list the files: {})", err_str(&out))];
+    }
+    let mut found = Vec::new();
+    for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
+        let Some((info, path)) = entry.split_once('\t') else { continue };
+        let mode = info.split(' ').next().unwrap_or("");
+        let first = path.split('/').next().unwrap_or("").nfc().collect::<String>().to_lowercase();
+        let why = if LOCAL_ONLY.contains(&first.as_str()) {
+            "device-local"
+        } else if mode == "120000" {
+            "symlink"
+        } else if mode == "160000" || first == ".gitmodules" {
+            "submodule"
+        } else if first == ".lfsconfig" {
+            "git-lfs settings"
+        } else {
+            continue;
+        };
+        found.push(format!("{path} ({why})"));
+    }
+    found
 }
 
 pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
@@ -169,6 +194,38 @@ impl Brain {
         self.path(&["brain.toml"]).exists()
     }
 
+    /// The key under which a rule, preference or skill is reviewed on this device: "nodes/constraint/x.md",
+    /// "skills/<name>/". None for other paths.
+    pub fn review_key(&self, path: &Path) -> Option<String> {
+        let rel = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        if rel.starts_with("nodes/constraint/") || rel.starts_with("nodes/preference/") {
+            Some(rel)
+        } else {
+            rel.strip_prefix("skills/").and_then(|r| r.split('/').next()).filter(|n| !n.is_empty()).map(|n| format!("skills/{n}/"))
+        }
+    }
+
+    /// Rules, preferences and skills that arrived from another device by a pull and that the user has not yet
+    /// reviewed on this device: they act as instructions in every session, and a remote is not the user.
+    /// Device-local (.state/untrusted.json); `rewire review` lists them, `review approve` trusts them.
+    pub fn untrusted(&self) -> Meta {
+        self.read_state("untrusted")
+    }
+
+    pub fn is_untrusted(&self, path: &Path) -> bool {
+        self.review_key(path).is_some_and(|k| self.untrusted().contains_key(&k))
+    }
+
+    /// Writers check first: a brain deleted or moved while a background consolidation was waiting on the LLM must
+    /// not be recreated as loose directories at the old path.
+    pub fn present(&self) -> Result<()> {
+        if self.exists() {
+            Ok(())
+        } else {
+            Err(Error::Op(format!("no brain at {} any more (brain.toml is gone); not writing", self.root.display())))
+        }
+    }
+
     /// Device name for the event log; device-local (never synced).
     pub fn device(&self) -> String {
         if let Ok(env) = std::env::var("REWIRE_DEVICE") {
@@ -206,7 +263,9 @@ impl Brain {
         let mut index = crate::index::Index::new(&brain);
         crate::ops::write_home(&brain, &mut index)?;
         if !root.join(".git").is_dir() {
-            let _ = Command::new("git").args(["init", "-q"]).arg(&root).output();
+            let mut cmd = Command::new("git");
+            cmd.args(["init", "-q"]).arg(&root);
+            let _ = crate::util::run_with_timeout(cmd, None, Duration::from_secs(30));
         }
         brain.commit("init brain");
         Ok(brain)
@@ -227,21 +286,30 @@ impl Brain {
         }
         let brain = Brain::open(Some(&root));
         if !brain.exists() {
+            let _ = fs::remove_dir_all(&root);
             return Err(Error::Op(format!("{url} is not a rewire brain (no brain.toml)")));
         }
-        let tracked = tracked_local(&brain, None);
-        if !tracked.is_empty() {
+        let found = unsafe_paths(&brain, None);
+        if !found.is_empty() {
             let _ = fs::remove_dir_all(&root);
             return Err(Error::Op(format!(
-                "refused {url}: it tracks device-local file(s) {} (a synced local.toml chooses what runs on this machine); \
-                 remove them from the repository (git rm --cached) and check who added them",
-                tracked.join(", ")
+                "refused {url}: it contains {}; a brain never syncs device-local files (local.toml chooses what runs on \
+                 this machine), symlinks or submodules. Remove them from the repository and check who added them",
+                found.join(", ")
             )));
         }
         for sub in DIRS {
             fs::create_dir_all(root.join(sub))?;
         }
         let dev = device.map(String::from).unwrap_or_else(config::default_device);
+        if device.is_none() && root.join("events").join(config::slug(&dev)).is_dir() {
+            // two machines with one name would write one event log and look like one device
+            eprintln!(
+                "rewire: another device already syncs as \"{}\" (this machine's host name); give this one its own name \
+                 with `rewire init --from <url> --device <name>` unless it is the same machine",
+                config::slug(&dev)
+            );
+        }
         brain.init_local_state(Some(&dev))?;
         Ok(brain)
     }
@@ -359,6 +427,7 @@ impl Brain {
     }
 
     pub fn write_node(&self, meta: &Meta, body: &str, path: Option<&Path>) -> Result<Node> {
+        self.present()?;
         schema::validate(meta, body)?;
         let id = meta["id"].as_str().unwrap_or("").to_string();
         let path = match path {
@@ -396,6 +465,7 @@ impl Brain {
     }
 
     pub fn write_inbox(&self, meta: &Meta, body: &str) -> Result<String> {
+        self.present()?;
         let mut meta = meta.clone();
         let item_id = match meta.get("inbox_id").and_then(Value::as_str) {
             Some(s) => s.to_string(),
@@ -412,6 +482,7 @@ impl Brain {
     // ---- events ----------------------------------------------------------
 
     pub fn append_events(&self, events: &[Meta]) -> Result<()> {
+        self.present()?;
         if events.is_empty() {
             return Ok(());
         }
@@ -460,6 +531,7 @@ impl Brain {
     }
 
     pub fn write_state(&self, name: &str, data: &Meta) -> Result<()> {
+        self.present()?;
         atomic_write(&self.path(&[".state", &format!("{name}.json")]), &pyjson::dumps_indent1_sorted(&Value::Object(data.clone())))?;
         Ok(())
     }
@@ -467,6 +539,7 @@ impl Brain {
     /// Read-modify-write a state file under a short lock of its own, so a hook adding an entry and a consolidation
     /// removing others cannot overwrite each other. Independent of the writer lock (hooks must not wait on it).
     pub fn update_state(&self, name: &str, change: impl FnOnce(&mut Meta)) -> Result<()> {
+        self.present()?;
         fs::create_dir_all(self.path(&[".state"]))?;
         let fh = fs::OpenOptions::new().create(true).write(true).truncate(false).open(self.path(&[".state", &format!("{name}.lock")]))?;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -485,6 +558,7 @@ impl Brain {
 
     /// Exclusive lock for writers (consolidation, sync).
     pub fn lock(&self, timeout: Duration) -> Result<LockGuard> {
+        self.present()?;
         fs::create_dir_all(self.path(&[".state"]))?;
         let fh = fs::OpenOptions::new().create(true).write(true).truncate(true).open(self.path(&[".state", "brain.lock"]))?;
         let deadline = Instant::now() + timeout;
@@ -502,9 +576,7 @@ impl Brain {
     // ---- git -------------------------------------------------------------
 
     pub fn git(&self, args: &[&str]) -> Output {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&self.root).args(GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0");
-        crate::util::run_with_timeout(cmd, None, Duration::from_secs(120)).unwrap_or_else(|e| Output {
+        run_git(&self.root, args, Duration::from_secs(120)).unwrap_or_else(|e| Output {
             status: failed_status(),
             stdout: Vec::new(),
             stderr: e.to_string().into_bytes(),
@@ -517,6 +589,7 @@ impl Brain {
         if !self.path(&[".git"]).is_dir() {
             return false;
         }
+        remove_stale_lock(&self.root);
         let add = self.git(&["add", "-A"]);
         if !add.status.success() {
             eprintln!("rewire: git add failed: {}", err_str(&add));
@@ -529,6 +602,46 @@ impl Brain {
         }
         out.status.success()
     }
+}
+
+thread_local! {
+    static GIT_DEADLINE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with every git call on this thread finished within `budget` in total: a hook has seconds, and a pull
+/// is a commit, a fetch and a merge.
+pub fn within<T>(budget: Duration, f: impl FnOnce() -> T) -> T {
+    let end = Instant::now() + budget;
+    let prev = GIT_DEADLINE.with(|d| d.replace(Some(d.get().map_or(end, |p| p.min(end)))));
+    let out = f();
+    GIT_DEADLINE.with(|d| d.set(prev));
+    out
+}
+
+/// git on a brain, with a deadline (shortened by `within`). A git killed at the deadline leaves `.git/index.lock`
+/// behind, and every later commit would fail: a lock this call created is removed.
+pub fn run_git(root: &Path, args: &[&str], timeout: Duration) -> std::io::Result<Output> {
+    let timeout = GIT_DEADLINE.with(|d| d.get()).map_or(timeout, |end| timeout.min(end.saturating_duration_since(Instant::now())));
+    let lock = root.join(".git").join("index.lock");
+    let had_lock = lock.exists();
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt
+    let out = crate::util::run_with_timeout(cmd, None, timeout);
+    if matches!(&out, Err(e) if e.kind() == std::io::ErrorKind::TimedOut) && !had_lock {
+        let _ = fs::remove_file(&lock);
+    }
+    out
+}
+
+/// Remove `.git/index.lock` left by a git that died (older than ten minutes: no git call on a brain runs that long).
+fn remove_stale_lock(root: &Path) -> bool {
+    let lock = root.join(".git").join("index.lock");
+    let old = fs::metadata(&lock).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(600)));
+    if old && fs::remove_file(&lock).is_ok() {
+        eprintln!("rewire: removed a stale {} left by a git process that died", lock.display());
+        return true;
+    }
+    false
 }
 
 #[cfg(unix)]

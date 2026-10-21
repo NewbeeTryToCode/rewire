@@ -370,12 +370,18 @@ impl<'a> Consolidator<'a> {
             }
             let harness = pending.get(path).and_then(Value::as_str).map(String::from);
             match self.process(Path::new(path), harness.as_deref()) {
-                Ok(r) => results.push(r),
+                Ok(r) => {
+                    self.brain.update_state("failed", |f| {
+                        f.remove(path);
+                    })?;
+                    results.push(r)
+                }
                 Err(e) => {
-                    // keep going; recorded for `doctor`, retried with `consolidate <file>`
-                    let mut failed = self.brain.read_state("failed");
-                    failed.insert(path.clone(), json!({"error": take(&e.to_string(), 500), "at": now_iso()}));
-                    self.brain.write_state("failed", &failed)?;
+                    self.brain.present()?; // the brain is gone: stop, there is nowhere to record anything
+                                           // keep going; recorded for `doctor`, retried with `consolidate <file>` or `consolidate --retry`
+                    self.brain.update_state("failed", |f| {
+                        f.insert(path.clone(), json!({"error": take(&e.to_string(), 500), "at": now_iso()}));
+                    })?;
                     (self.log)(&format!("failed: {path}: {e}"));
                 }
             }
@@ -390,7 +396,12 @@ impl<'a> Consolidator<'a> {
 
     pub fn run_file(&mut self, path: &Path, harness: Option<&str>) -> Result<Meta> {
         let _lock = self.brain.lock(Duration::ZERO)?;
-        self.process(path, harness)
+        let result = self.process(path, harness)?;
+        let key = path.to_string_lossy().into_owned();
+        self.brain.update_state("failed", |f| {
+            f.remove(&key);
+        })?;
+        Ok(result)
     }
 
     // ---- pipeline --------------------------------------------------------
@@ -830,6 +841,7 @@ impl<'a> Consolidator<'a> {
         transcript: &[String],
         questions: &[(i64, String)],
     ) -> Result<()> {
+        self.brain.present()?;
         let day = if date.is_empty() { now_iso()[..10].to_string() } else { date.to_string() };
         let path = self.brain.path(&["sessions", &day, &format!("{harness}-{}.md", slugify(session, 40))]);
         let dir = path.parent().unwrap().to_path_buf();

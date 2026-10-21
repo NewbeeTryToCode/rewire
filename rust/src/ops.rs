@@ -179,6 +179,10 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
                 out.push(json!({"ref": r, "error": "not found"}));
                 continue;
             };
+            if brain.is_untrusted(&skill.path) {
+                out.push(json!({"ref": r, "error": "from another device, not reviewed on this device yet (`rewire review`)"}));
+                continue;
+            }
             let why = skills::blocked(&skill);
             let (description, body) = if why.is_empty() {
                 (skill.description.clone(), skill.body.clone())
@@ -501,9 +505,20 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
         }
     }
     for path in &records {
-        // the record stays as the audit trail of what the session did and when it was undone
-        let mut text = fs::read_to_string(path)?;
-        text.push_str(&format!("\n## Undone\n\n{}\n", now_iso()));
+        // the record stays as the audit trail of what the session did and when it was undone; its transcript and
+        // questions go, so recall no longer finds the session
+        let text = fs::read_to_string(path)?;
+        let mut kept = Vec::new();
+        let mut skipping = false;
+        for line in text.lines() {
+            if line.starts_with("## ") {
+                skipping = line == crate::consolidate::TRANSCRIPT_HEADING || line == crate::consolidate::QUESTIONS_HEADING;
+            }
+            if !skipping {
+                kept.push(line);
+            }
+        }
+        let text = format!("{}\n\n## Undone\n\n{} (transcript removed)\n", kept.join("\n").trim_end(), now_iso());
         crate::util::atomic_write(path, &text)?;
     }
     write_home(brain, &mut Index::new(brain))?;
@@ -521,6 +536,43 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
     Ok(summary)
 }
 
+/// Session records, newest first: (date, harness, session id, undone).
+pub fn sessions(brain: &Brain) -> Vec<(String, String, String, bool)> {
+    let mut out = Vec::new();
+    for day in fs::read_dir(brain.path(&["sessions"])).into_iter().flatten().flatten() {
+        for file in fs::read_dir(day.path()).into_iter().flatten().flatten() {
+            let Ok(text) = fs::read_to_string(file.path()) else { continue };
+            // "# <harness> session <id>"
+            let Some((harness, session)) = text.lines().next().and_then(|l| l.strip_prefix("# ")).and_then(|l| l.split_once(" session "))
+            else {
+                continue;
+            };
+            let undone = text.contains("\n## Undone\n");
+            out.push((day.file_name().to_string_lossy().into_owned(), harness.to_string(), session.trim().to_string(), undone));
+        }
+    }
+    out.sort_by(|a, b| b.cmp(a));
+    out
+}
+
+/// Retract a note: it stays in its file and in git history, marked retracted, and no longer comes back in recall
+/// or the snapshot.
+pub fn forget(brain: &Brain, reference: &str, reason: &str) -> Result<String> {
+    let Some(node) = resolve_id(brain, reference) else { return op(format!("{reference}: no such note")) };
+    if is_set(node.meta.get("retracted_at")) {
+        return op(format!("{reference}: already forgotten"));
+    }
+    let mut meta = node.meta.clone();
+    meta.insert("retracted_at".into(), json!(now_iso()));
+    if !reason.is_empty() {
+        meta.insert("retracted_reason".into(), json!(reason));
+    }
+    brain.write_node(&meta, &node.body, Some(&node.path))?;
+    write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("forget {}", short_of(node.id())));
+    Ok(format!("forgot [{}] {}", short_of(node.id()), node.title()))
+}
+
 /// A note file's content just before `session` first wrote it (from git), or None when the session created it.
 fn version_before(brain: &Brain, path: &Path, session: &str) -> Option<String> {
     let rel = relpath(path, &brain.root);
@@ -534,6 +586,71 @@ fn version_before(brain: &Brain, path: &Path, session: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Rules, preferences and skills from another device not yet reviewed on this one: (key, what it says, why the scan
+/// blocks it or "").
+pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
+    let mut out = Vec::new();
+    for key in brain.untrusted().keys() {
+        let path = brain.root.join(key.trim_end_matches('/'));
+        let (text, why) = if let Some(name) = key.strip_prefix("skills/") {
+            match skills::read(brain, name.trim_end_matches('/')) {
+                Some(s) => (format!("skill {}: {}", s.name, s.description), skills::blocked(&s)),
+                None => ("(skill removed since)".into(), ""),
+            }
+        } else {
+            match brain.read_node(&path) {
+                Some(n) => {
+                    let text = format!("{} {}", n.title(), n.body.trim());
+                    let why = security::blocked(&text);
+                    (format!("{}: {}", n.meta.get("type").and_then(Value::as_str).unwrap_or(""), text), why)
+                }
+                None => ("(note removed since)".into(), ""),
+            }
+        };
+        out.push((key.clone(), text, why));
+    }
+    out
+}
+
+/// The unreviewed key an id names: the key itself, `skill:<name>`, or a note's short id.
+pub fn unreviewed_key(brain: &Brain, id: &str) -> Option<String> {
+    let id = id.trim();
+    let lower = id.to_lowercase();
+    brain
+        .untrusted()
+        .keys()
+        .find(|k| {
+            *k == id
+                || lower.strip_prefix("skill:").is_some_and(|n| **k == format!("skills/{n}/"))
+                || (lower.len() >= 8 && k.ends_with(&format!("-{}.md", crate::util::short_of(&lower))))
+        })
+        .cloned()
+}
+
+/// Show an unreviewed rule, preference or skill to agents on this device from now on.
+pub fn trust(brain: &Brain, key: &str) -> Result<()> {
+    brain.update_state("untrusted", |u| {
+        u.remove(key);
+    })
+}
+
+/// Whether a `doctor` line reports a problem (the exit status of `rewire doctor`).
+pub fn is_problem(line: &str) -> bool {
+    [
+        "INVALID",
+        "BLOCKED",
+        "UNSAFE",
+        "IGNORED",
+        "nodes valid: NO",
+        "failed consolidations",
+        "consolidation:",
+        "unresolved git conflicts",
+        "brain.toml:",
+    ]
+    .iter()
+    .any(|p| line.starts_with(p))
 }
 
 pub fn doctor(brain: &Brain) -> Vec<String> {
@@ -593,17 +710,32 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
             brain.config.synced_llm_settings.join(", ")
         ));
     }
-    let tracked = crate::brain::tracked_local(brain, None);
-    if !tracked.is_empty() {
+    if let Some(e) = &brain.config.error {
+        report.push(format!("brain.toml: could not be read, defaults are in use: {e}"));
+    }
+    let waiting = unreviewed(brain).len();
+    if waiting > 0 {
+        report.push(format!("from other devices: {waiting} rule(s), preference(s) or skill(s) wait for review here (`rewire review`)"));
+    }
+    let found = crate::brain::unsafe_paths(brain, None);
+    if !found.is_empty() {
         report.push(format!(
-            "UNSAFE: git tracks device-local file(s) {}; consolidation will not run a tracked local.toml \
-             (git rm --cached them, then check local.toml)",
-            tracked.join(", ")
+            "UNSAFE: git tracks {}; consolidation will not run until they are gone (git rm --cached, then check \
+             local.toml)",
+            found.join(", ")
         ));
     }
     let failed = brain.read_state("failed");
     if !failed.is_empty() {
-        report.push(format!("failed consolidations: {} (see .state/failed.json)", failed.len()));
+        report.push(format!(
+            "failed consolidations: {} (retry with `rewire consolidate --retry`):\n  {}",
+            failed.len(),
+            failed
+                .iter()
+                .map(|(path, f)| format!("{path}: {}", f.get("error").and_then(Value::as_str).unwrap_or("")))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
     }
     let pending = brain.read_state("pending");
     if !pending.is_empty() {

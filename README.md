@@ -14,9 +14,9 @@ repo of markdown files you own, and that you can read, edit, review, sync and un
 - **Safe by default.** Provenance comes from the transcript and the cited turn must actually say the claim; tool
   output never becomes a rule on its own; secrets are refused; memory is fenced as data and re-scanned when shown;
   every session can be taken back with `rewire undo`. What runs the LLM is set per device, never synced.
-- **Experimental:** ordering by usage (ACT-R decay over the event log) and spreading activation over note links.
-  Neither has improved answer accuracy in our measurements so far (the link graph measured +0.0 points); they are
-  kept for ranking order and under evaluation, not as a claim.
+- **Experimental, off by default:** ordering by usage (ACT-R decay over the event log, `recall_beta`) and spreading
+  activation over every note link (`spread = "full"`). Spreading measured +0.0 points; usage ordering has not been
+  measured at all. By default recall only follows a link from an outdated note to its replacement.
 
 Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · File format: [`docs/design/format.md`](docs/design/format.md) · Design: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Background and hypotheses: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Iteration log: [`docs/iterations.md`](docs/iterations.md) · Evaluation: [`docs/evaluation.md`](docs/evaluation.md)
 
@@ -36,8 +36,8 @@ Recall over MCP, with the server warm, takes a few ms on a small brain and tens 
 **Consolidation (the only LLM use)** runs after a session, in the background, about two calls per session. It is
 configured per device in `~/brain/local.toml` (not synced): by default Claude Code's `claude -p` with Sonnet and
 your existing login, with no tools, no MCP servers and no settings or hooks. To use the API directly, set
-`provider = "anthropic"` there and export `ANTHROPIC_API_KEY`. `rewire doctor` reports failed consolidations, and
-the session-start snapshot mentions them too.
+`provider = "anthropic"` there and export `ANTHROPIC_API_KEY`. Failed consolidations are reported by `rewire doctor`
+and the session-start snapshot, and retried with `rewire consolidate --retry`.
 
 Semantic search (optional, offline): `rewire semantic install` copies the WordLlama model from a local `wordllama`
 Python package (`pip install wordllama`) or from `--from <dir>`. Without it recall uses keywords only (BM25 +
@@ -58,8 +58,14 @@ codex mcp add rewire -- rewire mcp
 
 The agent proposes memories and you approve them. `install claude-code --write` adds Claude Code permission
 rules that deny the agent `rewire review approve`, `rewire remember --apply` and direct edits of the brain, and rewire
-itself refuses both commands inside an agent session unless you answer yes on the terminal. These raise the bar,
-they are not a sandbox: an agent that may run arbitrary shell commands acts as you.
+itself refuses approving, `--apply` and `forget` inside an agent session (detected by the agent's environment
+variables or its process among the command's ancestors). These raise the bar, they are not a sandbox: an agent that
+may run arbitrary shell commands acts as you.
+
+With sync, rules, preferences and skills that arrive from another device are shown to agents on this device only
+after you approve them here (`rewire review`); a pull that contains symlinks, submodules or device-local files is
+refused, and a brain.toml change to what this device keeps (`transcripts`, `profile`) is not taken until you set it
+in this device's `local.toml`.
 
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
 
@@ -73,10 +79,12 @@ rewire get <id>                   # or: rewire get skill:<name>
 rewire remember --type preference "Always write tests before features"   # goes to the inbox (scope: this project, or --scope global)
 rewire review                     # view the inbox
 rewire review approve <id|all>    # --force if the target note has changed since it was proposed
-rewire consolidate --pending      # process pending transcripts
+rewire forget <id>                # retract a note (it stays in git history)
+rewire consolidate --pending      # process pending transcripts (--retry: the ones that failed)
 rewire import sessions.jsonl      # import chat history (JSON lines); --llm also consolidates it
-rewire undo <session-id>          # revert the consolidation result of one session
-rewire doctor                     # check brain health
+rewire sessions                   # list sessions, newest first
+rewire undo <session-id>          # revert one session: its notes, proposals and searchable transcript
+rewire doctor                     # check brain health (exit status 1 when something needs fixing)
 rewire upgrade                    # rewrite memory to the latest format
 rewire remote set <url>           # sync the brain through a PRIVATE git repo
 rewire sync                       # manual pull + push

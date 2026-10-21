@@ -10,15 +10,13 @@ use crate::util::now_iso;
 use crate::{nodefmt, Error, Meta, Result};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::Duration;
 
 pub const GIT_TIMEOUT: u64 = 30;
 
 fn git(brain: &Brain, args: &[&str], timeout: u64) -> Result<Output> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(&brain.root).args(crate::brain::GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt in a hook
-    match crate::util::run_with_timeout(cmd, None, Duration::from_secs(timeout)) {
+    match crate::brain::run_git(&brain.root, args, Duration::from_secs(timeout)) {
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(Error::Sync(format!("git {} timed out", args[0]))),
         other => Ok(other?),
     }
@@ -94,8 +92,9 @@ fn stage(brain: &Brain, n: u8, path: &str) -> Option<String> {
 /// Resolve merge conflicts in place. Returns human-readable notes.
 fn resolve(brain: &Brain) -> Result<Vec<String>> {
     let mut notes = Vec::new();
-    let conflicted = out_str(&g(brain, &["diff", "--name-only", "--diff-filter=U"])?);
-    for path in conflicted.split_whitespace() {
+    let listed = g(brain, &["diff", "--name-only", "-z", "--diff-filter=U"])?;
+    let conflicted = String::from_utf8_lossy(&listed.stdout).into_owned();
+    for path in conflicted.split('\0').filter(|p| !p.is_empty()) {
         let full = brain.root.join(path);
         if path.starts_with("nodes/") {
             match (stage(brain, 2, path), stage(brain, 3, path)) {
@@ -128,7 +127,9 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
             }
         } else {
             g(brain, &["checkout", "--ours", "--", path])?;
-            if [".gitignore", ".gitattributes", "brain.toml"].contains(&path) {
+            if path == "README.md" {
+                notes.push("README.md: generated from the notes, regenerated after the merge".into());
+            } else if [".gitignore", ".gitattributes", "brain.toml"].contains(&path) {
                 notes.push(format!("{path}: conflict, kept this device's version"));
             } else if let Some(theirs) = stage(brain, 3, path) {
                 // e.g. a skill edited on both devices: keep the other version next to it instead of dropping it
@@ -149,7 +150,12 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
     Ok(notes)
 }
 
+/// Fetch and merge, all git calls within `timeout` seconds in total.
 pub fn pull(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
+    crate::brain::within(Duration::from_secs(timeout), || pull_now(brain, timeout))
+}
+
+fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     if remote_url(brain).is_empty() {
         return Ok(vec!["no remote configured (rewire remote set <url>)".into()]);
     }
@@ -159,24 +165,28 @@ pub fn pull(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
         return Err(Error::Sync(format!("fetch failed: {}", err_str(&r))));
     }
     let reference = format!("origin/{}", branch(brain));
-    if !g(brain, &["rev-parse", "--verify", "-q", &reference])?.status.success() {
+    let resolved = g(brain, &["rev-parse", "--verify", "-q", &format!("{reference}^{{commit}}")])?;
+    if !resolved.status.success() {
         return Ok(vec!["remote has no brain yet".into()]);
     }
+    // the commit checked below is the commit merged, whatever a concurrent fetch does to origin/<branch>
+    let reference = out_str(&resolved);
     let behind = out_str(&g(brain, &["rev-list", "--count", &format!("HEAD..{reference}")])?);
     if behind == "0" {
         return Ok(vec!["already up to date".into()]);
     }
     // git overwrites an ignored file with a tracked one on merge: a remote that tracks local.toml would choose the
-    // command this device runs for consolidation
-    let tracked = crate::brain::tracked_local(brain, Some(&reference));
-    if !tracked.is_empty() {
+    // command this device runs; a symlink would let a note or skill reach outside the brain
+    let found = crate::brain::unsafe_paths(brain, Some(&reference));
+    if !found.is_empty() {
         return Err(Error::Sync(format!(
-            "refused to pull: the remote tracks device-local file(s) {} (a synced local.toml chooses what runs on this \
-             machine); remove them from the remote (git rm --cached) and check who pushed them",
-            tracked.join(", ")
+            "refused to pull: the remote contains {}; a brain never syncs device-local files (local.toml chooses what \
+             runs on this machine), symlinks or submodules. Remove them from the remote and check who pushed them",
+            found.join(", ")
         )));
     }
     let before = crate::config::load(&brain.path(&["brain.toml"]));
+    let head = out_str(&g(brain, &["rev-parse", "HEAD"])?);
     // the merge gets the caller's budget too (a hook has seconds); on a timeout or a failed resolve the merge is
     // aborted, so no conflict markers are left for the next commit to sweep in
     let r = match git(brain, &["merge", "--no-edit", "--allow-unrelated-histories", &reference], timeout.max(8)) {
@@ -197,24 +207,88 @@ pub fn pull(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
         }
     }
     notes.extend(crate::brain::ensure_ignores(brain)?);
-    notes.extend(privacy_changes(&before, &crate::config::load(&brain.path(&["brain.toml"]))));
+    notes.extend(mark_unreviewed(brain, &head)?);
+    notes.extend(privacy_changes(brain, &before, &crate::config::load(&brain.path(&["brain.toml"])))?);
+    if notes.len() > 1 {
+        // a hook pulls silently: the snapshot tells the user what needs a look
+        brain.update_state("notices", |n| {
+            n.insert("sync".into(), json!({"at": now_iso(), "notes": notes[1..].to_vec()}));
+        })?;
+    }
+    if crate::ops::write_home(brain, &mut crate::index::Index::new(brain)).is_ok() {
+        brain.commit("sync: regenerate home page");
+    }
     Ok(notes)
 }
 
-/// brain.toml settings another device changed that decide what this device keeps and syncs.
-fn privacy_changes(before: &crate::config::Config, after: &crate::config::Config) -> Vec<String> {
+/// Rules, preferences and skills a pull added or changed wait for the user's review on this device before they are
+/// shown to the agent as instructions (Brain::untrusted).
+fn mark_unreviewed(brain: &Brain, before: &str) -> Result<Vec<String>> {
+    if before.is_empty() {
+        return Ok(Vec::new());
+    }
+    let changed = g(
+        brain,
+        &["diff", "--name-only", "-z", "--diff-filter=AMR", before, "HEAD", "--", "nodes/constraint", "nodes/preference", "skills"],
+    )?;
+    let keys: std::collections::BTreeSet<String> = String::from_utf8_lossy(&changed.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| brain.review_key(&brain.root.join(p)))
+        .collect();
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    brain.update_state("untrusted", |u| {
+        for k in &keys {
+            u.insert(k.clone(), json!({"from": "sync", "at": now_iso()}));
+        }
+    })?;
+    Ok(vec![format!(
+        "{} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this device \
+         after you review them: `rewire review`",
+        keys.len()
+    )])
+}
+
+/// brain.toml settings another device changed that decide what this device keeps and syncs. A change this device
+/// has not pinned in local.toml is not taken: the old value is pinned there, so only the user loosens privacy.
+fn privacy_changes(brain: &Brain, before: &crate::config::Config, after: &crate::config::Config) -> Result<Vec<String>> {
     let mut notes = Vec::new();
-    for (key, old, new) in
-        [("transcripts", &before.synced_transcripts, &after.synced_transcripts), ("profile", &before.profile, &after.profile)]
-    {
-        if old != new {
+    for (key, old, new, pinned) in [
+        ("transcripts", &before.synced_transcripts, &after.synced_transcripts, after.local_transcripts),
+        ("profile", &before.synced_profile, &after.synced_profile, after.local_profile),
+    ] {
+        if old == new {
+            continue;
+        }
+        if pinned {
             notes.push(format!(
-                "brain.toml from another device changed [consolidation] {key}: {old} -> {new} (set {key} in local.toml to \
-                 keep this device's choice)"
+                "brain.toml from another device changed [consolidation] {key}: {old} -> {new} (this device keeps its local.toml setting)"
+            ));
+        } else {
+            pin_local(brain, key, old)?;
+            notes.push(format!(
+                "brain.toml from another device changed [consolidation] {key}: {old} -> {new}; this device keeps {old} \
+                 (pinned in local.toml: change it there to accept)"
             ));
         }
     }
-    notes
+    Ok(notes)
+}
+
+/// Set `key = "value"` in local.toml's [consolidation] table.
+fn pin_local(brain: &Brain, key: &str, value: &str) -> Result<()> {
+    let path = brain.path(&["local.toml"]);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = format!("{key} = {}", serde_json::to_string(value)?);
+    let text = if Regex::new(r"(?m)^\[consolidation\][ \t]*$").unwrap().is_match(&text) {
+        Regex::new(r"(?m)^\[consolidation\][ \t]*$").unwrap().replace(&text, format!("[consolidation]\n{line}").as_str()).into_owned()
+    } else {
+        format!("{}\n[consolidation]\n{line}\n", text.trim_end())
+    };
+    crate::util::atomic_write(&path, &text)?;
+    Ok(())
 }
 
 pub fn push(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
