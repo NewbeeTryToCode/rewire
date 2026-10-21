@@ -49,12 +49,17 @@ judging); it drives the Rust binary and has no implementation of its own.
 ## Connect to a harness
 
 ```bash
-rewire install claude-code --write   # SessionStart/UserPromptSubmit/SessionEnd/PreCompact hooks (settings are backed up first)
+rewire install claude-code --write   # hooks + permission rules; an existing settings.json is backed up first
 claude mcp add --scope user rewire -- rewire mcp
 
 rewire install codex                 # writes an Agent Skill + prints an AGENTS.md snippet
 codex mcp add rewire -- rewire mcp
 ```
+
+The agent proposes memories and you approve them. `install claude-code --write` adds Claude Code permission
+rules that deny the agent `rewire review approve`, `rewire remember --apply` and direct edits of the brain, and rewire
+itself refuses both commands inside an agent session unless you answer yes on the terminal. These raise the bar,
+they are not a sandbox: an agent that may run arbitrary shell commands acts as you.
 
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
 
@@ -89,7 +94,8 @@ rewire sync                       # manual pull + push
 ~/brain/
 ├── README.md                     # home page for humans (generated automatically)
 ├── brain.toml                    # parameters, budgets, project map (synced)
-├── local.toml                    # which LLM consolidates, on this device (never synced)
+├── local.toml                    # which LLM consolidates, on this device (never synced; a pull or
+│                                 #   clone that tracks it is refused); can pin `transcripts` too
 ├── nodes/<type>/<slug>-<id>.md   # memory (constraint, preference, fact, decision, project, person, concept)
 ├── events/<device>/YYYY-MM.jsonl # usage log (merge=union, never conflicts)
 ├── sessions/YYYY-MM-DD/*.md      # summary of each consolidated session

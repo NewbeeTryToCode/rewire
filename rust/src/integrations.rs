@@ -223,13 +223,35 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
     Ok(out)
 }
 
-pub fn claude_code_settings(command: &str) -> Value {
+pub fn claude_code_settings(command: &str, brain: Option<&Path>) -> Value {
     let entry =
         |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
-    json!({"hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)}})
+    json!({
+        "hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)},
+        "permissions": {"deny": deny_rules(command, brain)},
+    })
 }
 
-pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<String> {
+/// Claude Code permission rules that keep the agent from approving its own memories: it proposes with
+/// `rewire remember` and the user approves with `rewire review`. Also checked by rewire itself (cli::agent_shell);
+/// neither stops an agent that runs arbitrary shell code as the user, so `review` shows where each item came from.
+pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
+    let mut rules = Vec::new();
+    for exe in ["rewire", command].into_iter().collect::<indexmap::IndexSet<_>>() {
+        rules.push(format!("Bash({exe} review approve:*)"));
+        rules.push(format!("Bash({exe} remember --apply:*)"));
+    }
+    if let Some(root) = brain {
+        // "//" starts an absolute path in a Claude Code permission rule
+        let abs = crate::brain::absolute(root).to_string_lossy().trim_start_matches('/').to_string();
+        for tool in ["Edit", "Write"] {
+            rules.push(format!("{tool}(//{abs}/**)"));
+        }
+    }
+    rules
+}
+
+pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Option<&Path>) -> Result<String> {
     let settings_path = settings_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
         // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does)
         let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
@@ -238,13 +260,14 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<
     // the hooks call this binary by its full path: a hook shell may not have ~/.cargo/bin on PATH
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.to_string_lossy().into_owned());
     let command = exe.filter(|p| !p.contains(char::is_whitespace)).unwrap_or_else(|| "rewire".into());
-    let wanted = claude_code_settings(&command);
+    let wanted = claude_code_settings(&command, brain);
     let mut lines = Vec::new();
     if write {
         let mut current: Value = json!({});
         let name = settings_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "settings.json".into());
         let backup = settings_path.with_file_name(format!("{name}.bak-rewire"));
-        if settings_path.exists() {
+        let had_settings = settings_path.exists();
+        if had_settings {
             current = serde_json::from_str(&fs::read_to_string(&settings_path)?)?;
             // Keep the first backup: it holds the user's settings from before rewire.
             if !backup.exists() {
@@ -275,11 +298,29 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<
                 existing.extend(entries.as_array().into_iter().flatten().cloned());
             }
         }
+        let deny = obj
+            .entry("permissions")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| unexpected("\"permissions\" is not an object"))?
+            .entry("deny")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| unexpected("\"permissions.deny\" is not a list"))?;
+        for rule in wanted["permissions"]["deny"].as_array().into_iter().flatten() {
+            if !deny.contains(rule) {
+                deny.push(rule.clone());
+            }
+        }
         if let Some(dir) = settings_path.parent() {
             fs::create_dir_all(dir)?;
         }
         crate::util::atomic_write(&settings_path, &serde_json::to_string_pretty(&current)?)?;
-        lines.push(format!("hooks written to {} (backup: {})", settings_path.display(), backup.display()));
+        lines.push(format!(
+            "hooks and permission rules (the agent may not approve memories or edit the brain directly) written to {}{}",
+            settings_path.display(),
+            if had_settings { format!(" (backup: {})", backup.display()) } else { String::new() }
+        ));
     } else {
         lines.push(format!("Add to {}:\n{}", settings_path.display(), serde_json::to_string_pretty(&wanted)?));
     }

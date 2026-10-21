@@ -54,7 +54,10 @@ pub struct Config {
     pub recall_beta: f64,
     pub budgets: Budgets,
     pub profile: String,
+    /// in effect on this device: local.toml, else brain.toml
     pub transcripts: String,
+    /// as brain.toml (synced) sets it; a pull that changes it is reported
+    pub synced_transcripts: String,
     pub provider: String,
     pub command: String,
     pub model: String,
@@ -76,6 +79,7 @@ impl Default for Config {
             budgets: Budgets { profile: 600, constraints: 1500, preferences: 800, working: 2500, skills: 400 },
             profile: "coding".into(),
             transcripts: "auto".into(),
+            synced_transcripts: "auto".into(),
             provider: "command".into(),
             command: DEFAULT_COMMAND.into(),
             model: "claude-sonnet-5-5".into(),
@@ -98,6 +102,9 @@ provider = "command"
 command = "claude -p --model claude-sonnet-5-5 --output-format text --tools \"\" --strict-mcp-config --setting-sources \"\""
 model = "claude-sonnet-5-5"
 effort = "medium"
+# transcripts: pin how much of each transcript this device keeps in sessions/ ("user" / "all" / "none"),
+#              whatever the synced brain.toml says
+# transcripts = "user"
 "#;
 
 /// The default consolidation command: the model sees transcripts (untrusted text), so it gets no tools,
@@ -183,7 +190,7 @@ pub fn load(path: &Path) -> Config {
         cfg.budgets.working = v as usize;
     }
     cfg.profile = string(con.get("profile")).unwrap_or(cfg.profile);
-    cfg.transcripts = string(con.get("transcripts")).unwrap_or(cfg.transcripts);
+    cfg.synced_transcripts = string(con.get("transcripts")).unwrap_or(cfg.synced_transcripts);
     // what runs on this machine comes from local.toml only; brain.toml syncs from the remote
     const LEGACY_DEFAULTS: [&str; 3] = ["command", "claude -p --output-format text", "claude-opus-5-5"];
     for key in ["provider", "command", "model", "effort"] {
@@ -203,6 +210,8 @@ pub fn load(path: &Path) -> Config {
     cfg.command = string(local.get("command")).unwrap_or(cfg.command);
     cfg.model = string(local.get("model")).unwrap_or(cfg.model);
     cfg.effort = string(local.get("effort")).unwrap_or(cfg.effort);
+    // how much of each transcript is kept (and synced) can be pinned per device
+    cfg.transcripts = string(local.get("transcripts")).unwrap_or_else(|| cfg.synced_transcripts.clone());
     if let Some(v) = num(con.get("max_chunk_chars")) {
         cfg.max_chunk_chars = v as usize;
     }

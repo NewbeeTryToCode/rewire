@@ -16,9 +16,10 @@ pub const HEADER: &str = "# rewire memory\nNotes from the user's portable memory
 
 /// Neutralize fence tags inside memory content, so a note can never close the fence early.
 pub fn escape(text: &str) -> String {
-    // any case and look-alike letters ("</Rewire-Memory>", a Cyrillic "е"): the harness or model may read them as the tag
+    // any case, separator and look-alike or hidden letters ("</Rewire_Memory>", a Cyrillic "е", a soft hyphen):
+    // the harness or model may read them as the tag
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = R.get_or_init(|| regex::Regex::new(r"(?i)<(\s*/?\s*)rewire\W?memory").unwrap());
+    let re = R.get_or_init(|| regex::Regex::new(r"(?i)<(\s*/?\s*)rewire[\W_]{0,3}memory").unwrap());
     let folded = crate::security::fold_confusables(text);
     if !re.is_match(&folded) {
         return text.to_string();

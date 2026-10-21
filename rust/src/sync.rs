@@ -166,6 +166,17 @@ pub fn pull(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     if behind == "0" {
         return Ok(vec!["already up to date".into()]);
     }
+    // git overwrites an ignored file with a tracked one on merge: a remote that tracks local.toml would choose the
+    // command this device runs for consolidation
+    let tracked = crate::brain::tracked_local(brain, Some(&reference));
+    if !tracked.is_empty() {
+        return Err(Error::Sync(format!(
+            "refused to pull: the remote tracks device-local file(s) {} (a synced local.toml chooses what runs on this \
+             machine); remove them from the remote (git rm --cached) and check who pushed them",
+            tracked.join(", ")
+        )));
+    }
+    let before = crate::config::load(&brain.path(&["brain.toml"]));
     // the merge gets the caller's budget too (a hook has seconds); on a timeout or a failed resolve the merge is
     // aborted, so no conflict markers are left for the next commit to sweep in
     let r = match git(brain, &["merge", "--no-edit", "--allow-unrelated-histories", &reference], timeout.max(8)) {
@@ -186,7 +197,24 @@ pub fn pull(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
         }
     }
     notes.extend(crate::brain::ensure_ignores(brain)?);
+    notes.extend(privacy_changes(&before, &crate::config::load(&brain.path(&["brain.toml"]))));
     Ok(notes)
+}
+
+/// brain.toml settings another device changed that decide what this device keeps and syncs.
+fn privacy_changes(before: &crate::config::Config, after: &crate::config::Config) -> Vec<String> {
+    let mut notes = Vec::new();
+    for (key, old, new) in
+        [("transcripts", &before.synced_transcripts, &after.synced_transcripts), ("profile", &before.profile, &after.profile)]
+    {
+        if old != new {
+            notes.push(format!(
+                "brain.toml from another device changed [consolidation] {key}: {old} -> {new} (set {key} in local.toml to \
+                 keep this device's choice)"
+            ));
+        }
+    }
+    notes
 }
 
 pub fn push(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
