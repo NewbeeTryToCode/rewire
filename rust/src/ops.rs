@@ -121,6 +121,11 @@ pub fn recall(
         fused.iter().filter_map(|(id, _)| firsts.iter().find(|f| f.id == *id).cloned()).collect()
     };
     let mut hits = top(fused_hits, k);
+    // rules and preferences from another device not yet reviewed here are not handed to the agent
+    let unreviewed = brain.untrusted_ids();
+    if !unreviewed.is_empty() {
+        hits.retain(|h| !unreviewed.contains(&h.id));
+    }
     let mut eps = top(fused_eps, episodes);
     for hit in hits.iter_mut() {
         // re-scanned when shown: files can be edited by hand or arrive by sync
@@ -196,6 +201,9 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
         }
         match resolve_id(brain, r) {
             None => out.push(json!({"ref": r, "error": "not found"})),
+            Some(node) if brain.is_untrusted(&node.path) => {
+                out.push(json!({"ref": r, "error": "from another device, not reviewed on this device yet (`rewire review`)"}))
+            }
             Some(node) => {
                 let mut m = Meta::new();
                 m.insert("id".into(), json!(node.id()));

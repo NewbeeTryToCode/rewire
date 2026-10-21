@@ -12,7 +12,7 @@
 
 ## 0. Goals & principles
 
-1. **Like human memory**: memories that are used often grow stronger, memories that are rarely used fade (but are not lost), and memories that are often used *together* become more strongly connected (Hebbian: *neurons that fire together, wire together*).
+1. **Like human memory** (aspirational, not implemented: nothing learns from co-use yet): memories that are used often grow stronger, memories that are rarely used fade (but are not lost), and memories that are often used *together* become more strongly connected (Hebbian: *neurons that fire together, wire together*).
 2. **Update after the session** (the Hermes pattern): the session writes quickly, and then a consolidation phase updates the brain.
 3. **Graph/ontology structure**: memories are typed nodes connected by typed relations.
 4. **Own the brain, transfer anywhere**: the brain remains a set of files owned by the user. It can be put in git, it can be read by humans, and it does not require a server.
@@ -131,7 +131,7 @@ When the agent needs memory (a query or session context):
    with a filter: `superseded` nodes / nodes with `valid_to < now` are dropped unless the query is historical.
 4. Take the top-k until the **token budget** runs out; return summaries + IDs (claude-mem's progressive pattern: `search → get`).
 
-This approach is close to **HippoRAG** (Personalized PageRank over a knowledge graph, inspired by the hippocampus) and the *recency × importance × relevance* score from the **Generative Agents** paper. Both are proven in research.
+This approach is close to **HippoRAG** (Personalized PageRank over a knowledge graph, inspired by the hippocampus) and the *recency × importance × relevance* score from the **Generative Agents** paper. Both report gains in their own papers; neither was reproduced here.
 
 ### 3.4 What counts as "used"? (the most fragile part)
 
@@ -333,7 +333,7 @@ Safety rule: destructive actions (SUPERSEDE, merging nodes, changing `importance
 
 Recommended order (cheap → expensive):
 
-1. **Phase 0 — Mathematical simulation** (no LLM, no harness). A script that generates a synthetic event log (frequently used memories, rarely used ones, spaced patterns, hub nodes, superseded facts) and plots B, H, and tiers over time. Goal: choose `d`, `θ`, and the `α/β/γ` weights, and prove there is no rich-get-richer effect. **This is the fastest way to prove the design is solid.**
+1. **Phase 0 — Mathematical simulation** (no LLM, no harness). A script that generates a synthetic event log (frequently used memories, rarely used ones, spaced patterns, hub nodes, superseded facts) and plots B, H, and tiers over time. Goal: choose `d`, `θ`, and the `α/β/γ` weights, and prove there is no rich-get-richer effect. **A cheap first check, synthetic only.**
 2. **Phase 1 — Storage + index + CLI**: file format, event log, SQLite rebuild, `recall/get/remember`, `CORE.md` generation. Test: delete `.index/` → rebuild → identical results.
 3. **Phase 2 — Consolidation**: the SessionEnd pipeline with replay of real transcripts. Metrics: duplicate rate, extraction precision, how many candidates go to the inbox.
 4. **Phase 3 — Harness adapters**: Claude Code (hooks + MCP), Codex, and one harness without hooks (AGENTS.md + CLI).

@@ -111,7 +111,7 @@ is the same (§6).
 | A-Mem | ≈48.4% | | Mem0 paper (2025) |
 | Mem0 (2026 platform) | 92.5% | median 6.7–7k tokens per retrieval, p50 0.88–1.09 s | Vendor report |
 | Memori evaluation (third party) | Zep 79.1% · LangMem 78.1% · Mem0 62.5% | Mem0 ≈1,764 tokens per question | Memori Labs |
-| **rewire** | **94.0–94.9%** | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7 (k=50); answerer + judge Claude via `claude -p`, Mem0 prompt; **not yet** with the same model as Mem0 |
+| rewire (historical) | 94.0–94.9% | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7: removed Python engine, k=50, same-family Claude answerer and judge via `claude -p`, Mem0 prompt; **not comparable** with the rows above. Current Rust engine on a replicated 80-question sample: see [the results](../experiments/eval/results/) |
 
 ### LongMemEval_S (accuracy, 500 questions)
 

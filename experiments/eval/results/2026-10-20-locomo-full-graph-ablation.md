@@ -15,7 +15,7 @@ sampled sets, which all run in `--mode episodes`.
 |---|---|---|
 | W | episodes (baseline, from `2026-10-20-replicated-ab.md`) | – |
 | F0 | full | off (`REWIRE_SPREAD_HOPS=0`) |
-| F2 | full | 2 hops (rewire's default) |
+| F2 | full | 2 hops (the default at the time) |
 | Fs | full | only along `supersedes` (`REWIRE_SPREAD_MODE=supersedes`) |
 
 ## Retrieval (no LLM)
@@ -61,6 +61,7 @@ F2 and F0 recall different contexts on 38 of 40 LoCoMo and 32 of 40 multi-hop qu
 - **What the facts do bring** is retrieval on multi-hop: all evidence counting facts rises from 32.5% (episodes) to
   40–42.5%. At 80 questions that does not reach J, because multi-hop J is already 91–93% with excerpts alone.
 - **Conclusion for graph adoption**: with spreading measured at zero on the sampled LoCoMo sets, step 1's kill criterion
-  ("if off ≥ on, freeze graph work and keep spreading only for supersedes forwarding") applies. Spreading stays as it
-  is in full mode (it does no harm); no further graph retrieval work is planned. Observations (step 4) remain the only
+  ("if off ≥ on, freeze graph work and keep spreading only for supersedes forwarding") applies. These runs used the
+  Python engine, since removed. The default changed to `spread = "supersedes"` in 9e68108 following this result; that
+  setting has not been re-measured on the Rust engine. No further graph retrieval work is planned. Observations (step 4) remain the only
   graph idea aimed at the vocabulary gap, and they would need new LLM calls on top of full mode.
