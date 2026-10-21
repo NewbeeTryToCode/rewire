@@ -243,7 +243,9 @@ pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
     }
     if let Some(root) = brain {
         // "//" starts an absolute path in a Claude Code permission rule
-        let abs = crate::brain::absolute(root).to_string_lossy().trim_start_matches('/').to_string();
+        // the real path: a rule on a symlinked path does not match the files the agent would touch
+        let real = root.canonicalize().unwrap_or_else(|_| crate::brain::absolute(root));
+        let abs = real.to_string_lossy().trim_start_matches('/').to_string();
         for tool in ["Edit", "Write"] {
             rules.push(format!("{tool}(//{abs}/**)"));
         }
@@ -268,7 +270,8 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
         let backup = settings_path.with_file_name(format!("{name}.bak-rewire"));
         let had_settings = settings_path.exists();
         if had_settings {
-            current = serde_json::from_str(&fs::read_to_string(&settings_path)?)?;
+            current = serde_json::from_str(&fs::read_to_string(&settings_path)?)
+                .map_err(|e| Error::Op(format!("{}: not valid JSON ({e}); fix it by hand or move it away", settings_path.display())))?;
             // Keep the first backup: it holds the user's settings from before rewire.
             if !backup.exists() {
                 fs::copy(&settings_path, &backup)?;
@@ -324,7 +327,7 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
     } else {
         lines.push(format!("Add to {}:\n{}", settings_path.display(), serde_json::to_string_pretty(&wanted)?));
     }
-    lines.push("Register the MCP server:\n  claude mcp add --scope user rewire -- rewire mcp".into());
+    lines.push(format!("Register the MCP server:\n  claude mcp add --scope user rewire -- {command} mcp"));
     Ok(lines.join("\n\n"))
 }
 
@@ -337,7 +340,11 @@ pub fn install_codex(skills_dir: Option<&str>) -> Result<String> {
         format!("Agent Skill written to {}", target.display()),
         "Register the MCP server (optional; the skill also works through the CLI):\n  codex mcp add rewire -- rewire mcp".into(),
         format!("Add this to your global or project AGENTS.md so the agent primes memory without hooks:\n\n{AGENTS_SNIPPET}"),
-        "Codex sessions are consolidated lazily from ~/.codex/sessions on the next `rewire` hook or `rewire consolidate --pending`.".into(),
+        format!(
+            "Codex has no hooks: its sessions in {} are consolidated when a Claude Code hook runs, or with \
+             `rewire consolidate --pending` (for example from cron).",
+            crate::brain::expand_user(&std::env::var("CODEX_HOME").unwrap_or_else(|_| "~/.codex".into())).join("sessions").display()
+        ),
     ]
     .join("\n\n"))
 }

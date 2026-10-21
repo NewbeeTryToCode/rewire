@@ -2,7 +2,7 @@
 name = "rewire"
 version = "0.2.0"
 edition = "2021"
-description = "Own your brain, transfer it anywhere: portable synaptic memory for agent harnesses"
+description = "Own your memory, take it anywhere: reviewable, git-backed long-term memory for coding agents"
 license = "MIT"
 repository = "https://github.com/NewbeeTryToCode/rewire"
 
@@ -21,6 +21,7 @@ fs4 = "0.13"
 indexmap = "2"
 rand = "0.8"
 regex = "1"
+unicode-normalization = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"

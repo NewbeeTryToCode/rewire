@@ -193,9 +193,13 @@ pub fn make(config: &Config, brain_root: &Path) -> Result<Box<dyn Provider>> {
         "command" => {
             // local.toml is never synced; one that git tracks may have come from another device or the remote
             let brain = crate::brain::Brain::open(Some(brain_root));
-            if crate::brain::tracked_local(&brain, None).iter().any(|p| p == "local.toml") {
-                return llm("local.toml is tracked by git, so its command may come from another device: not running it \
-                            (git rm --cached local.toml, then check the command)");
+            let found = crate::brain::unsafe_paths(&brain, None);
+            if !found.is_empty() {
+                return llm(format!(
+                    "git tracks {} in the brain, so what runs may come from another device: not running the LLM command \
+                     (see `rewire doctor`)",
+                    found.join(", ")
+                ));
             }
             Ok(Box::new(CommandProvider::new(&config.command, &brain_root.join(".state").join("llm"))))
         }

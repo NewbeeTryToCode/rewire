@@ -67,7 +67,7 @@ CREATE TABLE epvec(rid INTEGER PRIMARY KEY, v BLOB);
 ";
 
 /// The bundled static embeddings are much weaker than BM25 + keywords on their own (R@5 57% vs 90%),
-/// so they only add a small bonus; tuned in experiments/retrieval, validated on LoCoMo.
+/// so they only add a small bonus; tuned on the earlier Python engine (experiments/retrieval), not re-measured in Rust.
 pub const SEM_WEIGHT: f64 = 0.15;
 pub const SEM_TOP: usize = 10;
 
@@ -237,11 +237,15 @@ pub struct Index {
     path: PathBuf,
     d: f64,
     recall_beta: f64,
+    spread: String,
     db: Option<Connection>,
     pub seed_weight: f64,
     /// cached (ids, scopes, vectors) of nodes and (rowids, vectors) of episodes for semantic search
     mat: Option<NodeVectors>,
     epmat: Option<EpisodeVectors>,
+    /// SQLite's data_version when the vectors were cached: another process (a hook, a sync) that changed the index
+    /// changes it, so a long-running MCP server does not keep searching an old set of vectors
+    data_version: Option<i64>,
     /// rows embedded per refresh (0 = all); hooks set EMBED_BATCH to stay within their time limit
     pub embed_limit: usize,
 }
@@ -457,12 +461,14 @@ impl Index {
             path: brain.path(&[".index", "brain.db"]),
             d: brain.config.d,
             recall_beta: brain.config.recall_beta,
+            spread: brain.config.spread.clone(),
             db: None,
             // source-excerpt bonus for the top memory hit, as a share of the best excerpt score
             // (tuned: experiments/locomo/evidence.py)
             seed_weight: 0.35,
             mat: None,
             epmat: None,
+            data_version: None,
             embed_limit: 0,
         }
     }
@@ -585,6 +591,12 @@ impl Index {
                 self.epmat = None;
             }
             Ok(false) => {}
+        }
+        let version: i64 = self.db.as_ref().map_or(Ok(0), |db| db.query_row("PRAGMA data_version", [], |r| r.get(0)))?;
+        if self.data_version != Some(version) {
+            self.mat = None;
+            self.epmat = None;
+            self.data_version = Some(version);
         }
         Ok(())
     }
@@ -1141,8 +1153,8 @@ impl Index {
         Ok(())
     }
 
-    /// Keyword recall (BM25 over title/body/keywords + query stemming), time-window intent, then
-    /// spreading activation over the graph.
+    /// Keyword recall (BM25 over title/body/keywords + query stemming), time-window intent, then links: by default
+    /// only from outdated memories to their replacements (`spread = "full"` spreads over the whole graph).
     ///
     /// Superseded memories hand their activation to their replacement; they are returned themselves
     /// (marked "superseded") only for history questions ("used to", "first", "dulu").
@@ -1228,7 +1240,9 @@ impl Index {
         let beta = opts.beta.unwrap_or(self.recall_beta);
         let mut energy: IndexMap<String, f64> = rel.clone();
         let mut via: HashMap<String, String> = HashMap::new();
-        if opts.spread {
+        // "supersedes" (default) only forwards an outdated memory to its replacement; "full" spreads over every link
+        let full = self.spread == "full";
+        if opts.spread && self.spread != "off" {
             let mut frontier: Vec<(String, f64)> = rel.iter().map(|(k, v)| (k.clone(), *v)).collect();
             frontier.sort_by(by_energy);
             frontier.truncate(10);
@@ -1242,6 +1256,9 @@ impl Index {
                     let fan = 1.0 + (1.0 + links.len() as f64).ln();
                     let src_inactive = info.get(src).is_some_and(|r| !r.active);
                     for (dst, relation) in links {
+                        if !full && !(src_inactive && relation == "supersedes") {
+                            continue;
+                        }
                         let gain = if src_inactive && relation == "supersedes" {
                             amount * 0.9 // an outdated memory points straight at its replacement
                         } else {

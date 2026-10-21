@@ -72,6 +72,11 @@ pub fn slugify(text: &str, max_len: usize) -> String {
 }
 
 pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    // a symlinked file (dotfiles managed elsewhere, e.g. ~/.claude/settings.json) is replaced at its target and
+    // keeps its permissions: renaming over the link would turn it into a plain file
+    let target = fs::canonicalize(path).ok().filter(|_| fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()));
+    let path = target.as_deref().unwrap_or(path);
+    let perms = fs::metadata(path).ok().map(|m| m.permissions());
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -80,6 +85,9 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
         let mut fh = fs::File::create(&tmp)?;
         fh.write_all(content.as_bytes())?;
         fh.sync_all()?; // the rename must never expose an empty or half-written file after a crash
+    }
+    if let Some(p) = perms {
+        let _ = fs::set_permissions(&tmp, p);
     }
     fs::rename(tmp, path)
 }
@@ -124,9 +132,10 @@ pub fn round_to(x: f64, digits: usize) -> f64 {
     format!("{x:.digits$}").parse().unwrap_or(x)
 }
 
-/// Run a command with a deadline. stdout and stderr are drained on their own threads (a child blocked on a full
-/// pipe would otherwise hang until the deadline), stdin is written on another, and a child past the deadline is
-/// killed and reaped. Err(TimedOut) on the deadline.
+/// Run a command with a deadline that bounds the whole call. stdout and stderr are drained on their own threads (a
+/// child blocked on a full pipe would otherwise hang until the deadline), stdin is written on another, a child past
+/// the deadline is killed and reaped, and output pipes a grandchild keeps open past the child's exit do not extend
+/// the deadline. Err(TimedOut) on the deadline.
 pub fn run_with_timeout(
     mut cmd: std::process::Command,
     input: Option<String>,
@@ -134,26 +143,30 @@ pub fn run_with_timeout(
 ) -> std::io::Result<std::process::Output> {
     use std::io::{Read, Write};
     use std::process::Stdio;
+    let timed_out = |what: &str| std::io::Error::new(std::io::ErrorKind::TimedOut, format!("timed out{what}"));
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let deadline = std::time::Instant::now() + timeout;
     let mut child = cmd.spawn()?;
-    let writer = child.stdin.take().map(|mut stdin| {
+    if let Some(mut stdin) = child.stdin.take() {
+        // never joined: a grandchild that keeps stdin open without reading must not hold the caller
         let data = input.unwrap_or_default();
         std::thread::spawn(move || {
             let _ = stdin.write_all(data.as_bytes());
-        })
-    });
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        });
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    let drain = |pipe: Option<Box<dyn Read + Send>>, is_out: bool| {
+        let tx = tx.clone();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut p) = pipe {
                 let _ = p.read_to_end(&mut buf);
             }
-            buf
-        })
+            let _ = tx.send((is_out, buf));
+        });
     };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let deadline = std::time::Instant::now() + timeout;
+    drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), true);
+    drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), false);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -161,14 +174,19 @@ pub fn run_with_timeout(
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"));
+            return Err(timed_out(""));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    if let Some(w) = writer {
-        let _ = w.join();
+    let (mut stdout, mut stderr) = (None, None);
+    while stdout.is_none() || stderr.is_none() {
+        match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((true, buf)) => stdout = Some(buf),
+            Ok((false, buf)) => stderr = Some(buf),
+            Err(_) => return Err(timed_out(" (a process it started kept its output open)")),
+        }
     }
-    Ok(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
+    Ok(std::process::Output { status, stdout: stdout.unwrap_or_default(), stderr: stderr.unwrap_or_default() })
 }
 
 /// A JSON value as plain text for memory content: a string as itself, null as "" (never "None"), anything else

@@ -14,7 +14,7 @@
 | In v0.1 | Deferred (reason) |
 |---|---|
 | Brain format + a rebuildable SQLite FTS5 index | Embeddings (FTS5 is enough for a personal brain's size; add them when recall proves insufficient) |
-| ACT-R activation `d=0.7`, project scope, separate budgets (validated in Phase 0) | Hebbian / associative edges (no evidence of benefit yet) |
+| ACT-R activation `d=0.7`, project scope, separate budgets (chosen in the Phase 0 synthetic simulation, not validated on real usage) | Hebbian / associative edges (no evidence of benefit yet) |
 | 7 node types, 5 relations | Full ontology of 8 types + 12 relations |
 | CLI with 8 commands, MCP with 3 tools | Exploration tools (Ori removed similar tools because they were not used) |
 | LLM consolidation + inbox review | Scheduled automatic "sleep", lint |
@@ -99,7 +99,7 @@ Schema validation runs on every write; invalid files are rejected (not saved hal
 
 ---
 
-## 4. Activation (validated in Phase 0)
+## 4. Activation (chosen in the Phase 0 synthetic simulation)
 
 ```
 B(i) = ln Σ w_j · (now − t_j)^(−0.7)          # use events only, exposure = 0
