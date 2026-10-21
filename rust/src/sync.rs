@@ -227,28 +227,27 @@ fn mark_unreviewed(brain: &Brain, before: &str) -> Result<Vec<String>> {
     if before.is_empty() {
         return Ok(Vec::new());
     }
-    let changed = g(
-        brain,
-        &["diff", "--name-only", "-z", "--diff-filter=AMR", before, "HEAD", "--", "nodes/constraint", "nodes/preference", "skills"],
-    )?;
-    let keys: std::collections::BTreeSet<String> = String::from_utf8_lossy(&changed.stdout)
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .filter_map(|p| brain.review_key(&brain.root.join(p)))
-        .collect();
-    if keys.is_empty() {
-        return Ok(Vec::new());
+    let names = |filter: &str| -> Result<Vec<String>> {
+        let out = g(brain, &["diff", "--name-only", "-z", filter, before, "HEAD", "--", "nodes", "skills"])?;
+        Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
+    };
+    let mut notes = Vec::new();
+    let marked = brain.mark_untrusted(&names("--diff-filter=AMR")?)?;
+    if marked > 0 {
+        notes.push(format!(
+            "{marked} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this \
+             device after you review them: `rewire review`"
+        ));
     }
-    brain.update_state("untrusted", |u| {
-        for k in &keys {
-            u.insert(k.clone(), json!({"from": "sync", "at": now_iso()}));
-        }
-    })?;
-    Ok(vec![format!(
-        "{} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this device \
-         after you review them: `rewire review`",
-        keys.len()
-    )])
+    // a rule can be taken away too: say so, it changes every session as much as adding one
+    let gone: Vec<String> = names("--diff-filter=D")?
+        .into_iter()
+        .filter(|p| p.starts_with("nodes/constraint/") || p.starts_with("nodes/preference/") || p.ends_with("/SKILL.md"))
+        .collect();
+    if !gone.is_empty() {
+        notes.push(format!("removed by another device: {}", gone.join(", ")));
+    }
+    Ok(notes)
 }
 
 /// brain.toml settings another device changed that decide what this device keeps and syncs. A change this device

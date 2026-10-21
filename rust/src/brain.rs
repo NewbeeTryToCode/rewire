@@ -198,8 +198,8 @@ impl Brain {
     /// "skills/<name>/". None for other paths.
     pub fn review_key(&self, path: &Path) -> Option<String> {
         let rel = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        if rel.starts_with("nodes/constraint/") || rel.starts_with("nodes/preference/") {
-            Some(rel)
+        if rel.starts_with("nodes/") {
+            Some(rel) // by path, whatever folder: what decides is the type the file declares (sync::needs_review)
         } else {
             rel.strip_prefix("skills/").and_then(|r| r.split('/').next()).filter(|n| !n.is_empty()).map(|n| format!("skills/{n}/"))
         }
@@ -214,6 +214,46 @@ impl Brain {
 
     pub fn is_untrusted(&self, path: &Path) -> bool {
         self.review_key(path).is_some_and(|k| self.untrusted().contains_key(&k))
+    }
+
+    /// Ids of the unreviewed notes, for leaving them out of recall, `get` and the hooks.
+    pub fn untrusted_ids(&self) -> std::collections::HashSet<String> {
+        self.untrusted()
+            .keys()
+            .filter(|k| k.starts_with("nodes/"))
+            .filter_map(|k| self.read_node(&self.root.join(k)))
+            .map(|n| n.id().to_string())
+            .collect()
+    }
+
+    /// Mark the rules, preferences and skills among `paths` (relative to the brain) as unreviewed on this device; how
+    /// many were marked.
+    pub fn mark_untrusted(&self, paths: &[String]) -> Result<usize> {
+        let keys: std::collections::BTreeSet<String> = paths
+            .iter()
+            .filter(|p| {
+                let full = self.root.join(p);
+                if p.starts_with("skills/") {
+                    return true;
+                }
+                // the type the file declares, not its folder: the index files a note by its frontmatter
+                p.ends_with(".md")
+                    && (p.starts_with("nodes/constraint/")
+                        || p.starts_with("nodes/preference/")
+                        || self
+                            .read_node(&full)
+                            .is_some_and(|n| matches!(n.meta.get("type").and_then(Value::as_str), Some("constraint" | "preference"))))
+            })
+            .filter_map(|p| self.review_key(&self.root.join(p)))
+            .collect();
+        if !keys.is_empty() {
+            self.update_state("untrusted", |u| {
+                for k in &keys {
+                    u.insert(k.clone(), json!({"from": "sync", "at": now_iso()}));
+                }
+            })?;
+        }
+        Ok(keys.len())
     }
 
     /// Writers check first: a brain deleted or moved while a background consolidation was waiting on the LLM must
@@ -300,6 +340,16 @@ impl Brain {
         }
         for sub in DIRS {
             fs::create_dir_all(root.join(sub))?;
+        }
+        // a remote is not the user: its rules, preferences and skills wait for a review on this device too
+        let files = out_str(&brain.git(&["ls-files", "--", "nodes", "skills"]));
+        let paths: Vec<String> = files.lines().map(String::from).collect();
+        let waiting = brain.mark_untrusted(&paths)?;
+        if waiting > 0 {
+            eprintln!(
+                "rewire: {waiting} rule(s), preference(s) or skill(s) came with this brain; agents on this device see them \
+                 after you review them: `rewire review` (all at once: `rewire review approve all`)"
+            );
         }
         let dev = device.map(String::from).unwrap_or_else(config::default_device);
         if device.is_none() && root.join("events").join(config::slug(&dev)).is_dir() {

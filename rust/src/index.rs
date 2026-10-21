@@ -1119,17 +1119,19 @@ impl Index {
     }
 
     /// (neighbor full id, relation) in both directions.
-    pub fn neighbors(&mut self, node_id: &str) -> Result<Vec<(String, String)>> {
+    /// Linked notes: (id, relation, incoming), incoming when the other note's link points at this one (a note
+    /// that supersedes this one links to it).
+    pub fn neighbors(&mut self, node_id: &str) -> Result<Vec<(String, String, bool)>> {
         let short = short_of(node_id);
         let db = self.db()?;
         let mut st = db.prepare(
-            "SELECT n.id, e.rel FROM edges e JOIN nodes n ON n.short = e.dst WHERE e.src = ? \
-             UNION ALL SELECT e.src, e.rel FROM edges e WHERE e.dst = ?",
+            "SELECT n.id, e.rel, 0 FROM edges e JOIN nodes n ON n.short = e.dst WHERE e.src = ? \
+             UNION ALL SELECT e.src, e.rel, 1 FROM edges e WHERE e.dst = ?",
         )?;
         let out = st
-            .query_map(params![node_id, short], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map(params![node_id, short], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? == 1)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(out.into_iter().filter(|(id, _)| id != node_id).collect())
+        Ok(out.into_iter().filter(|(id, _, _)| id != node_id).collect())
     }
 
     fn fetch(&mut self, info: &mut HashMap<String, NodeRow>, ids: &[String], scopes: Option<&[String]>) -> Result<()> {
@@ -1255,11 +1257,14 @@ impl Index {
                     }
                     let fan = 1.0 + (1.0 + links.len() as f64).ln();
                     let src_inactive = info.get(src).is_some_and(|r| !r.active);
-                    for (dst, relation) in links {
-                        if !full && !(src_inactive && relation == "supersedes") {
+                    for (dst, relation, incoming) in links {
+                        // an outdated note leads to the note that replaced it (the one whose link points at it),
+                        // never back to the note it replaced itself
+                        let forward = src_inactive && incoming && relation == "supersedes";
+                        if !full && !forward {
                             continue;
                         }
-                        let gain = if src_inactive && relation == "supersedes" {
+                        let gain = if forward {
                             amount * 0.9 // an outdated memory points straight at its replacement
                         } else {
                             amount * rel_weight(&relation) * HOP_DECAY.powi(hop) / fan
@@ -1269,7 +1274,7 @@ impl Index {
                         }
                         *nxt.entry(dst.clone()).or_insert(0.0) += gain;
                         if !rel.contains_key(&dst) && !via.contains_key(&dst) {
-                            let label = if src_inactive {
+                            let label = if forward {
                                 format!("replaces outdated: {}", info[src].title)
                             } else {
                                 let other = info.get(src).map(|r| r.title.clone()).unwrap_or_else(|| short_of(src));

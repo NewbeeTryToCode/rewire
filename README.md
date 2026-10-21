@@ -14,9 +14,10 @@ repo of markdown files you own, and that you can read, edit, review, sync and un
 - **Safe by default.** Provenance comes from the transcript and the cited turn must actually say the claim; tool
   output never becomes a rule on its own; secrets are refused; memory is fenced as data and re-scanned when shown;
   every session can be taken back with `rewire undo`. What runs the LLM is set per device, never synced.
-- **Experimental, off by default:** ordering by usage (ACT-R decay over the event log, `recall_beta`) and spreading
-  activation over every note link (`spread = "full"`). Spreading measured +0.0 points; usage ordering has not been
-  measured at all. By default recall only follows a link from an outdated note to its replacement.
+- **Experimental:** ordering by usage (ACT-R decay over the event log) orders the session-start snapshot's
+  preferences and working context and has never been measured; in recall it is off by default (`recall_beta = 0`).
+  Spreading activation over every note link (`spread = "full"`) measured +0.0 points and is off by default: recall
+  only follows a link from an outdated note to its replacement.
 
 Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · File format: [`docs/design/format.md`](docs/design/format.md) · Design: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Background and hypotheses: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Iteration log: [`docs/iterations.md`](docs/iterations.md) · Evaluation: [`docs/evaluation.md`](docs/evaluation.md)
 
