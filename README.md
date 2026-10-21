@@ -8,16 +8,18 @@ repo of markdown files you own, and that you can read, edit, review, sync and un
   makes no LLM calls; the benchmark gains measured so far all come from this layer (`docs/evaluation.md`).
 - **A reviewed layer of facts, rules and skills on top.** After a session, an LLM proposes atomic notes and reusable
   procedures. What the user explicitly said is saved; everything else waits in an inbox. Rules (constraints) always
-  go through review.
+  go through review. Its value is readable, editable, reviewable memory: on answer accuracy it has not been shown
+  better than the episodes alone (+1.7 points, interval [−4.2, +7.5], 80 questions, earlier Python engine).
 - **Files are the source of truth.** A note is markdown with frontmatter (Obsidian-friendly); usage is an
   append-only event log; the index is derived and rebuilt from the files at any time.
 - **Safe by default.** Provenance comes from the transcript and the cited turn must actually say the claim; tool
   output never becomes a rule on its own; secrets are refused; memory is fenced as data and re-scanned when shown;
   every session can be taken back with `rewire undo`. What runs the LLM is set per device, never synced.
-- **Experimental:** ordering by usage (ACT-R decay over the event log) orders the session-start snapshot's
-  preferences and working context and has never been measured; in recall it is off by default (`recall_beta = 0`).
-  Spreading activation over every note link (`spread = "full"`) measured +0.0 points and is off by default: recall
-  only follows a link from an outdated note to its replacement.
+- **Experimental, off by default:** ordering by usage (ACT-R decay over the event log) for recall and the
+  session-start snapshot (`recall_beta`, never measured), and spreading activation over every note link
+  (`spread = "full"`: +0.0 points, interval [−4.2, +4.6], 80 questions, earlier Python engine; a null result on a
+  small sample, not proof of no effect). By default recall only follows a link from an outdated note to its
+  replacement; that default itself has not been measured end to end.
 
 Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · File format: [`docs/design/format.md`](docs/design/format.md) · Design: [`docs/design/mvp-spec.md`](docs/design/mvp-spec.md) · Background and hypotheses: [`docs/design/synaptic-memory.md`](docs/design/synaptic-memory.md) · Iteration log: [`docs/iterations.md`](docs/iterations.md) · Evaluation: [`docs/evaluation.md`](docs/evaluation.md)
 
@@ -67,7 +69,10 @@ shell commands acts as you, and could do the same.
 With sync, rules, preferences and skills that arrive from another device (or come with `rewire init --from`) are left
 out of the snapshot, recall and the per-prompt hook on this device until you approve them here (`rewire review`;
 `review reject` forgets one everywhere); proposals that arrive in the inbox are labelled and never approved by
-`approve all`. Facts, decisions and session transcripts flow between devices without a review. A pull that contains
+`approve all`. Facts, decisions and session transcripts flow between devices without a review, and the sender
+chooses a note's type, so this protects against unreviewed rules, not against someone who controls your remote:
+keep the remote private. The review is per device (each device approves a rule once, and a new or ephemeral clone
+starts with all of them waiting); a signed approval ledger shared across devices is not built. A pull that contains
 symlinks, submodules or device-local files, or a `.gitignore` that un-ignores them, is refused, and a brain.toml change
 to what this device keeps (`transcripts`, `profile`) is not taken until you set it in this device's `local.toml`.
 

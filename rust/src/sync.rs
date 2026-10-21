@@ -249,7 +249,16 @@ fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
         Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter_map(|p| p.strip_prefix(&prefix)).map(String::from).collect())
     };
     let declared = grep(r#"^type:[[:space:]]*["']?(constraint|preference)"#)?;
-    let retracted = grep(r#"^(retracted_at|valid_to):[[:space:]]*["']?[0-9]"#)?;
+    // a line like `valid_to: 1` can sit in a body too: the grep only picks candidates, the parsed frontmatter decides
+    let retracted: std::collections::HashSet<String> = grep(r#"^(retracted_at|valid_to):[[:space:]]*["']?[0-9]"#)?
+        .into_iter()
+        .filter(|p| {
+            let text =
+                g(brain, &["show", &format!("{theirs}:{p}")]).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            crate::nodefmt::parse(&text)
+                .is_ok_and(|(meta, _)| ["retracted_at", "valid_to"].iter().any(|k| crate::brain::is_set(meta.get(*k))))
+        })
+        .collect();
     let keys: Vec<String> = changed
         .iter()
         .filter(|p| {
