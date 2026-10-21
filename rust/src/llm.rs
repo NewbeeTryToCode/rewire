@@ -190,7 +190,15 @@ impl Provider for AnthropicProvider {
 
 pub fn make(config: &Config, brain_root: &Path) -> Result<Box<dyn Provider>> {
     match config.provider.as_str() {
-        "command" => Ok(Box::new(CommandProvider::new(&config.command, &brain_root.join(".state").join("llm")))),
+        "command" => {
+            // local.toml is never synced; one that git tracks may have come from another device or the remote
+            let brain = crate::brain::Brain::open(Some(brain_root));
+            if crate::brain::tracked_local(&brain, None).iter().any(|p| p == "local.toml") {
+                return llm("local.toml is tracked by git, so its command may come from another device: not running it \
+                            (git rm --cached local.toml, then check the command)");
+            }
+            Ok(Box::new(CommandProvider::new(&config.command, &brain_root.join(".state").join("llm"))))
+        }
         "anthropic" => Ok(Box::new(AnthropicProvider::new(&config.model, &config.effort)?)),
         other => llm(format!("unknown provider {other}")),
     }

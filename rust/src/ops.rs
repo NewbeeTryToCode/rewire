@@ -593,6 +593,14 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
             brain.config.synced_llm_settings.join(", ")
         ));
     }
+    let tracked = crate::brain::tracked_local(brain, None);
+    if !tracked.is_empty() {
+        report.push(format!(
+            "UNSAFE: git tracks device-local file(s) {}; consolidation will not run a tracked local.toml \
+             (git rm --cached them, then check local.toml)",
+            tracked.join(", ")
+        ));
+    }
     let failed = brain.read_state("failed");
     if !failed.is_empty() {
         report.push(format!("failed consolidations: {} (see .state/failed.json)", failed.len()));

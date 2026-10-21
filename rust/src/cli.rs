@@ -561,6 +561,17 @@ pub fn run(cli: Cli) -> Result<()> {
             if ids.is_empty() {
                 fail("give inbox ids, or `all`");
             }
+            // approving makes a proposal part of every future session: the user's call, not the agent's
+            if action == "approve" {
+                if let Some(marker) = agent_shell() {
+                    if !confirm_on_tty(&format!(
+                        "An agent session ({marker} is set) is approving {} into your memory. Approve? [y/N] ",
+                        ids.join(" ")
+                    )) {
+                        fail(format!("approval is refused inside an agent session ({marker} is set) without a yes on the terminal: run `rewire review` yourself"));
+                    }
+                }
+            }
             let _g = writing(&brain);
             let ids: Vec<String> = if ids == ["all"] {
                 // "all" never approves items the scan flagged (injection, secret): those need a look and their id
@@ -694,7 +705,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Install { harness, write, skills_dir } => {
             if harness == "claude-code" {
-                println!("{}", integrations::install_claude_code(write, None)?);
+                println!("{}", integrations::install_claude_code(write, None, Some(&Brain::open(bp.as_deref()).root))?);
             } else {
                 println!("{}", integrations::install_codex(skills_dir.as_deref())?);
             }

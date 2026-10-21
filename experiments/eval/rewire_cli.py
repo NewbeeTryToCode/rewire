@@ -17,6 +17,13 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 BIN = os.environ.get("REWIRE_BIN") or os.path.join(ROOT, "rust", "target", "release", "rewire")
+# rewire refuses approvals inside an agent session; a benchmark run started from one is not an agent approving
+# its own memories, so the markers are not passed on
+AGENT_MARKERS = ("CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL")
+
+
+def environment() -> dict:
+    return {k: v for k, v in os.environ.items() if k not in AGENT_MARKERS}
 
 
 def check() -> None:
@@ -26,7 +33,7 @@ def check() -> None:
 
 
 def run(root: str, *args: str, stdin: str | None = None, now: str | None = None) -> str:
-    env = dict(os.environ)
+    env = environment()
     if now:  # recall ranks by activation, which decays with age: pin the clock (see frozen_now in run.py)
         env["REWIRE_NOW"] = now
     out = subprocess.run([BIN, "--brain", root, *args], input=stdin, capture_output=True, text=True, env=env)
@@ -67,7 +74,7 @@ def import_sessions(root: str, sessions: list[dict], llm: bool = False) -> list[
     if not sessions:
         return []
     lines = "\n".join(json.dumps(s, ensure_ascii=False) for s in sessions) + "\n"
-    env = dict(os.environ)
+    env = environment()
     out = subprocess.run([BIN, "--brain", root, "import", "-", *(["--llm"] if llm else [])], input=lines,
                          capture_output=True, text=True, env=env)
     records = [json.loads(line) for line in out.stdout.splitlines() if line.strip().startswith("{")]

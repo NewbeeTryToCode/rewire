@@ -15,6 +15,23 @@ use std::time::{Duration, Instant};
 pub const GITATTRIBUTES: &str = "events/**/*.jsonl merge=union\n";
 /// The derived index, device-local state and device-local settings never sync. A pulled `.gitignore` that drops
 /// any of them gets them back (and stops tracking what it let in). Returns notes for what was repaired.
+/// Device-local paths: ignored by git, never synced. A tracked local.toml would choose the command every device
+/// runs, so a commit that tracks one is refused on pull and clone (git overwrites ignored files on a merge).
+pub const LOCAL_ONLY: [&str; 3] = [".index", ".state", "local.toml"];
+
+/// Device-local paths that `rev` (a commit) tracks, or the git index when `rev` is None.
+pub fn tracked_local(brain: &Brain, rev: Option<&str>) -> Vec<String> {
+    if !brain.path(&[".git"]).exists() {
+        return Vec::new();
+    }
+    let mut args = match rev {
+        Some(r) => vec!["ls-tree", "-r", "--name-only", r, "--"],
+        None => vec!["ls-files", "--"],
+    };
+    args.extend(LOCAL_ONLY);
+    out_str(&brain.git(&args)).lines().map(String::from).collect()
+}
+
 pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
     let path = brain.path(&[".gitignore"]);
     let current = fs::read_to_string(&path).unwrap_or_default();
@@ -211,6 +228,15 @@ impl Brain {
         let brain = Brain::open(Some(&root));
         if !brain.exists() {
             return Err(Error::Op(format!("{url} is not a rewire brain (no brain.toml)")));
+        }
+        let tracked = tracked_local(&brain, None);
+        if !tracked.is_empty() {
+            let _ = fs::remove_dir_all(&root);
+            return Err(Error::Op(format!(
+                "refused {url}: it tracks device-local file(s) {} (a synced local.toml chooses what runs on this machine); \
+                 remove them from the repository (git rm --cached) and check who added them",
+                tracked.join(", ")
+            )));
         }
         for sub in DIRS {
             fs::create_dir_all(root.join(sub))?;
