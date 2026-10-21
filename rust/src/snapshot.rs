@@ -124,14 +124,14 @@ pub fn health_notes(brain: &Brain) -> Vec<String> {
     if !brain.config.synced_llm_settings.is_empty() {
         notes.push("- brain.toml tries to set which LLM runs consolidation; that is ignored (see `rewire doctor`)".into());
     }
-    let untrusted = brain.untrusted().len();
+    let untrusted = crate::ops::unreviewed(brain).len();
     if untrusted > 0 {
         notes.push(format!(
             "- {untrusted} rule(s), preference(s) or skill(s) from another device are not shown until the user reviews them on this device: `rewire review`"
         ));
     }
     if let Some(e) = &brain.config.error {
-        notes.push(format!("- brain.toml could not be read ({e}); defaults are in use: fix it, then `rewire doctor`"));
+        notes.push(format!("- settings could not be read ({e}); defaults are in use: fix the file, then `rewire doctor`"));
     }
     // what a silent pull at session start changed (privacy settings kept, rules waiting): shown for a week
     if let Some(sync) = brain.read_state("notices").get("sync") {

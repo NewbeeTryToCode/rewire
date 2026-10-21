@@ -146,6 +146,12 @@ pub fn run_with_timeout(
     let timed_out = |what: &str| std::io::Error::new(std::io::ErrorKind::TimedOut, format!("timed out{what}"));
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let deadline = std::time::Instant::now() + timeout;
+    #[cfg(unix)]
+    {
+        // its own process group, so a timeout also stops what it started (git's ssh and https helpers)
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         // never joined: a grandchild that keeps stdin open without reading must not hold the caller
@@ -172,7 +178,7 @@ pub fn run_with_timeout(
             break status;
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
+            kill_group(&mut child);
             let _ = child.wait();
             return Err(timed_out(""));
         }
@@ -183,10 +189,30 @@ pub fn run_with_timeout(
         match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
             Ok((true, buf)) => stdout = Some(buf),
             Ok((false, buf)) => stderr = Some(buf),
-            Err(_) => return Err(timed_out(" (a process it started kept its output open)")),
+            Err(_) => {
+                kill_group(&mut child); // whatever still holds the pipes, so the reader threads end too
+                return Err(timed_out(" (a process it started kept its output open)"));
+            }
         }
     }
     Ok(std::process::Output { status, stdout: stdout.unwrap_or_default(), stderr: stderr.unwrap_or_default() })
+}
+
+/// Kill a child and its process group (run_with_timeout starts each child in a group of its own).
+fn kill_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let mut kill = std::process::Command::new("kill");
+        kill.args(["-KILL", "--", &format!("-{}", child.id())]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let _ = kill.status();
+    }
+    let _ = child.kill();
+}
+
+/// "YYYY-MM-DD" from a date or timestamp that starts with a real calendar date, else None.
+pub fn valid_day(text: &str) -> Option<String> {
+    let day: String = text.trim().chars().take(10).collect();
+    NaiveDate::parse_from_str(&day, "%Y-%m-%d").ok().map(|d| d.format("%Y-%m-%d").to_string())
 }
 
 /// A JSON value as plain text for memory content: a string as itself, null as "" (never "None"), anything else

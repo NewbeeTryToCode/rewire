@@ -37,6 +37,17 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
         return vec![format!("? (git could not list the files: {})", err_str(&out))];
     }
     let mut found = Vec::new();
+    // a .gitignore that un-ignores device-local files ("!local.toml") would push them on the next commit
+    let ignore = match rev {
+        Some(r) => out_str(&brain.git(&["show", &format!("{r}:.gitignore")])),
+        None => fs::read_to_string(brain.path(&[".gitignore"])).unwrap_or_default(),
+    };
+    for line in ignore.lines().map(str::trim).filter(|l| l.starts_with('!')) {
+        let target = line.trim_start_matches('!').trim_start_matches('/').to_lowercase();
+        if LOCAL_ONLY.iter().any(|l| target.starts_with(l) || target.starts_with('*') || target.starts_with('.')) {
+            found.push(format!(".gitignore line {line} (un-ignores device-local files)"));
+        }
+    }
     for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
         let Some((info, path)) = entry.split_once('\t') else { continue };
         let mode = info.split(' ').next().unwrap_or("");
@@ -58,6 +69,15 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
 }
 
 pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
+    let exclude = brain.path(&[".git", "info", "exclude"]);
+    if brain.path(&[".git"]).is_dir() && !fs::read_to_string(&exclude).unwrap_or_default().contains("local.toml") {
+        // a second copy git keeps outside the synced tree
+        let current = fs::read_to_string(&exclude).unwrap_or_default();
+        let _ = atomic_write(
+            &exclude,
+            &format!("{current}{}.index/\n.state/\nlocal.toml\n", if current.ends_with('\n') || current.is_empty() { "" } else { "\n" }),
+        );
+    }
     let path = brain.path(&[".gitignore"]);
     let current = fs::read_to_string(&path).unwrap_or_default();
     let missing: Vec<&str> =
@@ -197,9 +217,10 @@ impl Brain {
     /// The key under which a rule, preference or skill is reviewed on this device: "nodes/constraint/x.md",
     /// "skills/<name>/". None for other paths.
     pub fn review_key(&self, path: &Path) -> Option<String> {
-        let rel = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        if rel.starts_with("nodes/") {
-            Some(rel) // by path, whatever folder: what decides is the type the file declares (sync::needs_review)
+        // lower case: a case-insensitive file system checks out nodes/Constraint/ as nodes/constraint/
+        let rel = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/").to_lowercase();
+        if rel.starts_with("nodes/") || rel.starts_with("inbox/") {
+            Some(rel) // by path, whatever folder: what decides is the type the file declares
         } else {
             rel.strip_prefix("skills/").and_then(|r| r.split('/').next()).filter(|n| !n.is_empty()).map(|n| format!("skills/{n}/"))
         }
@@ -246,9 +267,14 @@ impl Brain {
             })
             .filter_map(|p| self.review_key(&self.root.join(p)))
             .collect();
+        self.mark_keys(&keys.into_iter().collect::<Vec<_>>())
+    }
+
+    /// Mark review keys (Brain::review_key) as unreviewed on this device; how many.
+    pub fn mark_keys(&self, keys: &[String]) -> Result<usize> {
         if !keys.is_empty() {
             self.update_state("untrusted", |u| {
-                for k in &keys {
+                for k in keys {
                     u.insert(k.clone(), json!({"from": "sync", "at": now_iso()}));
                 }
             })?;
@@ -344,6 +370,9 @@ impl Brain {
         // a remote is not the user: its rules, preferences and skills wait for a review on this device too
         let files = out_str(&brain.git(&["ls-files", "--", "nodes", "skills"]));
         let paths: Vec<String> = files.lines().map(String::from).collect();
+        let inbox: Vec<String> =
+            out_str(&brain.git(&["ls-files", "--", "inbox"])).lines().filter_map(|p| brain.review_key(&root.join(p))).collect();
+        brain.mark_keys(&inbox)?;
         let waiting = brain.mark_untrusted(&paths)?;
         if waiting > 0 {
             eprintln!(
@@ -645,6 +674,15 @@ impl Brain {
             eprintln!("rewire: git add failed: {}", err_str(&add));
             return false;
         }
+        // whatever .gitignore says: device-local files (local.toml has the LLM command) never reach a commit
+        let staged = self.git(&["diff", "--cached", "--name-only", "-z", "--", ":(icase).state", ":(icase).index", ":(icase)local.toml"]);
+        let staged: Vec<String> = String::from_utf8_lossy(&staged.stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect();
+        if !staged.is_empty() {
+            let mut args = vec!["rm", "-r", "-q", "--cached", "--"];
+            args.extend(staged.iter().map(String::as_str));
+            self.git(&args);
+            eprintln!("rewire: kept device-local file(s) out of the commit: {}", staged.join(", "));
+        }
         let out = self.git(&["commit", "-q", "-m", message]);
         let quiet = format!("{}{}", out_str(&out), err_str(&out));
         if !out.status.success() && !quiet.contains("nothing to commit") && !quiet.contains("nothing added") {
@@ -661,8 +699,20 @@ thread_local! {
 /// Run `f` with every git call on this thread finished within `budget` in total: a hook has seconds, and a pull
 /// is a commit, a fetch and a merge.
 pub fn within<T>(budget: Duration, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Instant>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            GIT_DEADLINE.with(|d| d.set(self.0)); // also when `f` panics
+        }
+    }
     let end = Instant::now() + budget;
-    let prev = GIT_DEADLINE.with(|d| d.replace(Some(d.get().map_or(end, |p| p.min(end)))));
+    let _restore = Restore(GIT_DEADLINE.with(|d| d.replace(Some(d.get().map_or(end, |p| p.min(end))))));
+    f()
+}
+
+/// Run `f` with no total deadline: clean-up (a merge abort) must run even when the budget is spent.
+pub fn outside_deadline<T>(f: impl FnOnce() -> T) -> T {
+    let prev = GIT_DEADLINE.with(|d| d.replace(None));
     let out = f();
     GIT_DEADLINE.with(|d| d.set(prev));
     out
@@ -674,10 +724,14 @@ pub fn run_git(root: &Path, args: &[&str], timeout: Duration) -> std::io::Result
     let timeout = GIT_DEADLINE.with(|d| d.get()).map_or(timeout, |end| timeout.min(end.saturating_duration_since(Instant::now())));
     let lock = root.join(".git").join("index.lock");
     let had_lock = lock.exists();
+    let started = std::time::SystemTime::now();
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(root).args(GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt
     let out = crate::util::run_with_timeout(cmd, None, timeout);
-    if matches!(&out, Err(e) if e.kind() == std::io::ErrorKind::TimedOut) && !had_lock {
+    // the killed git's lock: it did not exist before and was made during this call (writers on a brain take the brain
+    // lock, so another rewire's git is not running here; a git the user runs by hand in the brain could be)
+    let ours = !had_lock && fs::metadata(&lock).and_then(|m| m.modified()).is_ok_and(|t| t >= started);
+    if matches!(&out, Err(e) if e.kind() == std::io::ErrorKind::TimedOut) && ours {
         let _ = fs::remove_file(&lock);
     }
     out

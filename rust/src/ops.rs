@@ -418,11 +418,19 @@ pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
             ));
         }
     }
+    // scanned again now: the stored flags are whatever the file says, and inbox files can arrive by sync
+    let why = security::scan(&format!("{} {}", item.meta.get("title").and_then(Value::as_str).unwrap_or(""), item.body));
+    if !why.is_empty() && !force {
+        return op(format!("{inbox_id}: flagged ({}); check it, then approve with --force or reject", why.join(", ")));
+    }
     let mut change = item.meta.clone();
     change.insert("text".into(), json!(item.body));
     change.insert("confidence".into(), json!("explicit")); // a human approved it
     let node = apply_change(brain, &change, item.meta.get("source"))?;
     fs::remove_file(&path)?;
+    if let Some(key) = brain.review_key(&path) {
+        trust(brain, &key)?;
+    }
     Ok(format!("[{}] {}", crate::util::short_of(node.id()), node.title()))
 }
 
@@ -475,6 +483,9 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
     later.dedup();
     if mine.is_empty() && dropped == 0 && records.is_empty() && later.is_empty() {
         return op(format!("nothing in memory comes from session {session}"));
+    }
+    if mine.is_empty() && dropped == 0 && records.iter().all(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("\n## Undone\n"))) {
+        return op(format!("session {session} was already undone"));
     }
     let (mut removed, mut restored, mut reopened) = (0, 0, 0);
     for node in &mine {
@@ -533,7 +544,8 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
     brain.commit(&format!("undo session {session}"));
     let mut summary = format!(
         "{removed} note(s) removed, {restored} restored to their earlier version, {reopened} made current again, \
-         {dropped} proposal(s) dropped"
+         {dropped} proposal(s) dropped, {} transcript(s) taken out of recall",
+        records.len()
     );
     if !later.is_empty() {
         summary.push_str(&format!(
@@ -542,6 +554,12 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
         ));
     }
     Ok(summary)
+}
+
+/// The record file of a session, if one was written.
+pub fn session_record(brain: &Brain, harness: &str, session: &str) -> Option<std::path::PathBuf> {
+    let name = format!("{harness}-{}.md", crate::util::slugify(session, 40));
+    fs::read_dir(brain.path(&["sessions"])).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.is_file())
 }
 
 /// Session records, newest first: (date, harness, session id, undone).
@@ -576,6 +594,9 @@ pub fn forget(brain: &Brain, reference: &str, reason: &str) -> Result<String> {
         meta.insert("retracted_reason".into(), json!(reason));
     }
     brain.write_node(&meta, &node.body, Some(&node.path))?;
+    if let Some(key) = brain.review_key(&node.path) {
+        trust(brain, &key)?; // nothing left to review
+    }
     write_home(brain, &mut Index::new(brain))?;
     brain.commit(&format!("forget {}", short_of(node.id())));
     Ok(format!("forgot [{}] {}", short_of(node.id()), node.title()))
@@ -600,7 +621,7 @@ fn version_before(brain: &Brain, path: &Path, session: &str) -> Option<String> {
 /// blocks it or "").
 pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
     let mut out = Vec::new();
-    for key in brain.untrusted().keys() {
+    for key in brain.untrusted().keys().filter(|k| !k.starts_with("inbox/")) {
         let path = brain.root.join(key.trim_end_matches('/'));
         let (text, why) = if let Some(name) = key.strip_prefix("skills/") {
             match skills::read(brain, name.trim_end_matches('/')) {
@@ -609,6 +630,8 @@ pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
             }
         } else {
             match brain.read_node(&path) {
+                // retracted since (here or there): nothing left to show, nothing to review
+                Some(n) if is_set(n.meta.get("retracted_at")) => continue,
                 Some(n) => {
                     let text = format!("{} {}", n.title(), n.body.trim());
                     let why = security::blocked(&text);
@@ -655,7 +678,7 @@ pub fn is_problem(line: &str) -> bool {
         "failed consolidations",
         "consolidation:",
         "unresolved git conflicts",
-        "brain.toml:",
+        "settings:",
     ]
     .iter()
     .any(|p| line.starts_with(p))
@@ -719,7 +742,7 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         ));
     }
     if let Some(e) = &brain.config.error {
-        report.push(format!("brain.toml: could not be read, defaults are in use: {e}"));
+        report.push(format!("settings: could not be read, defaults are in use: {e}"));
     }
     let waiting = unreviewed(brain).len();
     if waiting > 0 {
@@ -874,7 +897,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         "## How this brain works".into(),
         "".into(),
         "- `nodes/<type>/` — one memory per file; relations are links you can click.".into(),
-        "- `events/` — when memories were used; how strongly each memory is recalled is computed from this.".into(),
+        "- `events/` — when memories were used (the usage log; experimental ordering by use is computed from it).".into(),
         "- `sessions/` — a summary of every consolidated agent session.".into(),
         "- Superseded memories are kept (status `superseded`) so history is never lost.".into(),
         "".into(),

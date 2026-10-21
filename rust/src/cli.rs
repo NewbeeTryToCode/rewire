@@ -325,6 +325,27 @@ fn cwd() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// Why an import record cannot be imported, if it cannot.
+fn import_problem(s: &Value) -> Option<String> {
+    let text = |k: &str| s.get(k).and_then(Value::as_str);
+    if !s.is_object() {
+        return Some("not a JSON object".into());
+    }
+    if text("session").is_none_or(|v| v.trim().is_empty()) {
+        return Some("\"session\" (a non-empty string) is missing".into());
+    }
+    if !s.get("turns").is_some_and(Value::is_array) {
+        return Some("\"turns\" must be a list".into());
+    }
+    if let Some(h) = text("harness").filter(|h| crate::util::slugify(h, 40) != *h) {
+        return Some(format!("\"harness\" must be a short name of lower-case letters, digits and dashes, not {h:?}"));
+    }
+    if let Some(d) = text("date").filter(|d| !d.is_empty() && crate::util::valid_day(d).is_none()) {
+        return Some(format!("\"date\" must start with YYYY-MM-DD, not {d:?}"));
+    }
+    None
+}
+
 fn print_items(items: &[Value]) {
     println!("{}", crate::snapshot::FENCE_OPEN);
     if items.is_empty() {
@@ -341,7 +362,11 @@ fn print_items(items: &[Value]) {
             println!("[{}] {}\n{}", s("id"), s("description"), s("body"));
         } else if item.get("body").is_some() {
             println!("[{}] {} · {} · importance {}", crate::util::short_of(&s("id")), s("type"), s("scope"), s("importance"));
-            println!("  {}\n  {}\n", s("title"), s("body"));
+            if s("body").trim() == s("title").trim() || s("body").trim().is_empty() {
+                println!("  {}\n", s("title"));
+            } else {
+                println!("  {}\n  {}\n", s("title"), s("body").trim().replace('\n', "\n  "));
+            }
         } else {
             let score = item.get("score").and_then(Value::as_f64).unwrap_or(0.0);
             let date = if s("date").is_empty() { "----------".to_string() } else { s("date") };
@@ -431,15 +456,21 @@ pub fn run(cli: Cli) -> Result<()> {
                 std::fs::read_to_string(&file)?
             };
             // every line is checked before anything is written: a bad line never leaves half an import behind
-            let sessions = text
-                .lines()
-                .enumerate()
-                .filter(|(_, l)| !l.trim().is_empty())
-                .map(|(i, l)| {
-                    serde_json::from_str::<Value>(l)
-                        .map_err(|e| Error::Op(format!("{}: line {}: not a session record: {e}", file.display(), i + 1)))
-                })
-                .collect::<Result<Vec<Value>>>()?;
+            let mut sessions = Vec::new();
+            let mut problems = Vec::new();
+            for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+                let at = format!("{}: line {}", file.display(), i + 1);
+                match serde_json::from_str::<Value>(line) {
+                    Err(e) => problems.push(format!("{at}: not JSON: {e}")),
+                    Ok(s) => match import_problem(&s) {
+                        Some(p) => problems.push(format!("{at}: {p}")),
+                        None => sessions.push(s),
+                    },
+                }
+            }
+            if !problems.is_empty() {
+                fail(format!("nothing imported; fix these records first:\n  {}", problems.join("\n  ")));
+            }
             let usage = crate::llm::Usage::default();
             let provider: Box<dyn crate::llm::Provider> =
                 if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
@@ -448,6 +479,12 @@ pub fn run(cli: Cli) -> Result<()> {
             let _g = writing(&brain);
             let mut written = 0;
             for s in sessions {
+                let harness_slug = crate::util::slugify(s.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
+                let session_id = s.get("session").and_then(Value::as_str).unwrap_or("");
+                if !use_llm && ops::session_record(&brain, &harness_slug, session_id).is_some() {
+                    println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
+                    continue;
+                }
                 let field = |k: &str| s.get(k).and_then(|v| v.as_str()).map(String::from);
                 let harness = field("harness").unwrap_or_else(|| "import".into());
                 let session = field("session").unwrap_or_else(|| "unknown".into());
@@ -650,14 +687,16 @@ pub fn run(cli: Cli) -> Result<()> {
                         m.get("target").filter(|t| crate::brain::is_set(Some(t))).map(|t| format!(" → {}", py_str(t))).unwrap_or_default();
                     let action = m.get("action").map(py_str).unwrap_or_else(|| "NEW".into());
                     let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
+                    let remote =
+                        if brain.is_untrusted(&item.path) { "  FROM ANOTHER DEVICE (its reason and labels are its own)" } else { "" };
                     println!(
-                        "{}  {action}{target}  [{} · {} · {}/{}]\n    {}\n    reason: {}{}",
+                        "{}  {action}{target}  [{} · {} · {}/{}]{remote}\n    {}\n    reason: {}{}",
                         g("inbox_id"),
                         g("type"),
                         g("scope"),
                         g("confidence"),
                         g("provenance"),
-                        item.body.trim(),
+                        item.body.trim().replace('\n', "\n    "),
                         g("reason"),
                         flags.map(|f| format!("  flags: {}", python_list(f))).unwrap_or_default()
                     );
@@ -667,20 +706,30 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("\nFrom other devices (shown to agents on this device once you approve them):");
                     for (key, text, why) in waiting {
                         let flag = if why.is_empty() { String::new() } else { format!("  flags: ['{why}']") };
-                        println!("{key}\n    {}{flag}", crate::util::take(&text.split_whitespace().collect::<Vec<_>>().join(" "), 300));
+                        // the id to approve or reject it by: a note's short id, a skill's name
+                        let id = key
+                            .strip_prefix("skills/")
+                            .map(|n| format!("skill:{}", n.trim_end_matches('/')))
+                            .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
+                            .unwrap_or_else(|| key.clone());
+                        println!("{id}  ({key}){flag}\n    {}", crate::util::take(&text, 400).replace('\n', "\n    "));
                     }
+                    println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
                 }
                 return Ok(());
             }
             if ids.is_empty() {
                 fail("give inbox ids, or `all`");
             }
-            // approving makes a proposal part of every future session: the user's call, not the agent's
-            if action == "approve" {
+            // approving makes a proposal part of every future session, rejecting drops the user's own proposals:
+            // the user's call, not the agent's
+            {
                 // refused outright: a prompt on the terminal an agent shares with the user could take a keystroke
                 // meant for something else
                 if let Some(marker) = agent_shell() {
-                    fail(format!("approval is refused inside an agent session ({marker}): run `rewire review` in your own terminal"));
+                    fail(format!(
+                        "review {action} is refused inside an agent session ({marker}): run `rewire review` in your own terminal"
+                    ));
                 }
             }
             let _g = writing(&brain);
@@ -694,8 +743,21 @@ pub fn run(cli: Cli) -> Result<()> {
                     if action == "approve" {
                         ops::trust(&brain, &key)?;
                         println!("approved {key} (from another device)");
+                    } else if key.starts_with("nodes/") {
+                        // rejecting a rule that came from another device forgets it, on every device once synced
+                        match ops::forget(
+                            &brain,
+                            key.rsplit_once('-').map_or(id.as_str(), |(_, r)| r.trim_end_matches(".md")),
+                            "rejected on review",
+                        ) {
+                            Ok(msg) => println!("rejected {key}: {msg}"),
+                            Err(e) => {
+                                eprintln!("! {key}: {e}");
+                                errors += 1;
+                            }
+                        }
                     } else {
-                        eprintln!("! {key} came from another device: edit or delete the file to reject it everywhere");
+                        eprintln!("! {key} is a skill from another device: delete its folder to reject it everywhere");
                         errors += 1;
                     }
                 } else {
@@ -715,14 +777,23 @@ pub fn run(cli: Cli) -> Result<()> {
             let ids = inbox_ids;
             let ids: Vec<String> = if all {
                 // "all" never approves items the scan flagged (injection, secret): those need a look and their id
+                // nor proposals that arrived from another device: what they say about themselves is not checked
                 let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
-                    action == "approve" && !force && i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                    action == "approve"
+                        && !force
+                        && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                            || !crate::security::scan(&i.body).is_empty()
+                            || brain.is_untrusted(&i.path))
                 });
                 for item in &flagged {
                     eprintln!(
-                        "skipped flagged item {} ({}): check it, then approve it by id",
+                        "skipped {} ({}): check it, then approve it by id",
                         item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
-                        item.meta.get("flags").map(python_list).unwrap_or_default()
+                        if brain.is_untrusted(&item.path) {
+                            "from another device".to_string()
+                        } else {
+                            format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
+                        }
                     );
                 }
                 clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
