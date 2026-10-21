@@ -36,7 +36,7 @@ Principles that bind every decision below:
 | **Procedural** | `skills/` — SKILL.md | "How to release project X" | Invoked when relevant |
 | **External sources** *(rev 1)* | `sources/` — articles, papers, documents | Karpathy's gist | Immutable; *ingested* into `nodes/` (the LLM Wiki pattern) |
 
-Consolidation = moving from episodic to semantic, exactly as sleep moves memories from the hippocampus to the neocortex.
+Consolidation = moving from episodic to semantic, loosely analogous to how sleep is thought to move memories from the hippocampus to the neocortex.
 
 ---
 

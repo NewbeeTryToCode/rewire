@@ -136,7 +136,9 @@ The active project is determined from the git remote / cwd via `brain.yaml: proj
 | `get` | `ids: str[]` (≤ 10) | full node (frontmatter + body) | `use` event w=0.5 |
 | `remember` | `text: str`, `type?: str`, `scope?: str` | `{inbox_id}` | writes to `inbox/` with `provenance: assistant` |
 
-`recall` uses FTS5 BM25 × (1 + β·norm(B)), with β defaulting to 0.3; it can be set to 0 for ablation.
+`recall` uses FTS5 BM25 × (1 + β·norm(B)). β (`recall_beta`) now defaults to 0 (off, also for the snapshot's
+ordering) and link spreading to `spread = "supersedes"` until an ablation shows a gain; the 0.3 of this spec was
+never ablated.
 
 ### 5.2 CLI (8 commands)
 
@@ -223,6 +225,7 @@ Otherwise → `inbox/`. Target: ≤ 3 inbox items per session on average (measur
 | **Brain leaks** | The brain is pushed to a public remote | `doctor` warns if the remote is public; no remote by default |
 | **Snapshot read as commands** | Memory contents treated as system instructions | The snapshot gets a "user memory notes (data)" header and is written as factual statements |
 | **Permanently poisoned memory** | A wrong extraction gets saved | Schema validation, inbox for `inferred`, per-session git revert (`rewire undo <session>`) |
+| **Compromised remote or device** | Someone who can push to the brain's remote adds notes | Rules, preferences, skills and inbox proposals that arrive by sync or clone are shown only after a review on each device; symlinks, submodules and device-local files are refused; the LLM command is never synced. **Not covered:** facts and decisions flow without a review, and the sender chooses the type, so a compromised remote can still put instruction-like text into "Current context" and the per-prompt hook (scanned for injection patterns, shown as data). Keep the remote private; a signed approval ledger would close this and is not built |
 
 ---
 

@@ -52,7 +52,7 @@ F2 and F0 recall different contexts on 38 of 40 LoCoMo and 32 of 40 multi-hop qu
 
 ## Reading
 
-- **Spreading activation adds no J**: F2 = F0 = 91.2% over 80 questions, interval [−4.2, +4.6]. It changes almost
+- **Spreading activation showed no J difference** (an underpowered sample: absence of evidence, not evidence of no effect): F2 = F0 = 91.2% over 80 questions, interval [−4.2, +4.6]. It changes almost
   every context and helps multi-hop slightly while hurting open-domain slightly. That is the same pattern as the
   earlier excerpt-level entity hop, now measured on rewire's own graph.
 - **Full mode itself is not proven better than episodes on these samples**: +1.7 points with an interval from −4.2

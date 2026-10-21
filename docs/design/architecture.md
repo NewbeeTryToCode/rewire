@@ -9,7 +9,7 @@ files in a private git repository; any harness attaches to it through hooks, an 
 |---|---|---|---|
 | **L0 — Working memory** | the active prompt context of the current session, bounded by compaction | inside the harness | the **harness**; rewire only fills it (snapshot at session start, `recall` on demand) and saves it before it is lost (SessionEnd / PreCompact) |
 | **L1 — Episodic memory** | what happened in each past session: a summary plus the secret-redacted transcript, cut into searchable excerpts | `sessions/<date>/<harness>-<session>.md` | rewire |
-| **L2 — Semantic memory** | atomic, typed claims (constraint, preference, fact, decision, project, person, concept) linked in a graph; bitemporal; superseded instead of overwritten; ordering by use (experimental ACT-R decay over the event log: it orders the session-start snapshot's preferences and working context, never measured; in recall it is off by default, `recall_beta = 0`) | `nodes/<type>/<slug>-<id8>.md` + `events/<device>/<month>.jsonl` | rewire |
+| **L2 — Semantic memory** | atomic, typed claims (constraint, preference, fact, decision, project, person, concept) linked in a graph; bitemporal; superseded instead of overwritten; ordering by use (experimental ACT-R decay over the event log, for recall and the session-start snapshot; off by default, `recall_beta = 0`, never measured) | `nodes/<type>/<slug>-<id8>.md` + `events/<device>/<month>.jsonl` | rewire |
 | **L2 — Procedural memory** | reusable procedures that worked (deploy, release, setup recipes), as Agent Skills; proposed by consolidation, always reviewed | `skills/<name>/SKILL.md` | rewire |
 
 The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at any time.

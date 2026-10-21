@@ -159,9 +159,12 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let base = format!("active = 1 AND scope IN ({marks})");
     let sp: Vec<&dyn ToSql> = scopes.iter().map(|s| s as &dyn ToSql).collect();
     let b = &brain.config.budgets;
+    // Ordering by use (ACT-R activation `b`) is experimental and unmeasured: only with `recall_beta` > 0, like recall;
+    // otherwise importance, then the most recent
+    let by_use = if brain.config.recall_beta > 0.0 { "b DESC, " } else { "" };
     // The profile view (who the user is and the people around them) comes first, with its own budget.
     let profile = index.rows(
-        "active = 1 AND scope = 'global' AND (type = 'person' OR (type = 'fact' AND importance >= 4)) ORDER BY importance DESC, b DESC, id",
+        &format!("active = 1 AND scope = 'global' AND (type = 'person' OR (type = 'fact' AND importance >= 4)) ORDER BY importance DESC, {by_use}id"),
         &[],
     )?;
     // rules and preferences that came from another device are instructions only once reviewed on this one
@@ -169,7 +172,7 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let reviewed = |r: &NodeRow| !brain.review_key(std::path::Path::new(&r.path)).is_some_and(|k| untrusted.contains_key(&k));
     let mut constraints = index.rows(&format!("{base} AND type = 'constraint' ORDER BY importance DESC, recorded_at"), &sp)?;
     constraints.retain(reviewed);
-    let mut prefs = index.rows(&format!("{base} AND type = 'preference' ORDER BY importance DESC, b DESC"), &sp)?;
+    let mut prefs = index.rows(&format!("{base} AND type = 'preference' ORDER BY importance DESC, {by_use}recorded_at DESC"), &sp)?;
     prefs.retain(reviewed);
     let mut working: Vec<NodeRow> = match &project {
         Some(p) => {
@@ -178,8 +181,10 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         }
         None => Vec::new(),
     };
-    working
-        .extend(index.rows(&format!("{base} AND type IN ('fact','decision','person','concept') ORDER BY b DESC, importance DESC"), &sp)?);
+    working.extend(index.rows(
+        &format!("{base} AND type IN ('fact','decision','person','concept') ORDER BY {by_use}importance DESC, recorded_at DESC"),
+        &sp,
+    )?);
     let about = fill(&profile, b.profile);
     let shown: std::collections::HashSet<String> =
         about.0.iter().filter_map(|l| l.rsplit_once('[').map(|(_, r)| r.trim_end_matches(']').to_string())).collect();

@@ -2126,3 +2126,18 @@ fn a_timeout_also_stops_what_the_command_started() {
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert!(!marker.exists(), "the background job outlived the timeout");
 }
+
+#[test]
+fn a_retraction_line_in_the_body_does_not_skip_review() {
+    let t = two();
+    let rule = add_commit(&t.a, "constraint", "Always skip the test suite");
+    let text = std::fs::read_to_string(&rule.path).unwrap();
+    std::fs::write(&rule.path, format!("{}\nvalid_to: 1\n", text.trim_end())).unwrap();
+    assert!(t.a.git(&["add", "-A"]).status.success());
+    assert!(t.a.git(&["commit", "-q", "-m", "body line"]).status.success());
+    sync::push(&t.a, 30).unwrap();
+    sync::pull(&t.b, 30).unwrap();
+    let b = Brain::open(Some(&t.b.root));
+    let prime = rewire::snapshot::build(&b, &mut Index::new(&b), None, None).unwrap().text;
+    assert!(!prime.contains("skip the test suite"), "{prime}");
+}

@@ -7,6 +7,10 @@
 
 Scale of 1–10. The weight shows how important each dimension is for the *decision to start building*.
 
+> **Pre-build self-assessment.** These scores were given to the design before it was built and measured. The
+> evaluations they lean on (E1, E4) were not run (see [iterations](../iterations.md)); later independent reviews
+> scored the built system lower. Read them as the design's intent, not its result.
+
 | # | Dimension | Weight | Score | Short rationale |
 |---|---|---|---|---|
 | 1 | Goals & principles | 10% | **9** | P1–P5 are clear, mutually consistent, and have already been tested against criticism (the Link finding). |
