@@ -187,7 +187,7 @@ pub fn load(path: &Path) -> Config {
     let raw = match text.parse::<toml::Table>() {
         Ok(raw) => raw,
         Err(e) => {
-            cfg.error = Some(e.message().to_string());
+            cfg.error = Some(format!("brain.toml: {}", e.message()));
             return cfg;
         }
     };
@@ -228,12 +228,13 @@ pub fn load(path: &Path) -> Config {
             }
         }
     }
-    let local = path
-        .parent()
-        .and_then(|dir| std::fs::read_to_string(dir.join("local.toml")).ok())
-        .and_then(|t| t.parse::<toml::Table>().ok())
-        .and_then(|t| t.get("consolidation").and_then(|v| v.as_table()).cloned())
-        .unwrap_or_default();
+    let local_text = path.parent().and_then(|dir| std::fs::read_to_string(dir.join("local.toml")).ok());
+    let local_table = local_text.map(|t| t.parse::<toml::Table>());
+    if let Some(Err(e)) = &local_table {
+        cfg.error = Some(format!("local.toml: {}", e.message()));
+    }
+    let local =
+        local_table.and_then(|t| t.ok()).and_then(|t| t.get("consolidation").and_then(|v| v.as_table()).cloned()).unwrap_or_default();
     cfg.provider = string(local.get("provider")).unwrap_or(cfg.provider);
     cfg.command = string(local.get("command")).unwrap_or(cfg.command);
     cfg.model = string(local.get("model")).unwrap_or(cfg.model);

@@ -6,8 +6,9 @@ on:
   push:
     tags: ["v*"]
 
+# read-only for the jobs that build (and so run dependencies' build scripts); only the release job may write
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   version:
@@ -73,6 +74,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:

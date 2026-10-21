@@ -842,7 +842,9 @@ impl<'a> Consolidator<'a> {
         questions: &[(i64, String)],
     ) -> Result<()> {
         self.brain.present()?;
-        let day = if date.is_empty() { now_iso()[..10].to_string() } else { date.to_string() };
+        // both come from transcripts or imported records: only a real date and a slug ever reach the path
+        let day = crate::util::valid_day(date).unwrap_or_else(|| now_iso()[..10].to_string());
+        let harness = &slugify(harness, 40);
         let path = self.brain.path(&["sessions", &day, &format!("{harness}-{}.md", slugify(session, 40))]);
         let dir = path.parent().unwrap().to_path_buf();
         let summary = summaries.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n\n");

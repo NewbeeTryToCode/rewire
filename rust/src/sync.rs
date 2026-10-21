@@ -186,13 +186,14 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
         )));
     }
     let before = crate::config::load(&brain.path(&["brain.toml"]));
-    let head = out_str(&g(brain, &["rev-parse", "HEAD"])?);
+    // marked before the merge: a merge interrupted after it can never leave the other side's rules trusted
+    let incoming = mark_incoming(brain, &reference)?;
     // the merge gets the caller's budget too (a hook has seconds); on a timeout or a failed resolve the merge is
     // aborted, so no conflict markers are left for the next commit to sweep in
     let r = match git(brain, &["merge", "--no-edit", "--allow-unrelated-histories", &reference], timeout.max(8)) {
         Ok(r) => r,
         Err(e) => {
-            let _ = g(brain, &["merge", "--abort"]);
+            let _ = crate::brain::outside_deadline(|| g(brain, &["merge", "--abort"]));
             return Err(e);
         }
     };
@@ -201,13 +202,13 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
         match resolve(brain) {
             Ok(n) => notes.extend(n),
             Err(e) => {
-                let _ = g(brain, &["merge", "--abort"]);
+                let _ = crate::brain::outside_deadline(|| g(brain, &["merge", "--abort"]));
                 return Err(e);
             }
         }
     }
     notes.extend(crate::brain::ensure_ignores(brain)?);
-    notes.extend(mark_unreviewed(brain, &head)?);
+    notes.extend(incoming);
     notes.extend(privacy_changes(brain, &before, &crate::config::load(&brain.path(&["brain.toml"])))?);
     if notes.len() > 1 {
         // a hook pulls silently: the snapshot tells the user what needs a look
@@ -221,28 +222,67 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     Ok(notes)
 }
 
-/// Rules, preferences and skills a pull added or changed wait for the user's review on this device before they are
-/// shown to the agent as instructions (Brain::untrusted).
-fn mark_unreviewed(brain: &Brain, before: &str) -> Result<Vec<String>> {
-    if before.is_empty() {
-        return Ok(Vec::new());
-    }
+/// Before a merge: the rules, preferences, skills and inbox proposals the other side added or changed (since the
+/// common ancestor) are marked unreviewed on this device, so a merge that is interrupted afterwards never leaves them
+/// trusted (Brain::untrusted). A note is a rule or preference by the type it declares, whatever its folder.
+fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
+    let range = format!("HEAD...{theirs}");
     let names = |filter: &str| -> Result<Vec<String>> {
-        let out = g(brain, &["diff", "--name-only", "-z", filter, before, "HEAD", "--", "nodes", "skills"])?;
+        let out = g(brain, &["diff", "--name-only", "-z", filter, &range, "--", "nodes", "skills", "inbox"])?;
+        if !out.status.success() {
+            return Err(Error::Sync(format!("could not list incoming changes: {}", err_str(&out))));
+        }
         Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
     };
+    let changed = names("--diff-filter=AMR")?;
+    // in the incoming version: which notes declare themselves a rule or preference, and which are retracted (a
+    // retraction or a superseded status takes nothing new to the agent: no review needed)
+    let notes: Vec<&String> = changed.iter().filter(|p| p.to_lowercase().starts_with("nodes/")).collect();
+    let grep = |pattern: &str| -> Result<std::collections::HashSet<String>> {
+        if notes.is_empty() {
+            return Ok(Default::default());
+        }
+        let mut args = vec!["grep", "-l", "-z", "-i", "-E", pattern, theirs, "--"];
+        args.extend(notes.iter().map(|p| p.as_str()));
+        let out = g(brain, &args)?;
+        let prefix = format!("{theirs}:");
+        Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter_map(|p| p.strip_prefix(&prefix)).map(String::from).collect())
+    };
+    let declared = grep(r#"^type:[[:space:]]*["']?(constraint|preference)"#)?;
+    let retracted = grep(r#"^(retracted_at|valid_to):[[:space:]]*["']?[0-9]"#)?;
+    let keys: Vec<String> = changed
+        .iter()
+        .filter(|p| {
+            let l = p.to_lowercase();
+            l.starts_with("skills/")
+                || l.starts_with("inbox/")
+                || ((l.starts_with("nodes/constraint/") || l.starts_with("nodes/preference/") || declared.contains(*p))
+                    && !retracted.contains(*p))
+        })
+        .filter_map(|p| brain.review_key(&brain.root.join(p)))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let rules = keys.iter().filter(|k| !k.starts_with("inbox/")).count();
+    let proposals = keys.len() - rules;
+    brain.mark_keys(&keys)?;
     let mut notes = Vec::new();
-    let marked = brain.mark_untrusted(&names("--diff-filter=AMR")?)?;
-    if marked > 0 {
+    if rules > 0 {
         notes.push(format!(
-            "{marked} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this \
+            "{rules} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this \
              device after you review them: `rewire review`"
         ));
+    }
+    if proposals > 0 {
+        notes.push(format!("{proposals} proposal(s) arrived in the inbox from another device (approve each by id after a look)"));
     }
     // a rule can be taken away too: say so, it changes every session as much as adding one
     let gone: Vec<String> = names("--diff-filter=D")?
         .into_iter()
-        .filter(|p| p.starts_with("nodes/constraint/") || p.starts_with("nodes/preference/") || p.ends_with("/SKILL.md"))
+        .filter(|p| {
+            let l = p.to_lowercase();
+            l.starts_with("nodes/constraint/") || l.starts_with("nodes/preference/") || l.ends_with("/skill.md")
+        })
         .collect();
     if !gone.is_empty() {
         notes.push(format!("removed by another device: {}", gone.join(", ")));
@@ -276,17 +316,25 @@ fn privacy_changes(brain: &Brain, before: &crate::config::Config, after: &crate:
     Ok(notes)
 }
 
-/// Set `key = "value"` in local.toml's [consolidation] table.
+/// Set `key = "value"` in local.toml's [consolidation] table. The result must still parse, or nothing is written
+/// (a broken local.toml would silently fall back to defaults, the remote's privacy settings among them).
 fn pin_local(brain: &Brain, key: &str, value: &str) -> Result<()> {
     let path = brain.path(&["local.toml"]);
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let line = format!("{key} = {}", serde_json::to_string(value)?);
-    let text = if Regex::new(r"(?m)^\[consolidation\][ \t]*$").unwrap().is_match(&text) {
-        Regex::new(r"(?m)^\[consolidation\][ \t]*$").unwrap().replace(&text, format!("[consolidation]\n{line}").as_str()).into_owned()
+    let header = Regex::new(r"(?m)^[ \t]*\[[ \t]*consolidation[ \t]*\][ \t]*(#.*)?$").unwrap();
+    let key_line = Regex::new(&format!(r"(?m)^[ \t]*{key}[ \t]*=.*$")).unwrap();
+    let updated = if key_line.is_match(&text) {
+        key_line.replace(&text, line.as_str()).into_owned()
+    } else if let Some(m) = header.find(&text) {
+        format!("{}\n{line}{}", &text[..m.end()], &text[m.end()..])
     } else {
         format!("{}\n[consolidation]\n{line}\n", text.trim_end())
     };
-    crate::util::atomic_write(&path, &text)?;
+    if updated.parse::<toml::Table>().is_err() {
+        return Err(Error::Sync(format!("could not pin {key} in local.toml without breaking it: set {key} = \"{value}\" there by hand")));
+    }
+    crate::util::atomic_write(&path, &updated)?;
     Ok(())
 }
 

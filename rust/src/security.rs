@@ -268,14 +268,14 @@ static SECRETS: [Pattern; 18] = [
 
 static INJECTIONS: [Pattern; 11] = [
     Pattern::new(
-        r"(?i)\b(ignore|disregard|forget|override|bypass|pay no (attention|heed) to)\b(\s+\w+){0,4}\s+(previous|prior|above|earlier|preceding|system|original|safety)\b(\s+\w+){0,2}\s+(instructions|prompts?|directives|rules|guidance|guidelines|messages|policies)",
+        r"(?i)\b(ignore|disregard|forget|override|bypass|pay no (attention|heed) to)\b(\s+\w+){0,4}\s+(previous|prior|above|earlier|preceding|system|original|safety)\b(\s+\w+){0,2}\s+(instructions?|prompts?|directives?|rules?|guidance|guidelines?|messages?|polic(y|ies))\b",
         &["ignore", "disregard", "forget", "override", "bypass", "pay no"],
         true,
     )
     .on_words(),
     // "ignore the instructions above", "forget all rules you were given"
     Pattern::new(
-        r"(?i)\b(ignore|disregard|forget)\b(\s+(the|all|any|your|of|these|those))*\s+(instructions|prompts?|directives|rules|guidelines)\s+(above|before|earlier|so far|you (were|have been) given|from (the|your) (system|developer|user))",
+        r"(?i)\b(ignore|disregard|forget)\b(\s+(the|all|any|your|of|these|those))*\s+(instructions?|prompts?|directives?|rules?|guidelines?)\s+(above|before|earlier|so far|you (were|have been) given|from (the|your) (system|developer|user))",
         &["ignore", "disregard", "forget"],
         true,
     )
@@ -291,7 +291,7 @@ static INJECTIONS: [Pattern; 11] = [
     Pattern::new(r"(?i)\b(curl|wget)\b[^\n]{0,120}?https?://", &["curl", "wget"], true).review_only(),
     // a download run as code: piped into a shell, or fed to one (bash <(curl ...), sh -c "$(wget ...)")
     Pattern::new(
-        r"(?i)\b(curl|wget|iwr|invoke-webrequest)\b[^\n]{0,300}\|\s*(sudo\s+)?\w*sh\b|\b\w*sh\s+(-c\s+)?[\x22']?(<\(|\$\()\s*(curl|wget)\b|\|\s*iex\b",
+        r"(?i)\b(curl|wget|iwr|invoke-webrequest)\b[^\n]{0,300}\|\s*(sudo(\s+-\S+)*\s+)?(\w*sh|python[0-9.]*|perl|ruby|node|php)\b|\b\w*sh\s+(-c\s+)?[\x22']?(<\(|\$\()\s*(curl|wget)\b|\|\s*iex\b|\b(curl|wget)\b[^\n]{0,200}(;|&&)\s*(sudo(\s+-\S+)*\s+)?(\w*sh|chmod\s+\+x)\s+\S",
         &["curl", "wget", "iwr", "invoke-webrequest", "iex"],
         true,
     ),
@@ -306,7 +306,7 @@ static INJECTIONS: [Pattern; 11] = [
     .on_words(),
     // reading credentials files into the conversation or out of the machine
     Pattern::new(
-        r"(?i)\b(cat|read|print|include|paste|copy|upload|send|attach|show)\b[^\n]{0,60}(~/\.ssh/|\bid_(rsa|ed25519|ecdsa)\b[^.]|\.aws/credentials|\.netrc\b|\.git-credentials|/etc/shadow|\.npmrc\b|\.pypirc\b)",
+        r"(?i)\b(cat|read|print|include|paste|copy|upload|send|attach|show)\b[^\n]{0,60}((~|\$HOME|\$\{HOME\})/\.ssh/|\bid_(rsa|ed25519|ecdsa)\b[^.]|\.aws/credentials|\.netrc\b|\.git-credentials|/etc/shadow|\.npmrc\b|\.pypirc\b)",
         &[".ssh", "id_", ".aws", ".netrc", ".git-credentials", "shadow", ".npmrc", ".pypirc"],
         true,
     ),
@@ -341,9 +341,10 @@ fn high_entropy_token(text: &str) -> bool {
 pub fn redact(text: &str) -> String {
     // a secret broken up by invisible or look-alike characters only matches the folded text: those lines are
     // replaced whole (the rest of the transcript keeps its own letters)
+    // (counted, so a visible decoy secret on the same line does not hide a disguised one)
     let hidden = |line: &str| {
         let folded = Folded::new(line);
-        SECRETS.iter().any(|p| p.is_match(&folded) && !p.regex().is_match(line))
+        SECRETS.iter().any(|p| p.may_match(&folded) && p.regex().find_iter(p.input(&folded)).count() > p.regex().find_iter(line).count())
     };
     let mut text = if text.lines().any(hidden) {
         text.split('\n').map(|l| if hidden(l) { "[redacted line]" } else { l }).collect::<Vec<_>>().join("\n")

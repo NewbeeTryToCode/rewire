@@ -95,7 +95,12 @@ pub fn prompt_context(brain: &Brain, payload: &Value) -> Result<String> {
         .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
     let scopes = crate::project::scopes_for(crate::project::detect(Some(&cwd), &brain.config.projects).as_deref());
     let opts = crate::index::SearchOpts { scopes: Some(scopes), k: PROMPT_HITS * 2, ..Default::default() };
-    let hits: Vec<_> = index.search(&prompt, &opts)?.into_iter().filter(|h| h.status == "active" && h.type_ != "project").collect();
+    let unreviewed = brain.untrusted_ids(); // rules from another device wait for a review here
+    let hits: Vec<_> = index
+        .search(&prompt, &opts)?
+        .into_iter()
+        .filter(|h| h.status == "active" && h.type_ != "project" && !unreviewed.contains(&h.id))
+        .collect();
     if hits.is_empty() {
         return Ok(String::new());
     }
@@ -240,17 +245,28 @@ pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
     for exe in ["rewire", command].into_iter().collect::<indexmap::IndexSet<_>>() {
         rules.push(format!("Bash({exe} review approve:*)"));
         rules.push(format!("Bash({exe} remember --apply:*)"));
+        rules.push(format!("Bash({exe} review reject:*)"));
+        rules.push(format!("Bash({exe} forget:*)"));
     }
     if let Some(root) = brain {
         // "//" starts an absolute path in a Claude Code permission rule
-        // the real path: a rule on a symlinked path does not match the files the agent would touch
-        let real = root.canonicalize().unwrap_or_else(|_| crate::brain::absolute(root));
-        let abs = real.to_string_lossy().trim_start_matches('/').to_string();
-        for tool in ["Edit", "Write"] {
-            rules.push(format!("{tool}(//{abs}/**)"));
+        // the path as given and the real one: an agent may reach the brain through either
+        let given = crate::brain::absolute(root);
+        let real = root.canonicalize().unwrap_or_else(|_| given.clone());
+        for path in [given, real].into_iter().collect::<indexmap::IndexSet<_>>() {
+            let abs = path.to_string_lossy().trim_start_matches('/').to_string();
+            for tool in ["Edit", "Write"] {
+                rules.push(format!("{tool}(//{abs}/**)"));
+            }
         }
     }
     rules
+}
+
+/// This binary by its full path: a hook shell may not have ~/.cargo/bin on PATH.
+fn exe_command() -> String {
+    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.to_string_lossy().into_owned());
+    exe.filter(|p| !p.contains(char::is_whitespace)).unwrap_or_else(|| "rewire".into())
 }
 
 pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Option<&Path>) -> Result<String> {
@@ -259,9 +275,7 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
         let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
         crate::brain::expand_user(&dir).join("settings.json")
     });
-    // the hooks call this binary by its full path: a hook shell may not have ~/.cargo/bin on PATH
-    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.to_string_lossy().into_owned());
-    let command = exe.filter(|p| !p.contains(char::is_whitespace)).unwrap_or_else(|| "rewire".into());
+    let command = exe_command();
     let wanted = claude_code_settings(&command, brain);
     let mut lines = Vec::new();
     if write {
@@ -338,7 +352,10 @@ pub fn install_codex(skills_dir: Option<&str>) -> Result<String> {
     crate::util::atomic_write(&target, SKILL)?;
     Ok([
         format!("Agent Skill written to {}", target.display()),
-        "Register the MCP server (optional; the skill also works through the CLI):\n  codex mcp add rewire -- rewire mcp".into(),
+        format!(
+            "Register the MCP server (optional; the skill also works through the CLI):\n  codex mcp add rewire -- {} mcp",
+            exe_command()
+        ),
         format!("Add this to your global or project AGENTS.md so the agent primes memory without hooks:\n\n{AGENTS_SNIPPET}"),
         format!(
             "Codex has no hooks: its sessions in {} are consolidated when a Claude Code hook runs, or with \
