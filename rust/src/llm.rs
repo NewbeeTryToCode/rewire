@@ -123,7 +123,12 @@ impl Provider for CommandProvider {
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 return llm(format!("command provider failed: timed out after {}s", self.timeout.as_secs()))
             }
-            Err(e) => return llm(format!("command provider failed: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return llm(format!(
+                    "command provider failed: `{prog}` not found; install it or set the command (or provider = \"anthropic\") in local.toml"
+                ))
+            }
+            Err(e) => return llm(format!("command provider failed: `{prog}`: {e}")),
         };
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect::<String>();

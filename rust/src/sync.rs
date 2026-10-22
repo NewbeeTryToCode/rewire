@@ -116,7 +116,10 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                     if let Some(kept) = brain.read_node(&full) {
                         item.insert("target_hash".into(), json!(crate::ops::content_hash(&kept)));
                     }
-                    brain.write_inbox(&item, &b_lose)?;
+                    let id = brain.write_inbox(&item, &b_lose)?;
+                    // whichever side lost, its text came from a merge with another device: a look, not approve all
+                    brain
+                        .mark_keys(&brain.review_key(&brain.root.join("inbox").join(format!("{id}.md"))).into_iter().collect::<Vec<_>>())?;
                     notes.push(format!("{path}: kept the newest version; the other one is in the inbox"));
                 }
                 (ours, theirs) => {
@@ -187,7 +190,9 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     }
     let before = crate::config::load(&brain.path(&["brain.toml"]));
     // marked before the merge: a merge interrupted after it can never leave the other side's rules trusted
+    let prior: std::collections::HashSet<String> = brain.untrusted().keys().cloned().collect();
     let incoming = mark_incoming(brain, &reference)?;
+    let head = out_str(&g(brain, &["rev-parse", "HEAD"])?);
     // the merge gets the caller's budget too (a hook has seconds); on a timeout or a failed resolve the merge is
     // aborted, so no conflict markers are left for the next commit to sweep in
     let r = match git(brain, &["merge", "--no-edit", "--allow-unrelated-histories", &reference], timeout.max(8)) {
@@ -208,6 +213,7 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
         }
     }
     notes.extend(crate::brain::ensure_ignores(brain)?);
+    mark_merged(brain, &head, &prior)?;
     notes.extend(incoming);
     notes.extend(privacy_changes(brain, &before, &crate::config::load(&brain.path(&["brain.toml"])))?);
     if notes.len() > 1 {
@@ -222,59 +228,93 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     Ok(notes)
 }
 
-/// Before a merge: the rules, preferences, skills and inbox proposals the other side added or changed (since the
-/// common ancestor) are marked unreviewed on this device, so a merge that is interrupted afterwards never leaves them
-/// trusted (Brain::untrusted). A note is a rule or preference by the type it declares, whatever its folder.
+/// The text of each path at `rev` (None when it is not there), read in one `git cat-file --batch` call.
+fn blobs(brain: &Brain, rev: &str, paths: &[String]) -> Result<Vec<Option<String>>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input: String = paths.iter().map(|p| format!("{rev}:{p}\n")).collect();
+    let out = crate::brain::run_git_with_input(&brain.root, &["cat-file", "--batch"], Some(input), Duration::from_secs(GIT_TIMEOUT))
+        .map_err(|e| Error::Sync(format!("git cat-file: {e}")))?;
+    let data = out.stdout;
+    let mut texts = Vec::new();
+    let mut at = 0;
+    for _ in paths {
+        let Some(end) = data[at..].iter().position(|b| *b == b'\n').map(|e| at + e) else { break };
+        let header = String::from_utf8_lossy(&data[at..end]).into_owned();
+        at = end + 1;
+        match header.rsplit_once(' ').and_then(|(_, n)| n.parse::<usize>().ok()).filter(|_| header.contains(" blob ")) {
+            Some(size) if at + size <= data.len() => {
+                texts.push(Some(String::from_utf8_lossy(&data[at..at + size]).into_owned()));
+                at += size + 1;
+            }
+            _ => texts.push(None), // "<rev:path> missing"
+        }
+    }
+    texts.resize(paths.len(), None);
+    Ok(texts)
+}
+
+/// What a version of a note is, read with the same parser the index uses: (is a rule or preference, is active,
+/// title). A file that does not parse counts as an active rule (fail closed).
+fn rule_status(text: &str) -> (bool, bool, String) {
+    match nodefmt::parse(text) {
+        Err(_) => (true, true, String::new()),
+        Ok((meta, _)) => {
+            let type_ = meta.get("type").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+            let active = !crate::brain::is_set(meta.get("retracted_at")) && !crate::brain::is_set(meta.get("valid_to"));
+            let title = meta.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+            (type_ == "constraint" || type_ == "preference", active, title)
+        }
+    }
+}
+
+/// Paths a diff lists (NUL-separated), for one --diff-filter.
+fn diff_names(brain: &Brain, filter: &str, range: &[&str]) -> Result<Vec<String>> {
+    let mut args = vec!["diff", "--name-only", "-z", filter];
+    args.extend(range);
+    args.extend(["--", "nodes", "skills", "inbox"]);
+    let out = g(brain, &args)?;
+    if !out.status.success() {
+        return Err(Error::Sync(format!("could not list changes: {}", err_str(&out))));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
+}
+
+/// Mark the rules, preferences, skills and inbox proposals among `paths` (as they are at `rev`) unreviewed on this
+/// device; notes on what arrived and what was retracted.
+fn mark_changed(brain: &Brain, rev: &str, paths: &[String]) -> Result<(usize, usize, Vec<String>)> {
+    let notes_at: Vec<String> = paths.iter().filter(|p| p.to_lowercase().starts_with("nodes/")).cloned().collect();
+    let texts = blobs(brain, rev, &notes_at)?;
+    let mut keys = Vec::new();
+    let mut retracted = Vec::new();
+    for (path, text) in notes_at.iter().zip(texts) {
+        let Some(text) = text else { continue };
+        match rule_status(&text) {
+            (true, true, _) => keys.extend(brain.review_key(&brain.root.join(path))),
+            (true, false, title) => retracted.push(if title.is_empty() { path.clone() } else { title }),
+            _ => {}
+        }
+    }
+    let mut proposals = 0;
+    for p in paths.iter().filter(|p| !p.to_lowercase().starts_with("nodes/")) {
+        if let Some(k) = brain.review_key(&brain.root.join(p)) {
+            proposals += usize::from(k.starts_with("inbox/"));
+            keys.push(k);
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    brain.mark_keys(&keys)?;
+    Ok((keys.len() - proposals, proposals, retracted))
+}
+
+/// Before a merge: what the other side added or changed since the common ancestor is marked unreviewed, so a merge
+/// interrupted afterwards never leaves it trusted (Brain::untrusted). After the merge `mark_merged` marks what
+/// actually landed (a rename can carry their change into another file).
 fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
     let range = format!("HEAD...{theirs}");
-    let names = |filter: &str| -> Result<Vec<String>> {
-        let out = g(brain, &["diff", "--name-only", "-z", filter, &range, "--", "nodes", "skills", "inbox"])?;
-        if !out.status.success() {
-            return Err(Error::Sync(format!("could not list incoming changes: {}", err_str(&out))));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
-    };
-    let changed = names("--diff-filter=AMR")?;
-    // in the incoming version: which notes declare themselves a rule or preference, and which are retracted (a
-    // retraction or a superseded status takes nothing new to the agent: no review needed)
-    let notes: Vec<&String> = changed.iter().filter(|p| p.to_lowercase().starts_with("nodes/")).collect();
-    let grep = |pattern: &str| -> Result<std::collections::HashSet<String>> {
-        if notes.is_empty() {
-            return Ok(Default::default());
-        }
-        let mut args = vec!["grep", "-l", "-z", "-i", "-E", pattern, theirs, "--"];
-        args.extend(notes.iter().map(|p| p.as_str()));
-        let out = g(brain, &args)?;
-        let prefix = format!("{theirs}:");
-        Ok(String::from_utf8_lossy(&out.stdout).split('\0').filter_map(|p| p.strip_prefix(&prefix)).map(String::from).collect())
-    };
-    let declared = grep(r#"^type:[[:space:]]*["']?(constraint|preference)"#)?;
-    // a line like `valid_to: 1` can sit in a body too: the grep only picks candidates, the parsed frontmatter decides
-    let retracted: std::collections::HashSet<String> = grep(r#"^(retracted_at|valid_to):[[:space:]]*["']?[0-9]"#)?
-        .into_iter()
-        .filter(|p| {
-            let text =
-                g(brain, &["show", &format!("{theirs}:{p}")]).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-            crate::nodefmt::parse(&text)
-                .is_ok_and(|(meta, _)| ["retracted_at", "valid_to"].iter().any(|k| crate::brain::is_set(meta.get(*k))))
-        })
-        .collect();
-    let keys: Vec<String> = changed
-        .iter()
-        .filter(|p| {
-            let l = p.to_lowercase();
-            l.starts_with("skills/")
-                || l.starts_with("inbox/")
-                || ((l.starts_with("nodes/constraint/") || l.starts_with("nodes/preference/") || declared.contains(*p))
-                    && !retracted.contains(*p))
-        })
-        .filter_map(|p| brain.review_key(&brain.root.join(p)))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let rules = keys.iter().filter(|k| !k.starts_with("inbox/")).count();
-    let proposals = keys.len() - rules;
-    brain.mark_keys(&keys)?;
+    let (rules, proposals, retracted) = mark_changed(brain, theirs, &diff_names(brain, "--diff-filter=AMR", &[&range])?)?;
     let mut notes = Vec::new();
     if rules > 0 {
         notes.push(format!(
@@ -285,18 +325,33 @@ fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
     if proposals > 0 {
         notes.push(format!("{proposals} proposal(s) arrived in the inbox from another device (approve each by id after a look)"));
     }
-    // a rule can be taken away too: say so, it changes every session as much as adding one
-    let gone: Vec<String> = names("--diff-filter=D")?
-        .into_iter()
-        .filter(|p| {
-            let l = p.to_lowercase();
-            l.starts_with("nodes/constraint/") || l.starts_with("nodes/preference/") || l.ends_with("/skill.md")
-        })
+    if !retracted.is_empty() {
+        notes.push(format!("retracted by another device: {}", retracted.join(", ")));
+    }
+    // a rule can be taken away too: say so, it changes every session as much as adding one (judged by the type the
+    // removed version declared)
+    let deleted = diff_names(brain, "--diff-filter=D", &[&range])?;
+    let old = blobs(brain, "HEAD", &deleted)?;
+    let gone: Vec<String> = deleted
+        .iter()
+        .zip(old)
+        .filter(|(p, text)| p.to_lowercase().ends_with("/skill.md") || text.as_deref().is_some_and(|t| rule_status(t).0))
+        .map(|(p, _)| p.clone())
         .collect();
     if !gone.is_empty() {
         notes.push(format!("removed by another device: {}", gone.join(", ")));
     }
     Ok(notes)
+}
+
+/// After a merge: everything the merge changed in this device's tree, as it now is. What was marked before the merge
+/// but did not change here (this device's own edit won a conflict) is this device's own again.
+fn mark_merged(brain: &Brain, before: &str, prior: &std::collections::HashSet<String>) -> Result<()> {
+    let landed = diff_names(brain, "--diff-filter=AMR", &[before, "HEAD"])?;
+    mark_changed(brain, "HEAD", &landed)?;
+    let landed: std::collections::HashSet<String> = landed.iter().filter_map(|p| brain.review_key(&brain.root.join(p))).collect();
+    brain.update_state("untrusted", |u| u.retain(|k, _| prior.contains(k) || landed.contains(k)))?;
+    Ok(())
 }
 
 /// brain.toml settings another device changed that decide what this device keeps and syncs. A change this device

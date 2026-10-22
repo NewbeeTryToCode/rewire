@@ -42,11 +42,8 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
         Some(r) => out_str(&brain.git(&["show", &format!("{r}:.gitignore")])),
         None => fs::read_to_string(brain.path(&[".gitignore"])).unwrap_or_default(),
     };
-    for line in ignore.lines().map(str::trim).filter(|l| l.starts_with('!')) {
-        let target = line.trim_start_matches('!').trim_start_matches('/').to_lowercase();
-        if LOCAL_ONLY.iter().any(|l| target.starts_with(l) || target.starts_with('*') || target.starts_with('.')) {
-            found.push(format!(".gitignore line {line} (un-ignores device-local files)"));
-        }
+    if ignore.lines().any(|l| l.trim().starts_with('!')) && unignores_local(&ignore) {
+        found.push(".gitignore (it un-ignores device-local files)".into());
     }
     for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
         let Some((info, path)) = entry.split_once('\t') else { continue };
@@ -66,6 +63,26 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
         found.push(format!("{path} ({why})"));
     }
     found
+}
+
+/// Whether a .gitignore leaves any device-local path un-ignored, asked of git itself in a scratch repository (so
+/// wildcards such as `!l?cal.toml` count too). Fails closed.
+fn unignores_local(gitignore: &str) -> bool {
+    let dir = std::env::temp_dir().join(format!("rewire-ignore-{}-{}", std::process::id(), crate::util::ulid()));
+    let check = || -> Option<bool> {
+        fs::create_dir_all(&dir).ok()?;
+        fs::write(dir.join(".gitignore"), gitignore).ok()?;
+        run_git(&dir, &["init", "-q"], Duration::from_secs(10)).ok()?;
+        let mut free = false;
+        for path in ["local.toml", ".state/x", ".index/x", "Local.toml"] {
+            let out = run_git(&dir, &["check-ignore", "-q", "--no-index", path], Duration::from_secs(10)).ok()?;
+            free |= out.status.code() == Some(1); // 1: not ignored
+        }
+        Some(free)
+    };
+    let result = check().unwrap_or(true);
+    let _ = fs::remove_dir_all(&dir);
+    result
 }
 
 pub fn ensure_ignores(brain: &Brain) -> Result<Vec<String>> {
@@ -239,11 +256,18 @@ impl Brain {
 
     /// Ids of the unreviewed notes, for leaving them out of recall, `get` and the hooks.
     pub fn untrusted_ids(&self) -> std::collections::HashSet<String> {
-        self.untrusted()
-            .keys()
-            .filter(|k| k.starts_with("nodes/"))
-            .filter_map(|k| self.read_node(&self.root.join(k)))
-            .map(|n| n.id().to_string())
+        self.untrusted_nodes().into_values().map(|n| n.id().to_string()).collect()
+    }
+
+    /// The unreviewed notes by review key. Keys are lower case, files need not be: notes are found by walking them.
+    pub fn untrusted_nodes(&self) -> std::collections::HashMap<String, Node> {
+        let untrusted = self.untrusted();
+        if !untrusted.keys().any(|k| k.starts_with("nodes/")) {
+            return Default::default();
+        }
+        self.iter_nodes()
+            .into_iter()
+            .filter_map(|n| self.review_key(&n.path).filter(|k| untrusted.contains_key(k)).map(|k| (k, n)))
             .collect()
     }
 
@@ -253,17 +277,19 @@ impl Brain {
         let keys: std::collections::BTreeSet<String> = paths
             .iter()
             .filter(|p| {
-                let full = self.root.join(p);
                 if p.starts_with("skills/") {
                     return true;
                 }
-                // the type the file declares, not its folder: the index files a note by its frontmatter
+                // the type the file declares, not its folder, and only what is still in force; a file that does not
+                // parse counts (fail closed)
                 p.ends_with(".md")
-                    && (p.starts_with("nodes/constraint/")
-                        || p.starts_with("nodes/preference/")
-                        || self
-                            .read_node(&full)
-                            .is_some_and(|n| matches!(n.meta.get("type").and_then(Value::as_str), Some("constraint" | "preference"))))
+                    && fs::read_to_string(self.root.join(p)).is_ok_and(|text| match nodefmt::parse(&text) {
+                        Err(_) => true,
+                        Ok((meta, _)) => {
+                            let t = meta.get("type").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+                            (t == "constraint" || t == "preference") && !is_set(meta.get("retracted_at")) && !is_set(meta.get("valid_to"))
+                        }
+                    })
             })
             .filter_map(|p| self.review_key(&self.root.join(p)))
             .collect();
@@ -368,10 +394,14 @@ impl Brain {
             fs::create_dir_all(root.join(sub))?;
         }
         // a remote is not the user: its rules, preferences and skills wait for a review on this device too
-        let files = out_str(&brain.git(&["ls-files", "--", "nodes", "skills"]));
-        let paths: Vec<String> = files.lines().map(String::from).collect();
-        let inbox: Vec<String> =
-            out_str(&brain.git(&["ls-files", "--", "inbox"])).lines().filter_map(|p| brain.review_key(&root.join(p))).collect();
+        // NUL-separated: git quotes non-ASCII paths otherwise
+        let list = |dirs: &[&str]| -> Vec<String> {
+            let mut args = vec!["ls-files", "-z", "--"];
+            args.extend(dirs);
+            String::from_utf8_lossy(&brain.git(&args).stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect()
+        };
+        let paths = list(&["nodes", "skills"]);
+        let inbox: Vec<String> = list(&["inbox"]).iter().filter_map(|p| brain.review_key(&root.join(p))).collect();
         brain.mark_keys(&inbox)?;
         let waiting = brain.mark_untrusted(&paths)?;
         if waiting > 0 {
@@ -380,8 +410,9 @@ impl Brain {
                  after you review them: `rewire review` (all at once: `rewire review approve all`)"
             );
         }
-        let dev = device.map(String::from).unwrap_or_else(config::default_device);
-        if device.is_none() && root.join("events").join(config::slug(&dev)).is_dir() {
+        let named = device.map(String::from).or_else(|| std::env::var("REWIRE_DEVICE").ok().filter(|d| !d.trim().is_empty()));
+        let dev = named.clone().unwrap_or_else(config::default_device);
+        if named.is_none() && root.join("events").join(config::slug(&dev)).is_dir() {
             // two machines with one name would write one event log and look like one device
             eprintln!(
                 "rewire: another device already syncs as \"{}\" (this machine's host name); give this one its own name \
@@ -699,12 +730,6 @@ thread_local! {
 /// Run `f` with every git call on this thread finished within `budget` in total: a hook has seconds, and a pull
 /// is a commit, a fetch and a merge.
 pub fn within<T>(budget: Duration, f: impl FnOnce() -> T) -> T {
-    struct Restore(Option<Instant>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            GIT_DEADLINE.with(|d| d.set(self.0)); // also when `f` panics
-        }
-    }
     let end = Instant::now() + budget;
     let _restore = Restore(GIT_DEADLINE.with(|d| d.replace(Some(d.get().map_or(end, |p| p.min(end))))));
     f()
@@ -712,22 +737,34 @@ pub fn within<T>(budget: Duration, f: impl FnOnce() -> T) -> T {
 
 /// Run `f` with no total deadline: clean-up (a merge abort) must run even when the budget is spent.
 pub fn outside_deadline<T>(f: impl FnOnce() -> T) -> T {
-    let prev = GIT_DEADLINE.with(|d| d.replace(None));
-    let out = f();
-    GIT_DEADLINE.with(|d| d.set(prev));
-    out
+    let _restore = Restore(GIT_DEADLINE.with(|d| d.replace(None)));
+    f()
+}
+
+/// Puts the previous total deadline back, also when the closure panics.
+struct Restore(Option<Instant>);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        GIT_DEADLINE.with(|d| d.set(self.0));
+    }
 }
 
 /// git on a brain, with a deadline (shortened by `within`). A git killed at the deadline leaves `.git/index.lock`
 /// behind, and every later commit would fail: a lock this call created is removed.
 pub fn run_git(root: &Path, args: &[&str], timeout: Duration) -> std::io::Result<Output> {
+    run_git_with_input(root, args, None, timeout)
+}
+
+/// `run_git` with text on stdin (`git cat-file --batch`).
+pub fn run_git_with_input(root: &Path, args: &[&str], input: Option<String>, timeout: Duration) -> std::io::Result<Output> {
     let timeout = GIT_DEADLINE.with(|d| d.get()).map_or(timeout, |end| timeout.min(end.saturating_duration_since(Instant::now())));
     let lock = root.join(".git").join("index.lock");
     let had_lock = lock.exists();
     let started = std::time::SystemTime::now();
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(root).args(GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt
-    let out = crate::util::run_with_timeout(cmd, None, timeout);
+    let out = crate::util::run_with_timeout(cmd, input, timeout);
     // the killed git's lock: it did not exist before and was made during this call (writers on a brain take the brain
     // lock, so another rewire's git is not running here; a git the user runs by hand in the brain could be)
     let ours = !had_lock && fs::metadata(&lock).and_then(|m| m.modified()).is_ok_and(|t| t >= started);

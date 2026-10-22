@@ -31,6 +31,9 @@ ureq = { version = "2", features = ["json"] }
 # Optional semantic search (WordLlama static embeddings; model files installed with `rewire semantic install`).
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = ["semantic"]
 semantic = ["dep:tokenizers"]

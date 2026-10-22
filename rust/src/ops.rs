@@ -389,11 +389,26 @@ pub fn pin_target(brain: &Brain, item: &mut Meta) {
 /// The file of an inbox item. Ids are ULIDs: anything else (a path such as "../nodes/x") is refused, so an id
 /// can never name a file outside the inbox.
 fn inbox_path(brain: &Brain, inbox_id: &str) -> Result<std::path::PathBuf> {
-    let ok = inbox_id.len() == 26 && inbox_id.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    let id = inbox_id.to_uppercase();
+    let ok = (6..=26).contains(&id.len()) && id.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
     if !ok {
-        return op(format!("not an inbox id: {inbox_id:?} (ids look like 01M5CR22VG093P636AQMVY10G3)"));
+        return op(format!("not an inbox id: {inbox_id:?} (ids look like 01M5CR22VG093P636AQMVY10G3; a unique start of one works)"));
     }
-    Ok(brain.path(&["inbox", &format!("{inbox_id}.md")]))
+    if id.len() == 26 {
+        return Ok(brain.path(&["inbox", &format!("{id}.md")]));
+    }
+    // a unique prefix, as `forget` takes a short id
+    let matches: Vec<_> = brain
+        .iter_inbox()
+        .into_iter()
+        .map(|i| i.path)
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&id)))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => op(format!("inbox item not found: {inbox_id}")),
+        _ => op(format!("{inbox_id} matches {} inbox items: give more of the id", matches.len())),
+    }
 }
 
 pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
@@ -558,8 +573,14 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
 
 /// The record file of a session, if one was written.
 pub fn session_record(brain: &Brain, harness: &str, session: &str) -> Option<std::path::PathBuf> {
+    // by the id in the record's first line: two ids can share a file name ("a.b" and "a-b")
     let name = format!("{harness}-{}.md", crate::util::slugify(session, 40));
-    fs::read_dir(brain.path(&["sessions"])).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.is_file())
+    let header = format!("# {harness} session {session}");
+    fs::read_dir(brain.path(&["sessions"]))
+        .ok()?
+        .flatten()
+        .map(|d| d.path().join(&name))
+        .find(|p| fs::read_to_string(p).is_ok_and(|t| t.lines().next() == Some(header.as_str())))
 }
 
 /// Session records, newest first: (date, harness, session id, undone).
@@ -593,10 +614,9 @@ pub fn forget(brain: &Brain, reference: &str, reason: &str) -> Result<String> {
     if !reason.is_empty() {
         meta.insert("retracted_reason".into(), json!(reason));
     }
+    // an unreviewed key stays: if the retraction is ever reverted, the rule comes back unreviewed (the listing skips
+    // retracted notes meanwhile)
     brain.write_node(&meta, &node.body, Some(&node.path))?;
-    if let Some(key) = brain.review_key(&node.path) {
-        trust(brain, &key)?; // nothing left to review
-    }
     write_home(brain, &mut Index::new(brain))?;
     brain.commit(&format!("forget {}", short_of(node.id())));
     Ok(format!("forgot [{}] {}", short_of(node.id()), node.title()))
@@ -621,19 +641,21 @@ fn version_before(brain: &Brain, path: &Path, session: &str) -> Option<String> {
 /// blocks it or "").
 pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
     let mut out = Vec::new();
+    let nodes = brain.untrusted_nodes();
     for key in brain.untrusted().keys().filter(|k| !k.starts_with("inbox/")) {
-        let path = brain.root.join(key.trim_end_matches('/'));
         let (text, why) = if let Some(name) = key.strip_prefix("skills/") {
             match skills::read(brain, name.trim_end_matches('/')) {
                 Some(s) => (format!("skill {}: {}", s.name, s.description), skills::blocked(&s)),
                 None => ("(skill removed since)".into(), ""),
             }
         } else {
-            match brain.read_node(&path) {
+            match nodes.get(key) {
                 // retracted since (here or there): nothing left to show, nothing to review
-                Some(n) if is_set(n.meta.get("retracted_at")) => continue,
+                Some(n) if is_set(n.meta.get("retracted_at")) || is_set(n.meta.get("valid_to")) => continue,
                 Some(n) => {
-                    let text = format!("{} {}", n.title(), n.body.trim());
+                    let body = n.body.trim();
+                    let text =
+                        if body.is_empty() || body == n.title().trim() { n.title().to_string() } else { format!("{}\n{body}", n.title()) };
                     let why = security::blocked(&text);
                     (format!("{}: {}", n.meta.get("type").and_then(Value::as_str).unwrap_or(""), text), why)
                 }
@@ -717,6 +739,10 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         ));
     } else {
         report.push(format!("sync: no remote (this brain lives only on this machine) · device {device}"));
+    }
+    if !["command", "anthropic"].contains(&brain.config.provider.as_str()) {
+        report
+            .push(format!("consolidation: unknown provider {:?} in local.toml (use \"command\" or \"anthropic\")", brain.config.provider));
     }
     if brain.config.provider == "command" {
         let program = shlex::split(&brain.config.command).and_then(|a| a.into_iter().next()).unwrap_or_default();
