@@ -273,7 +273,7 @@ fn rule_status(text: &str) -> (bool, bool, String) {
 fn diff_names(brain: &Brain, filter: &str, range: &[&str]) -> Result<Vec<String>> {
     let mut args = vec!["diff", "--name-only", "-z", filter];
     args.extend(range);
-    args.extend(["--", "nodes", "skills", "inbox"]);
+    args.extend(["--", ":(icase)nodes", ":(icase)skills", ":(icase)inbox"]); // Nodes/ is nodes/ on some file systems
     let out = g(brain, &args)?;
     if !out.status.success() {
         return Err(Error::Sync(format!("could not list changes: {}", err_str(&out))));
@@ -289,7 +289,11 @@ fn mark_changed(brain: &Brain, rev: &str, paths: &[String]) -> Result<(usize, us
     let mut keys = Vec::new();
     let mut retracted = Vec::new();
     for (path, text) in notes_at.iter().zip(texts) {
-        let Some(text) = text else { continue };
+        // a changed note git could not hand over is not known to be harmless: it waits for review (fail closed)
+        let Some(text) = text else {
+            keys.extend(brain.review_key(&brain.root.join(path)));
+            continue;
+        };
         match rule_status(&text) {
             (true, true, _) => keys.extend(brain.review_key(&brain.root.join(path))),
             (true, false, title) => retracted.push(if title.is_empty() { path.clone() } else { title }),

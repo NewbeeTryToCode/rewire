@@ -203,22 +203,24 @@ pub fn load(path: &Path) -> Config {
         cfg.spread = v;
     }
     if let Some(v) = num(budgets.get("profile")) {
-        cfg.budgets.profile = v as usize;
+        cfg.budgets.profile = (v.max(0.0) as usize).max(200); // a synced zero must not hide the user's own notes
     }
     if let Some(v) = num(budgets.get("constraints")) {
-        cfg.budgets.constraints = v as usize;
+        cfg.budgets.constraints = (v.max(0.0) as usize).max(400); // a synced zero must not hide the user's own notes
     }
     if let Some(v) = num(budgets.get("preferences")) {
-        cfg.budgets.preferences = v as usize;
+        cfg.budgets.preferences = (v.max(0.0) as usize).max(200); // a synced zero must not hide the user's own notes
     }
     if let Some(v) = num(budgets.get("skills")) {
-        cfg.budgets.skills = v as usize;
+        cfg.budgets.skills = (v.max(0.0) as usize).max(200); // a synced zero must not hide the user's own notes
     }
     if let Some(v) = num(budgets.get("working")) {
-        cfg.budgets.working = v as usize;
+        cfg.budgets.working = (v.max(0.0) as usize).max(400); // a synced zero must not hide the user's own notes
     }
-    cfg.synced_profile = string(con.get("profile")).unwrap_or(cfg.synced_profile);
-    cfg.synced_transcripts = string(con.get("transcripts")).unwrap_or(cfg.synced_transcripts);
+    // only known values: a synced string is never passed on as is
+    cfg.synced_profile = string(con.get("profile")).filter(|v| ["coding", "general"].contains(&v.as_str())).unwrap_or(cfg.synced_profile);
+    cfg.synced_transcripts =
+        string(con.get("transcripts")).filter(|v| ["auto", "user", "all", "none"].contains(&v.as_str())).unwrap_or(cfg.synced_transcripts);
     // what runs on this machine comes from local.toml only; brain.toml syncs from the remote
     const LEGACY_DEFAULTS: [&str; 3] = ["command", "claude -p --output-format text", "claude-opus-5-5"];
     for key in ["provider", "command", "model", "effort"] {
@@ -241,9 +243,12 @@ pub fn load(path: &Path) -> Config {
     cfg.effort = string(local.get("effort")).unwrap_or(cfg.effort);
     // how much of each transcript is kept (and synced) can be pinned per device
     cfg.local_transcripts = local.contains_key("transcripts");
-    cfg.transcripts = string(local.get("transcripts")).unwrap_or_else(|| cfg.synced_transcripts.clone());
+    cfg.transcripts = string(local.get("transcripts"))
+        .filter(|v| ["auto", "user", "all", "none"].contains(&v.as_str()))
+        .unwrap_or_else(|| cfg.synced_transcripts.clone());
     cfg.local_profile = local.contains_key("profile");
-    cfg.profile = string(local.get("profile")).unwrap_or_else(|| cfg.synced_profile.clone());
+    cfg.profile =
+        string(local.get("profile")).filter(|v| ["coding", "general"].contains(&v.as_str())).unwrap_or_else(|| cfg.synced_profile.clone());
     if let Some(v) = num(con.get("max_chunk_chars")) {
         cfg.max_chunk_chars = v as usize;
     }

@@ -1,6 +1,8 @@
 //! The session-start snapshot (`rewire prime`): the L2 → L0 handoff.
-//! Constraints and preferences get their own budgets and never decay; working memory is ranked by
-//! activation and scoped to the active project (chosen in the experiments/phase0 synthetic simulation).
+//! Constraints and preferences get their own budgets and never decay; working memory is ranked by importance, then
+//! the most recent, and scoped to the active project (project scope and budgets chosen in the experiments/phase0
+//! synthetic simulation). Ordering by use (activation) applies only with `recall_beta` > 0: any value turns it on here,
+//! its size only weighs recall.
 
 use crate::brain::Brain;
 use crate::index::{Index, NodeRow};
@@ -47,7 +49,14 @@ pub struct Snapshot {
 
 pub fn line(row: &NodeRow) -> String {
     let body = row.body.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut text = if body.is_empty() || body == row.title { row.title.clone() } else { format!("{} — {}", row.title, body) };
+    // a body that starts with the title (an edited note) is shown once, not after the title again
+    let mut text = if body.is_empty() || body == row.title {
+        row.title.clone()
+    } else if body.starts_with(row.title.trim()) {
+        body.clone()
+    } else {
+        format!("{} — {}", row.title, body)
+    };
     let why = crate::security::blocked(&text);
     if !why.is_empty() {
         text = crate::security::blocked_label(why);
@@ -139,13 +148,23 @@ pub fn health_notes(brain: &Brain) -> Vec<String> {
         let recent =
             chrono::DateTime::parse_from_rfc3339(at).is_ok_and(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_days() < 7);
         if recent {
-            for n in sync.get("notes").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(serde_json::Value::as_str) {
-                if n.contains("brain.toml from another device")
-                    || n.starts_with("retracted by another device")
-                    || n.starts_with("removed by another device")
-                {
-                    notes.push(format!("- {n}"));
+            // fixed wording only: titles, paths and values came from another device and are never echoed here
+            let said: Vec<&str> = sync
+                .get("notes")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            for key in ["transcripts", "profile"] {
+                if said.iter().any(|n| n.starts_with(&format!("brain.toml from another device changed [consolidation] {key}:"))) {
+                    notes.push(format!(
+                        "- another device changed `{key}` in brain.toml; this device kept its own setting (local.toml): `rewire sync` shows the change"
+                    ));
                 }
+            }
+            if said.iter().any(|n| n.starts_with("retracted by another device") || n.starts_with("removed by another device")) {
+                notes.push("- another device retracted or removed rules, preferences or skills: `rewire sync` lists them".into());
             }
         }
     }

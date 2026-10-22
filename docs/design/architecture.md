@@ -42,8 +42,9 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
   During the session the agent calls `recall` (facts, plus raw excerpts and session summaries; facts pull in
   the excerpt they were extracted from, the top excerpt carries its session's summary; `refers_to` boosts a
   period the model resolved; `also` adds up to 4 queries the model writes for a category question, such as
-  instances for "desserts", fused by rank) and `get` for full notes or `skill:<name>`. Using a note appends an event,
-  which raises its activation.
+  instances for "desserts", fused by rank) and `get` for full notes or `skill:<name>`. Using a note appends an event;
+  the activation computed from those events orders results only with `recall_beta` > 0 (off by default), so today
+  the event log is kept for that experiment and for audit, and has no effect on what is shown.
 - **Safety at load time**: all injected text is fenced (`<rewire-memory>`), notes and transcript excerpts are
   re-scanned when shown (`[BLOCKED]` instead of a secret or an injection), excerpts follow the same project
   scope as notes, and session start says when memory is unavailable (no brain, failed clone, skipped sync)
