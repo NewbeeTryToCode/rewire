@@ -68,7 +68,7 @@ codex mcp add rewire -- rewire mcp
 
 The agent proposes memories and you approve them. `install claude-code --write` adds Claude Code permission
 rules that deny the agent `rewire review approve`, `rewire remember --apply` and direct edits of the brain, and rewire
-itself refuses approving, `--apply` and `forget` inside an agent session (detected by the agent's environment
+itself refuses approving, `--apply`, `forget`, `undo` and `remote set` inside an agent session (detected by the agent's environment
 variables or its process among the command's ancestors; test suites and benchmark harnesses started from an agent
 session set `REWIRE_NOT_AN_AGENT=1`). These raise the bar, they are not a sandbox: an agent that may run arbitrary
 shell commands acts as you, and could do the same.
@@ -82,6 +82,8 @@ keep the remote private. The review is per device (each device approves a rule o
 starts with all of them waiting); a signed approval ledger shared across devices is not built. A pull that contains
 symlinks, submodules or device-local files, or a `.gitignore` that un-ignores them, is refused, and a brain.toml change
 to what this device keeps (`transcripts`, `profile`) is not taken until you set it in this device's `local.toml`.
+Other brain.toml settings from the remote apply as they come (budgets and chunk size have floors; recall weights,
+link following and the project map are not checked), so keep the remote private.
 
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
 

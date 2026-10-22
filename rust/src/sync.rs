@@ -340,9 +340,26 @@ fn refuse_shared_ids(brain: &Brain, theirs: &str, paths: &[String]) -> Result<()
         else {
             continue;
         };
-        if let Some(local) = brain.get_node(&id) {
-            if local.path != brain.root.join(path) {
-                clashes.push(format!("{path} reuses the id of {}", local.path.strip_prefix(&brain.root).unwrap_or(&local.path).display()));
+        // a file is named after its id's last 8 characters, and notes are found by them: the name must match the id,
+        // and no other local note may share the short id (in any letter case)
+        let short = crate::util::short_of(&id);
+        // (a hand-named file without an id suffix is fine; one whose suffix names another id is not)
+        let stem = path.to_lowercase().trim_end_matches(".md").to_string();
+        let suffix =
+            stem.rsplit_once('-').map(|(_, s)| s.to_string()).filter(|s| s.len() == 8 && s.chars().all(|c| c.is_ascii_alphanumeric()));
+        if suffix.is_some_and(|s| s != short) {
+            clashes.push(format!("{path} carries another id in its name than its own ({short})"));
+            continue;
+        }
+        for other in brain.node_files(Some(&short)) {
+            let rel = other.strip_prefix(&brain.root).unwrap_or(&other).to_string_lossy().replace('\\', "/");
+            if rel.to_lowercase() == path.to_lowercase() {
+                continue;
+            }
+            // the other side moved or deleted that file (a rename): no clash once merged
+            let still_there = blobs(brain, theirs, std::slice::from_ref(&rel))?.into_iter().next().flatten().is_some();
+            if still_there {
+                clashes.push(format!("{path} reuses the id of {rel}"));
             }
         }
     }

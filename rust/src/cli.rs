@@ -361,7 +361,7 @@ fn print_items(items: &[Value]) {
         println!("(no matches)");
     }
     for item in items {
-        let s = |k: &str| crate::snapshot::printable(&crate::snapshot::escape(&item.get(k).map(py_str).unwrap_or_default()));
+        let s = |k: &str| crate::snapshot::escape(&crate::snapshot::printable(&item.get(k).map(py_str).unwrap_or_default()));
         if item.get("error").is_some() {
             println!("! {}: {}", s("ref"), s("error"));
         } else if s("type") == "episode" {
@@ -729,7 +729,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
             if failures > 0 {
-                eprintln!("{failures} transcript(s) could not be consolidated (their transcripts are searchable; retry with `rewire consolidate --retry`)");
+                eprintln!("{failures} transcript(s) could not be consolidated (retry with `rewire consolidate --retry`)");
                 std::process::exit(1);
             }
         }
@@ -743,9 +743,12 @@ pub fn run(cli: Cli) -> Result<()> {
                 for item in items {
                     let m = &item.meta;
                     let g = |k: &str| crate::snapshot::printable(&m.get(k).map(py_str).unwrap_or_default());
-                    let target =
-                        m.get("target").filter(|t| crate::brain::is_set(Some(t))).map(|t| format!(" → {}", py_str(t))).unwrap_or_default();
-                    let action = m.get("action").map(py_str).unwrap_or_else(|| "NEW".into());
+                    let target = m
+                        .get("target")
+                        .filter(|t| crate::brain::is_set(Some(t)))
+                        .map(|t| format!(" → {}", crate::snapshot::printable(&py_str(t))))
+                        .unwrap_or_default();
+                    let action = crate::snapshot::printable(&m.get("action").map(py_str).unwrap_or_else(|| "NEW".into()));
                     let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
                     let remote =
                         if brain.is_untrusted(&item.path) { "  FROM ANOTHER DEVICE (its reason and labels are its own)" } else { "" };
@@ -758,7 +761,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         g("provenance"),
                         crate::snapshot::printable(item.body.trim()).replace('\n', "\n    "),
                         g("reason"),
-                        flags.map(|f| format!("  flags: {}", python_list(f))).unwrap_or_default()
+                        flags.map(|f| format!("  flags: {}", crate::snapshot::printable(&python_list(f)))).unwrap_or_default()
                     );
                 }
                 let waiting = ops::unreviewed(&brain);
@@ -773,7 +776,8 @@ pub fn run(cli: Cli) -> Result<()> {
                             .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
                             .unwrap_or_else(|| key.clone());
                         // remote text: no terminal escape codes that could hide part of it
-                        let shown = crate::snapshot::printable(&crate::util::take(&text, 400)).replace('\n', "\n    ");
+                        // in full: what is approved is exactly what was shown
+                        let shown = crate::snapshot::printable(&text).replace('\n', "\n    ");
                         println!("{}  ({}){flag}\n    {shown}", crate::snapshot::printable(&id), crate::snapshot::printable(&key));
                     }
                     println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
@@ -807,11 +811,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         println!("approved {key} (from another device)");
                     } else if key.starts_with("nodes/") {
                         // rejecting a rule that came from another device forgets it, on every device once synced
-                        match ops::forget(
-                            &brain,
-                            key.rsplit_once('-').map_or(id.as_str(), |(_, r)| r.trim_end_matches(".md")),
-                            "rejected on review",
-                        ) {
+                        match ops::forget_unreviewed(&brain, &key, "rejected on review") {
                             Ok(msg) => println!("rejected {key}: {msg}"),
                             Err(e) => {
                                 eprintln!("! {key}: {e}");
@@ -949,6 +949,10 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Undo { session } => {
             let brain = open_brain(bp);
+            // undo removes notes, approved ones too: the user's call, like forget
+            if let Some(marker) = agent_shell() {
+                fail(format!("undo is refused inside an agent session ({marker}): run it in your own terminal"));
+            }
             let undone = {
                 let _g = writing(&brain);
                 ops::undo(&brain, &session)
@@ -961,6 +965,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Remote { action, url } => {
             let mut brain = open_brain(bp);
             if action == "set" {
+                // where the whole brain is pushed to: the user's call
+                if let Some(marker) = agent_shell() {
+                    fail(format!("remote set is refused inside an agent session ({marker}): run it in your own terminal"));
+                }
                 let Some(url) = url else { fail("usage: rewire remote set <git-url>") };
                 let notes = {
                     let _g = writing(&brain);

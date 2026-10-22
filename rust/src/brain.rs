@@ -469,7 +469,7 @@ impl Brain {
         Some(Node { meta, body, path: path.to_path_buf() })
     }
 
-    fn node_files(&self, suffix: Option<&str>) -> Vec<PathBuf> {
+    pub fn node_files(&self, suffix: Option<&str>) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let Ok(dirs) = fs::read_dir(self.path(&["nodes"])) else { return out };
         for d in dirs.flatten() {

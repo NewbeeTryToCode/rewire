@@ -21,7 +21,7 @@ pub const HEADER: &str = "# rewire memory\nNotes from the user's portable memory
 /// letter or a slash becomes `&lt;`. Code such as `Vec<String>` stays readable.
 pub fn escape(text: &str) -> String {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = R.get_or_init(|| regex::Regex::new(r"<(\p{Cf}*[/!?\p{L}]|\s+/)").unwrap());
+    let re = R.get_or_init(|| regex::Regex::new(r"[<\u{FF1C}\u{FE64}](\p{Cf}*[/!?\p{L}\u{FF0F}]|\s+/)").unwrap());
     if !re.is_match(text) {
         return text.to_string();
     }
@@ -35,7 +35,7 @@ pub fn printable(text: &str) -> String {
 }
 
 pub fn fenced(text: &str) -> String {
-    format!("{FENCE_OPEN}\n{}\n{FENCE_CLOSE}\n", printable(&escape(text.trim_end_matches('\n'))))
+    format!("{FENCE_OPEN}\n{}\n{FENCE_CLOSE}\n", escape(&printable(text.trim_end_matches('\n'))))
 }
 
 /// Session-start text when memory could not be loaded: the agent should know memory is missing,
@@ -265,6 +265,6 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let empty = sections.iter().all(|(_, (l, _))| l.is_empty());
     // one filter for everything inside the fence, whatever section it came from: nothing tag-like, no control
     // characters (a remote can reach several sections through sync)
-    let text = format!("{FENCE_OPEN}\n{}{FENCE_CLOSE}\n", printable(&escape(&parts.join("\n"))));
+    let text = format!("{FENCE_OPEN}\n{}{FENCE_CLOSE}\n", escape(&printable(&parts.join("\n"))));
     Ok(Snapshot { project, text, ids, empty })
 }

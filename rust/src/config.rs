@@ -256,7 +256,7 @@ pub fn load(path: &Path) -> Config {
     cfg.profile =
         string(local.get("profile")).filter(|v| ["coding", "general"].contains(&v.as_str())).unwrap_or_else(|| cfg.synced_profile.clone());
     if let Some(v) = num(con.get("max_chunk_chars")) {
-        cfg.max_chunk_chars = v as usize;
+        cfg.max_chunk_chars = (v.max(0.0) as usize).max(8000); // a synced tiny value would multiply LLM calls
     }
     // settings that do not parse: keep no transcripts unless a readable local.toml says otherwise
     if (broken && !cfg.local_transcripts) || cfg.error.as_deref().is_some_and(|e| e.starts_with("local.toml")) {
