@@ -1106,6 +1106,7 @@ dependencies = [
  "clap",
  "fs4",
  "indexmap",
+ "libc",
  "rand 0.8.8",
  "regex",
  "rusqlite",

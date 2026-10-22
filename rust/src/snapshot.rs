@@ -140,7 +140,10 @@ pub fn health_notes(brain: &Brain) -> Vec<String> {
             chrono::DateTime::parse_from_rfc3339(at).is_ok_and(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_days() < 7);
         if recent {
             for n in sync.get("notes").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(serde_json::Value::as_str) {
-                if n.contains("brain.toml from another device") {
+                if n.contains("brain.toml from another device")
+                    || n.starts_with("retracted by another device")
+                    || n.starts_with("removed by another device")
+                {
                     notes.push(format!("- {n}"));
                 }
             }

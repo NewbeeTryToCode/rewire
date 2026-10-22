@@ -334,8 +334,17 @@ fn import_problem(s: &Value) -> Option<String> {
     if text("session").is_none_or(|v| v.trim().is_empty()) {
         return Some("\"session\" (a non-empty string) is missing".into());
     }
-    if !s.get("turns").is_some_and(Value::is_array) {
-        return Some("\"turns\" must be a list".into());
+    let Some(turns) = s.get("turns").and_then(Value::as_array).filter(|t| !t.is_empty()) else {
+        return Some("\"turns\" must be a non-empty list".into());
+    };
+    for (i, t) in turns.iter().enumerate() {
+        let role = t.get("role").and_then(Value::as_str).unwrap_or("user");
+        if !["user", "assistant", "tool", "system"].contains(&role) {
+            return Some(format!("turn {}: role must be user, assistant, tool or system, not {role:?}", i + 1));
+        }
+        if !t.get("text").is_some_and(Value::is_string) {
+            return Some(format!("turn {}: \"text\" (a string) is missing", i + 1));
+        }
     }
     if let Some(h) = text("harness").filter(|h| crate::util::slugify(h, 40) != *h) {
         return Some(format!("\"harness\" must be a short name of lower-case letters, digits and dashes, not {h:?}"));
@@ -476,12 +485,13 @@ pub fn run(cli: Cli) -> Result<()> {
                 if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
             let mut con =
                 Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
+            con.review_all = true; // an import file says who spoke: what it claims the user said is reviewed
             let _g = writing(&brain);
             let mut written = 0;
             for s in sessions {
                 let harness_slug = crate::util::slugify(s.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
                 let session_id = s.get("session").and_then(Value::as_str).unwrap_or("");
-                if !use_llm && ops::session_record(&brain, &harness_slug, session_id).is_some() {
+                if ops::session_record(&brain, &harness_slug, session_id).is_some() {
                     println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
                     continue;
                 }
@@ -617,6 +627,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Consolidate { mut files, pending, retry, harness, quiet, json: as_json } => {
             let brain = open_brain(bp);
+            let mut failures = 0;
             if retry {
                 files.extend(brain.read_state("failed").keys().map(PathBuf::from));
                 if files.is_empty() {
@@ -627,11 +638,13 @@ pub fn run(cli: Cli) -> Result<()> {
             let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
             let results = (|| -> Result<Vec<Meta>> {
                 let mut con = Consolidator::new(&brain, None, log)?;
-                if pending || files.is_empty() {
+                let r = if pending || files.is_empty() {
                     con.run_pending(&files)
                 } else {
                     files.iter().map(|f| con.run_file(&crate::brain::absolute(f), harness.as_deref())).collect()
-                }
+                };
+                failures = con.failures;
+                r
             })();
             let results = match results {
                 Err(Error::Locked(e)) => {
@@ -653,6 +666,9 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             if as_json {
                 print_json(&Value::Array(results.into_iter().map(Value::Object).collect()));
+                if failures > 0 {
+                    std::process::exit(1);
+                }
                 return Ok(());
             }
             for r in &results {
@@ -671,6 +687,10 @@ pub fn run(cli: Cli) -> Result<()> {
                 for x in r.get("rejected").and_then(Value::as_array).cloned().unwrap_or_default() {
                     println!("  ✗ {} ({})", py_str(&x["title"]), py_str(&x["why"]));
                 }
+            }
+            if failures > 0 {
+                eprintln!("{failures} transcript(s) could not be consolidated (their transcripts are searchable; retry with `rewire consolidate --retry`)");
+                std::process::exit(1);
             }
         }
         Cmd::Review { action, force, ids } => {

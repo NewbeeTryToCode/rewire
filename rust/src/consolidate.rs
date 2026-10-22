@@ -20,6 +20,10 @@ use std::time::Duration;
 
 pub const ASSISTANT_CHARS: usize = 1500;
 pub const TRANSCRIPT_HEADING: &str = "## Transcript";
+/// The summary of a session record written without the LLM after consolidation failed: the transcript is searchable
+/// at once, and the record is replaced when a retry succeeds.
+pub const FALLBACK_SUMMARY: &str =
+    "Not consolidated yet (the LLM call failed); the transcript is kept and searchable. Retried by `rewire consolidate --retry`.";
 pub const QUESTIONS_HEADING: &str = "## Questions"; // hypothetical questions per turn: indexed with the excerpt, never shown
 const QUESTION_CHARS: usize = 200;
 const LINK_RELS: [&str; 3] = ["part_of", "depends_on", "related_to"];
@@ -319,6 +323,10 @@ pub struct Consolidator<'a> {
     pub index: Index,
     pub provider: Box<dyn Provider + 'a>,
     pub log: Box<dyn Fn(&str) + 'a>,
+    /// nothing is applied without a review (imports: the file, not the user, says who spoke)
+    pub review_all: bool,
+    /// transcripts that failed in this run
+    pub failures: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -336,7 +344,7 @@ impl<'a> Consolidator<'a> {
             Some(p) => p,
             None => llm::make(&brain.config, &brain.root)?,
         };
-        Ok(Consolidator { brain, index: Index::new(brain), provider, log })
+        Ok(Consolidator { brain, index: Index::new(brain), provider, log, review_all: false, failures: 0 })
     }
 
     // ---- entry points ----------------------------------------------------
@@ -377,6 +385,7 @@ impl<'a> Consolidator<'a> {
                     results.push(r)
                 }
                 Err(e) => {
+                    self.failures += 1;
                     self.brain.present()?; // the brain is gone: stop, there is nowhere to record anything
                                            // keep going; recorded for `doctor`, retried with `consolidate <file>` or `consolidate --retry`
                     self.brain.update_state("failed", |f| {
@@ -428,7 +437,34 @@ impl<'a> Consolidator<'a> {
             if done.contains_key(&key) {
                 result.insert("status".into(), sv("already-processed"));
             } else {
-                for (k, v) in self.consolidate(&harness, &meta, &turns)? {
+                let consolidated = match self.consolidate(&harness, &meta, &turns) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // episodic memory needs no LLM: keep the transcript searchable while the LLM part waits
+                        let date = meta
+                            .date
+                            .clone()
+                            .unwrap_or_else(|| turns.iter().map(|t| take(&t.ts, 10)).find(|d| !d.is_empty()).unwrap_or_default());
+                        let session = meta.session.clone().unwrap_or_else(|| "unknown".into());
+                        let transcript = self.transcript(&turns);
+                        let _ = self.write_session(
+                            &harness,
+                            &session,
+                            None,
+                            &[FALLBACK_SUMMARY.to_string()],
+                            &[],
+                            &[],
+                            &[],
+                            0,
+                            &Default::default(),
+                            &date,
+                            &transcript,
+                            &[],
+                        );
+                        return Err(e);
+                    }
+                };
+                for (k, v) in consolidated {
                     result.insert(k, v);
                 }
                 done.insert(key, json!(now_iso()));
@@ -560,7 +596,7 @@ impl<'a> Consolidator<'a> {
                 rejected.push(obj(&[("title", sv(&security::redact(claim["title"].as_str().unwrap_or("")))), ("why", sv("secret"))]));
                 continue;
             }
-            if action == "SAME" && !target.is_empty() && gate(claim, action) {
+            if action == "SAME" && !target.is_empty() && !self.review_all && gate(claim, action) {
                 if let Some(node) = ops::resolve_id(self.brain, target) {
                     events.push(ops::event("confirm", node.id(), 1.0, &session, harness));
                     applied.push(applied_entry("SAME", &node));
@@ -568,7 +604,7 @@ impl<'a> Consolidator<'a> {
                 }
                 continue;
             }
-            if gate(claim, action) && safe_update_target(self.brain, claim, action, target) {
+            if !self.review_all && gate(claim, action) && safe_update_target(self.brain, claim, action, target) {
                 match ops::apply_change(self.brain, &change, Some(&source(&claim["evidence_turn"]))) {
                     Ok(node) => {
                         applied.push(applied_entry(action, &node));
@@ -905,6 +941,11 @@ impl<'a> Consolidator<'a> {
             lines.extend(transcript.iter().map(|l| l.replace('\n', " ")));
         }
         fs::create_dir_all(&dir)?;
+        // a record written without the LLM after a failure is replaced, not appended to, once consolidation works
+        let fallback_only = fs::read_to_string(&path).is_ok_and(|t| t.contains(FALLBACK_SUMMARY) && !t.contains("\n---\n"));
+        if fallback_only {
+            fs::remove_file(&path)?;
+        }
         let exists = path.exists();
         let mut fh = fs::OpenOptions::new().create(true).append(true).open(&path)?;
         let text = format!("{}{}\n", if exists { "\n\n---\n\n" } else { "" }, lines.join("\n"));

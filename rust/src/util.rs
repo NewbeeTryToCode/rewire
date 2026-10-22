@@ -148,9 +148,17 @@ pub fn run_with_timeout(
     let deadline = std::time::Instant::now() + timeout;
     #[cfg(unix)]
     {
-        // its own process group, so a timeout also stops what it started (git's ssh and https helpers)
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
+        use std::io::IsTerminal;
+        // with no terminal (hooks, the MCP server, background work): its own process group, so a timeout also stops
+        // what it started (git's ssh and https helpers), and ssh never waits for a passphrase. At a terminal the
+        // child stays in the foreground group: Ctrl-C reaches it, and ssh can ask.
+        if !std::io::stdin().is_terminal() {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+            if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+                cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+            }
+        }
     }
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -202,9 +210,13 @@ pub fn run_with_timeout(
 fn kill_group(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        let mut kill = std::process::Command::new("kill");
-        kill.args(["-KILL", "--", &format!("-{}", child.id())]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        let _ = kill.status();
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            // SAFETY: killpg only sends a signal; the group id is the child's pid (process_group(0) above)
+            unsafe {
+                libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+            }
+        }
     }
     let _ = child.kill();
 }
