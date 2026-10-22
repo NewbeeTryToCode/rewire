@@ -45,11 +45,20 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
     if ignore.lines().any(|l| l.trim().starts_with('!')) && unignores_local(&ignore) {
         found.push(".gitignore (it un-ignores device-local files)".into());
     }
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
         let Some((info, path)) = entry.split_once('\t') else { continue };
         let mode = info.split(' ').next().unwrap_or("");
         let first = path.split('/').next().unwrap_or("").nfc().collect::<String>().to_lowercase();
-        let why = if LOCAL_ONLY.contains(&first.as_str()) {
+        // two names one file system may treat as one file: one review would cover a file the user never saw
+        let folded: String = path.nfc().collect::<String>().to_lowercase();
+        if let Some(other) = seen.insert(folded, path.to_string()) {
+            found.push(format!("{} and {other} (names that differ only in letter case)", path.escape_debug()));
+            continue;
+        }
+        let why = if path.chars().any(char::is_control) {
+            "control characters in the name"
+        } else if LOCAL_ONLY.contains(&first.as_str()) {
             "device-local"
         } else if mode == "120000" {
             "symlink"
@@ -60,7 +69,7 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
         } else {
             continue;
         };
-        found.push(format!("{path} ({why})"));
+        found.push(format!("{} ({why})", path.escape_debug()));
     }
     found
 }
@@ -400,8 +409,8 @@ impl Brain {
             args.extend(dirs);
             String::from_utf8_lossy(&brain.git(&args).stdout).split('\0').filter(|p| !p.is_empty()).map(String::from).collect()
         };
-        let paths = list(&["nodes", "skills"]);
-        let inbox: Vec<String> = list(&["inbox"]).iter().filter_map(|p| brain.review_key(&root.join(p))).collect();
+        let paths = list(&[":(icase)nodes", ":(icase)skills"]);
+        let inbox: Vec<String> = list(&[":(icase)inbox"]).iter().filter_map(|p| brain.review_key(&root.join(p))).collect();
         brain.mark_keys(&inbox)?;
         let waiting = brain.mark_untrusted(&paths)?;
         if waiting > 0 {

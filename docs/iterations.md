@@ -79,7 +79,14 @@ LongMemEval_S (500 questions, official answer prompt and judge) in *episodes* mo
 All insights from the [OpenHuman/Hermes research](research/openhuman-hermes.md) except the benchmark KPI (#14), in Python and Rust:
 a date on every snapshot line, a `<rewire-memory>` fence + loop guard in the transcript parser, extraction rules (do not store temporary failures / "tool X is broken"; preferences written declaratively), an **About the user** section with its own budget, session summaries indexed and attached to the top chunks, `refers_to` (a period resolved by the model, as a boost), a **per-prompt** hook (UserPromptSubmit, at most 5 notes the session has not seen yet), **skills** (procedural memory, always via review), rescanning on display (`[BLOCKED]`), `target_hash` on inbox items, a notice when memory is unavailable, escaping of the fence tag, and a "… N more not shown" line. Semantic search is now also in Rust (the `semantic` feature, with the model from `rewire semantic install`). Conformance: recall identical 304/304 (keyword **and** hybrid), `prime` and `upgrade` identical, consolidation prompts identical; 61 Python tests, 54 Rust tests.
 
-## Next (iteration 11)
+## Later work
+
+The log stops at iteration 10. Later changes (the Rust-only engine, replicated A/B tests with intervals, sync review, the
+ECC review loop) are in the commit history and in [the evaluation results](../experiments/eval/results/); the headline
+numbers above (96.7%, R@5 100%) predate the replicated measurements and are superseded by them
+([evaluation.md](evaluation.md)).
+
+## Planned at iteration 10 (E1 and E4 still not run)
 
 0. **Token-efficient evaluation**: measure the impact of iteration 10 (fresh-first rate, captured-but-not-surfaced) without a full consolidation replay.
 

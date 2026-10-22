@@ -342,7 +342,8 @@ impl<'a> Consolidator<'a> {
     pub fn new(brain: &'a Brain, provider: Option<Box<dyn Provider + 'a>>, log: Box<dyn Fn(&str) + 'a>) -> Result<Self> {
         let provider = match provider {
             Some(p) => p,
-            None => llm::make(&brain.config, &brain.root)?,
+            // no usable LLM is not a reason to drop transcripts: they are still kept, and each one is recorded as failed
+            None => llm::make(&brain.config, &brain.root).unwrap_or_else(|e| Box::new(llm::Unavailable(e.to_string()))),
         };
         Ok(Consolidator { brain, index: Index::new(brain), provider, log, review_all: false, failures: 0 })
     }
@@ -405,7 +406,20 @@ impl<'a> Consolidator<'a> {
 
     pub fn run_file(&mut self, path: &Path, harness: Option<&str>) -> Result<Meta> {
         let _lock = self.brain.lock(Duration::ZERO)?;
-        let result = self.process(path, harness)?;
+        let result = match self.process(path, harness) {
+            Ok(r) => r,
+            Err(e) => {
+                // recorded like a pending run's failure: doctor and the snapshot say so, `--retry` picks it up
+                self.failures += 1;
+                let key = path.to_string_lossy().into_owned();
+                if self.brain.present().is_ok() {
+                    self.brain.update_state("failed", |f| {
+                        f.insert(key, json!({"error": take(&e.to_string(), 500), "at": now_iso()}));
+                    })?;
+                }
+                return Err(e);
+            }
+        };
         let key = path.to_string_lossy().into_owned();
         self.brain.update_state("failed", |f| {
             f.remove(&key);
@@ -437,33 +451,31 @@ impl<'a> Consolidator<'a> {
             if done.contains_key(&key) {
                 result.insert("status".into(), sv("already-processed"));
             } else {
-                let consolidated = match self.consolidate(&harness, &meta, &turns) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        // episodic memory needs no LLM: keep the transcript searchable while the LLM part waits
-                        let date = meta
-                            .date
-                            .clone()
-                            .unwrap_or_else(|| turns.iter().map(|t| take(&t.ts, 10)).find(|d| !d.is_empty()).unwrap_or_default());
-                        let session = meta.session.clone().unwrap_or_else(|| "unknown".into());
-                        let transcript = self.transcript(&turns);
-                        let _ = self.write_session(
-                            &harness,
-                            &session,
-                            None,
-                            &[FALLBACK_SUMMARY.to_string()],
-                            &[],
-                            &[],
-                            &[],
-                            0,
-                            &Default::default(),
-                            &date,
-                            &transcript,
-                            &[],
-                        );
-                        return Err(e);
-                    }
-                };
+                // episodic memory first, with no LLM: the transcript is searchable whatever happens next; the LLM's
+                // record replaces it (write_session) once consolidation succeeds
+                let session = meta.session.clone().unwrap_or_else(|| "unknown".into());
+                if crate::ops::session_record(self.brain, &slugify(&harness, 40), &session).is_none() {
+                    let date = meta
+                        .date
+                        .clone()
+                        .unwrap_or_else(|| turns.iter().map(|t| take(&t.ts, 10)).find(|d| !d.is_empty()).unwrap_or_default());
+                    let transcript = self.transcript(&turns);
+                    self.write_session(
+                        &harness,
+                        &session,
+                        None,
+                        &[FALLBACK_SUMMARY.to_string()],
+                        &[],
+                        &[],
+                        &[],
+                        0,
+                        &Default::default(),
+                        &date,
+                        &transcript,
+                        &[],
+                    )?;
+                }
+                let consolidated = self.consolidate(&harness, &meta, &turns)?;
                 for (k, v) in consolidated {
                     result.insert(k, v);
                 }

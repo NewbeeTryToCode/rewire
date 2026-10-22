@@ -516,11 +516,32 @@ pub fn run(cli: Cli) -> Result<()> {
                 let start = std::time::Instant::now();
                 let mut rec = json!({"session": session, "turns": turns.len()});
                 let outcome = if use_llm {
-                    con.consolidate(&harness, &meta, &turns).map(|r| {
+                    let r = con.consolidate(&harness, &meta, &turns).map(|r| {
                         for key in ["applied", "queued", "rejected"] {
                             rec[key] = json!(r.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()));
                         }
-                    })
+                    });
+                    if r.is_err() {
+                        // the transcript is kept and searchable even when the LLM part failed (rerun the import to retry)
+                        let date = meta.date.clone().unwrap_or_default();
+                        let transcript = con.transcript(&turns);
+                        let fallback = [crate::consolidate::FALLBACK_SUMMARY.to_string()];
+                        con.write_session(
+                            &harness,
+                            &session,
+                            None,
+                            &fallback,
+                            &[],
+                            &[],
+                            &[],
+                            0,
+                            &Default::default(),
+                            &date,
+                            &transcript,
+                            &[],
+                        )?;
+                    }
+                    r
                 } else {
                     let date = meta.date.clone().unwrap_or_default();
                     con.write_session(

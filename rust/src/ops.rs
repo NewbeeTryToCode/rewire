@@ -677,7 +677,9 @@ pub fn unreviewed_key(brain: &Brain, id: &str) -> Option<String> {
         .find(|k| {
             *k == id
                 || lower.strip_prefix("skill:").is_some_and(|n| **k == format!("skills/{n}/"))
-                || (lower.len() >= 8 && k.ends_with(&format!("-{}.md", crate::util::short_of(&lower))))
+                || (lower.len() >= 4
+                    && k.starts_with("nodes/")
+                    && k.rsplit_once('-').is_some_and(|(_, tail)| tail.trim_end_matches(".md").starts_with(&crate::util::short_of(&lower))))
         })
         .cloned()
 }
@@ -687,6 +689,41 @@ pub fn trust(brain: &Brain, key: &str) -> Result<()> {
     brain.update_state("untrusted", |u| {
         u.remove(key);
     })
+}
+
+/// Whether a hosted remote can be read with no credentials at all (a public repository): `git ls-remote` over https
+/// with credential helpers and prompts off. None when it cannot tell (a local path, no network, another scheme).
+pub fn remote_is_public(url: &str) -> Option<bool> {
+    // git@github.com:me/brain.git → https://github.com/me/brain.git
+    let https = if let Some(rest) = url.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        format!("https://{host}/{path}")
+    } else if let Some(rest) = url.strip_prefix("ssh://git@") {
+        format!("https://{}", rest.replacen(':', "/", 1))
+    } else if url.starts_with("https://") {
+        url.to_string()
+    } else {
+        return None;
+    };
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-c", "credential.helper=", "ls-remote", "--heads", &https])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env_remove("SSH_ASKPASS");
+    let out = crate::util::run_with_timeout(cmd, None, std::time::Duration::from_secs(10)).ok()?;
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    if out.status.success() {
+        Some(true)
+    } else if err.contains("authentication")
+        || err.contains("not found")
+        || err.contains("could not read")
+        || err.contains("403")
+        || err.contains("401")
+    {
+        Some(false)
+    } else {
+        None // offline, unknown host: say nothing
+    }
 }
 
 /// Whether a `doctor` line reports a problem (the exit status of `rewire doctor`).
@@ -737,6 +774,11 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
             if brain.config.sync_auto { "auto" } else { "manual" },
             remotes.lines().next().unwrap_or("")
         ));
+        if let Some(url) = remotes.lines().next().and_then(|l| l.split_whitespace().nth(1)) {
+            if remote_is_public(url) == Some(true) {
+                report.push(format!("UNSAFE: the brain's remote {url} can be read without credentials: make it private"));
+            }
+        }
     } else {
         report.push(format!("sync: no remote (this brain lives only on this machine) · device {device}"));
     }

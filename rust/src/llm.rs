@@ -92,6 +92,16 @@ impl Provider for NoProvider {
     }
 }
 
+/// The provider that could not be set up (no API key, an unknown provider, an unsafe brain): every call fails with
+/// the reason, so transcripts are still kept and the failure is recorded and reported.
+pub struct Unavailable(pub String);
+
+impl Provider for Unavailable {
+    fn complete_json(&self, _: &str, _: &str, _: &Value) -> Result<Meta> {
+        llm(self.0.clone())
+    }
+}
+
 pub struct CommandProvider {
     pub argv: Vec<String>,
     pub workdir: PathBuf,
@@ -132,7 +142,11 @@ impl Provider for CommandProvider {
         };
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect::<String>();
-            return llm(format!("command exited {}: {err}", out.status.code().unwrap_or(-1)));
+            let said = if err.trim().is_empty() { "no output on stderr".to_string() } else { err.trim().to_string() };
+            return llm(format!(
+                "`{prog}` exited with status {} ({said}); check the [consolidation] command in local.toml",
+                out.status.code().unwrap_or(-1)
+            ));
         }
         extract_json(&String::from_utf8_lossy(&out.stdout))
     }
