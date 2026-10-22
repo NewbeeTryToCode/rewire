@@ -18,11 +18,12 @@ repo of markdown files you own, and that you can read, edit, review, sync and un
   interval [−4.2, +7.5], 80 questions, earlier Python engine).
 - **Files are the source of truth.** A note is markdown with frontmatter (Obsidian-friendly); usage is an
   append-only event log; the index is derived and rebuilt from the files at any time.
-- **Safe by default.** Provenance comes from the transcript and the cited turn must actually say the claim; tool
+- **Safe by default.** Provenance comes from the transcript and the cited turn must share the claim's content words (a word-overlap
+  check, not entailment); tool
   output never becomes a rule on its own; secrets are refused; memory is fenced as data and re-scanned when shown;
   every session can be taken back with `rewire undo`. What runs the LLM is set per device, never synced.
-- **Experimental, off by default:** ordering by usage (ACT-R decay over the event log) for recall and the
-  session-start snapshot (`recall_beta`, never measured), and spreading activation over every note link
+- **Experimental, off by default:** ordering by usage (ACT-R decay over the event log) for recall (`recall_beta`) and the
+  session-start snapshot (`snapshot_use`), never measured, and spreading activation over every note link
   (`spread = "full"`: +0.0 points, interval [−4.2, +4.6], 80 questions, earlier Python engine; a null result on a
   small sample, not proof of no effect). By default recall only follows a link from an outdated note to its
   replacement; that default itself has not been measured end to end.

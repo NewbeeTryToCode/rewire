@@ -1,8 +1,8 @@
 //! The session-start snapshot (`rewire prime`): the L2 → L0 handoff.
 //! Constraints and preferences get their own budgets and never decay; working memory is ranked by importance, then
 //! the most recent, and scoped to the active project (project scope and budgets chosen in the experiments/phase0
-//! synthetic simulation). Ordering by use (activation) breaks ties within an importance level, only with
-//! `recall_beta` > 0: any value turns it on here, its size only weighs recall.
+//! synthetic simulation). Ordering by use (activation) breaks ties within an importance level only with
+//! `[activation] snapshot_use = true` (off by default; recall has its own weight, `recall_beta`).
 
 use crate::brain::Brain;
 use crate::index::{Index, NodeRow};
@@ -192,8 +192,8 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
     let sp: Vec<&dyn ToSql> = scopes.iter().map(|s| s as &dyn ToSql).collect();
     let b = &brain.config.budgets;
     // Ordering by use (ACT-R activation `b`) is experimental and unmeasured: one rule for every section, importance
-    // first, then use (only with `recall_beta` > 0, like recall), then the most recent
-    let by_use = if brain.config.recall_beta > 0.0 { "b DESC, " } else { "" };
+    // first, then use (only with `snapshot_use`), then the most recent
+    let by_use = if brain.config.snapshot_use { "b DESC, " } else { "" };
     // The profile view (who the user is and the people around them) comes first, with its own budget.
     let profile = index.rows(
         &format!("active = 1 AND scope = 'global' AND (type = 'person' OR (type = 'fact' AND importance >= 4)) ORDER BY importance DESC, {by_use}id"),
