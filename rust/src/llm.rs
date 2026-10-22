@@ -208,6 +208,10 @@ impl Provider for AnthropicProvider {
 }
 
 pub fn make(config: &Config, brain_root: &Path) -> Result<Box<dyn Provider>> {
+    // settings that do not parse fall back to defaults: never run the default command in place of the user's own
+    if let Some(e) = &config.error {
+        return llm(format!("settings could not be read ({e}): not running an LLM until they are fixed (`rewire doctor`)"));
+    }
     match config.provider.as_str() {
         "command" => {
             // local.toml is never synced; one that git tracks may have come from another device or the remote
