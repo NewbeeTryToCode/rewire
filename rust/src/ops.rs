@@ -502,7 +502,11 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
         .collect();
     later.dedup();
     if mine.is_empty() && dropped == 0 && records.is_empty() && later.is_empty() {
-        return op(format!("nothing in memory comes from session {session}"));
+        return op(if sessions(brain).iter().any(|(_, _, s, _)| s == session) {
+            format!("nothing in memory comes from session {session}")
+        } else {
+            format!("no session {session} (`rewire sessions` lists them)")
+        });
     }
     if mine.is_empty() && dropped == 0 && records.iter().all(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("\n## Undone\n"))) {
         return op(format!("session {session} was already undone"));
@@ -744,6 +748,11 @@ pub fn trust(brain: &Brain, key: &str) -> Result<()> {
     })
 }
 
+/// A remote URL without its credentials (`https://user:token@host` → `https://***@host`).
+pub fn redact_url(url: &str) -> String {
+    regex::Regex::new(r"(https?://)[^/@\s]*@").unwrap().replace_all(url, "$1***@").into_owned()
+}
+
 /// Whether a hosted remote can be read with no credentials at all (a public repository): `git ls-remote` over https
 /// with credential helpers and prompts off. None when it cannot tell (a local path, no network, another scheme).
 pub fn remote_is_public(url: &str) -> Option<bool> {
@@ -835,8 +844,7 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     let remotes = out_str(&brain.git(&["remote", "-v"]));
     let device = brain.device();
     if !remotes.is_empty() {
-        let shown =
-            regex::Regex::new(r"(https?://)[^/@\s]*@").unwrap().replace(remotes.lines().next().unwrap_or(""), "$1***@").into_owned();
+        let shown = redact_url(remotes.lines().next().unwrap_or(""));
         report.push(format!(
             "sync: {} · device {device} · make sure the brain repository is PRIVATE:\n  {shown}",
             if brain.config.sync_auto { "auto" } else { "manual" },

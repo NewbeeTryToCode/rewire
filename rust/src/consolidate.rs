@@ -23,7 +23,7 @@ pub const TRANSCRIPT_HEADING: &str = "## Transcript";
 /// The summary of a session record written without the LLM after consolidation failed: the transcript is searchable
 /// at once, and the record is replaced when a retry succeeds.
 pub const FALLBACK_SUMMARY: &str =
-    "Not consolidated yet (the LLM call failed); the transcript is kept and searchable. Retried by `rewire consolidate --retry`.";
+    "Not consolidated yet (the LLM step has not run or failed); the transcript is kept and searchable. `rewire consolidate --retry` (or, for an import, rerunning it) tries again.";
 /// The status line of a transcript-only record (no LLM yet), which a later consolidation replaces.
 pub const TRANSCRIPT_ONLY: &str = "- status: transcript only";
 /// The first line of a session's block in its record (control characters in an id never split it).

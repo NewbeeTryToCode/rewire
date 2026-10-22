@@ -547,10 +547,11 @@ pub fn run(cli: Cli) -> Result<()> {
                     r
                 } else {
                     let date = meta.date.clone().unwrap_or_default();
+                    let project = con.project_of(meta.cwd.as_deref());
                     con.write_session(
                         &harness,
                         &session,
-                        None,
+                        project.as_deref(),
                         &[],
                         &[],
                         &[],
@@ -656,6 +657,9 @@ pub fn run(cli: Cli) -> Result<()> {
             let mut failures = 0;
             if retry {
                 // transcripts that are gone cannot be retried: forget their failures
+                for gone in brain.read_state("failed").keys().filter(|p| !std::path::Path::new(p.as_str()).is_file()) {
+                    eprintln!("skipped {gone}: the transcript file is gone (what was kept of it stays searchable)");
+                }
                 brain.update_state("failed", |f| f.retain(|p, _| std::path::Path::new(p).is_file()))?;
                 files.extend(brain.read_state("failed").keys().map(PathBuf::from));
                 if files.is_empty() {
@@ -693,7 +697,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
                 other => other?,
             };
-            if brain.config.sync_auto && pending {
+            if brain.config.sync_auto && (pending || retry) {
                 match brain.lock(Duration::from_secs(120)) {
                     Ok(_g) => match sync::push(&brain, sync::GIT_TIMEOUT) {
                         Ok(notes) if !quiet => eprintln!("sync: {}", notes.join("; ")),
@@ -979,7 +983,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 let url = sync::remote_url(&brain);
                 println!(
                     "origin: {}; auto sync: {}; device: {}",
-                    if url.is_empty() { "(none)" } else { &url },
+                    if url.is_empty() { "(none)".to_string() } else { ops::redact_url(&url) },
                     if brain.config.sync_auto { "on" } else { "off" },
                     brain.device()
                 );

@@ -181,6 +181,29 @@ pub fn health_notes(brain: &Brain) -> Vec<String> {
     notes
 }
 
+/// The approved versions of rules or preferences whose change from another device waits for review, after the
+/// section's own lines.
+fn with_previous(section: (Vec<String>, usize), brain: &Brain, type_: &str, scopes: &[String]) -> (Vec<String>, usize) {
+    let (mut lines, left) = section;
+    for entry in brain.untrusted().values() {
+        let Some(text) = entry.get("previous").and_then(serde_json::Value::as_str) else { continue };
+        let Ok((meta, body)) = crate::nodefmt::parse(text) else { continue };
+        let s = |k: &str| meta.get(k).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        if s("type") != type_ || !scopes.contains(&s("scope")) {
+            continue;
+        }
+        let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let shown = if body.is_empty() || body == s("title") { s("title") } else { format!("{} — {body}", s("title")) };
+        let shown = if crate::security::blocked(&shown).is_empty() { shown } else { continue };
+        lines.push(format!(
+            "- {} (the version approved here; a change from another device waits for review) [{}]",
+            crate::util::take(&shown, 380),
+            crate::util::short_of(&s("id"))
+        ));
+    }
+    (lines, left)
+}
+
 pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Option<&str>) -> Result<Snapshot> {
     let project = match project {
         Some(p) => Some(p.to_string()),
@@ -236,8 +259,8 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         .collect();
     let sections = [
         ("## About the user", about),
-        ("## Rules the user set", fill(&constraints, b.constraints)),
-        ("## Preferences", fill(&prefs, b.preferences)),
+        ("## Rules the user set", with_previous(fill(&constraints, b.constraints), brain, "constraint", &scopes)),
+        ("## Preferences", with_previous(fill(&prefs, b.preferences), brain, "preference", &scopes)),
         (SKILLS_TITLE, fill_lines(&skill_lines, b.skills)),
         ("## Current context", fill(&working, b.working)),
     ];

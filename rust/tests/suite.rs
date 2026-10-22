@@ -2597,3 +2597,47 @@ fn a_note_renamed_on_another_device_syncs() {
     sync::pull(&t.b, 30).unwrap();
     assert!(t.b.root.join(&renamed).is_file());
 }
+
+#[test]
+fn a_rule_edited_on_another_device_keeps_its_approved_version_in_the_snapshot() {
+    let t = two();
+    let rule = add_commit(&t.a, "constraint", "Never deploy on Fridays");
+    sync::push(&t.a, 30).unwrap();
+    sync::pull(&t.b, 30).unwrap();
+    let b = Brain::open(Some(&t.b.root));
+    ops::trust(&b, &ops::unreviewed_key(&b, &rewire::util::short_of(rule.id())).unwrap()).unwrap();
+    let n = t.a.get_node(rule.id()).unwrap();
+    let mut meta = n.meta.clone();
+    meta.insert("title".into(), json!("Deploy any day"));
+    t.a.write_node(&meta, "Deploy any day", Some(&n.path)).unwrap();
+    t.a.commit("edit");
+    sync::push(&t.a, 30).unwrap();
+    sync::pull(&t.b, 30).unwrap();
+    let prime = primed(&t.b);
+    assert!(prime.contains("Never deploy on Fridays") && prime.contains("waits for review"), "{prime}");
+    assert!(!prime.contains("Deploy any day"), "{prime}");
+}
+
+#[test]
+fn a_hand_edit_made_later_wins_a_conflict() {
+    let t = two();
+    let rule = add_commit(&t.a, "constraint", "RULE base");
+    sync::push(&t.a, 30).unwrap();
+    sync::pull(&t.b, 30).unwrap();
+    let edit = |brain: &Brain, text: &str| {
+        let path = brain.get_node(rule.id()).unwrap().path;
+        std::fs::write(&path, read(&path).replace("RULE base", text)).unwrap();
+        brain.commit("hand edit");
+    };
+    edit(&t.a, "RULE older");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    edit(&t.b, "RULE newer");
+    sync::sync(&t.b).unwrap();
+    sync::sync(&t.a).unwrap();
+    assert!(read(&t.a.get_node(rule.id()).unwrap().path).contains("RULE newer"));
+}
+
+#[test]
+fn remote_urls_are_shown_without_credentials() {
+    assert_eq!(ops::redact_url("https://alice:ghp_SECRET@github.com/a/b.git"), "https://***@github.com/a/b.git");
+}
