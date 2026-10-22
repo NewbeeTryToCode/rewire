@@ -5,14 +5,17 @@ repo of markdown files you own, and that you can read, edit, review, sync and un
 
 - **Episodic memory with no LLM bill.** Every session's transcript is kept (secrets redacted, `<private>` parts
   removed) and searched with hybrid retrieval: SQLite FTS5 keywords plus optional offline static vectors. Recall
-  makes no LLM calls, and transcripts are kept even when the LLM step fails or is not set up. The benchmark gains
+  makes no LLM calls, and transcripts are kept even when the LLM step fails or is not set up (once consolidation
+  succeeds, LLM-written questions per turn are indexed with the excerpts too, which the benchmarks' episodes-only
+  arm did not have). The benchmark gains
   measured so far all come from this layer (`docs/evaluation.md`), but on chat benchmarks that keep every speaker's
   words; the default coding profile keeps only the user's turns (`transcripts = "all"` keeps the agent's too), and
   no coding-agent memory benchmark has been run.
 - **A reviewed layer of facts, rules and skills on top.** After a session, an LLM proposes atomic notes and reusable
   procedures. What the user explicitly said is saved; everything else waits in an inbox. Rules (constraints) always
-  go through review. Its value is readable, editable, reviewable memory: on answer accuracy it has not been shown
-  better than the episodes alone (+1.7 points, interval [−4.2, +7.5], 80 questions, earlier Python engine).
+  go through review. Its value is readable, editable, reviewable memory: on answer accuracy full consolidation (facts,
+  session summaries and per-turn questions together) has not been shown better than the episodes alone (+1.7 points,
+  interval [−4.2, +7.5], 80 questions, earlier Python engine).
 - **Files are the source of truth.** A note is markdown with frontmatter (Obsidian-friendly); usage is an
   append-only event log; the index is derived and rebuilt from the files at any time.
 - **Safe by default.** Provenance comes from the transcript and the cited turn must actually say the claim; tool

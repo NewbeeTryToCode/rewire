@@ -44,7 +44,7 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
   period the model resolved; `also` adds up to 4 queries the model writes for a category question, such as
   instances for "desserts", fused by rank) and `get` for full notes or `skill:<name>`. Using a note appends an event;
   the activation computed from those events orders results only with `recall_beta` > 0 (off by default), so today
-  the event log is kept for that experiment and for audit, and has no effect on what is shown.
+  the event log is kept for that experiment and for audit, and has no effect on what is shown (it only tells `doctor` which skills went unused).
 - **Safety at load time**: all injected text is fenced (`<rewire-memory>`), notes and transcript excerpts are
   re-scanned when shown (`[BLOCKED]` instead of a secret or an injection), excerpts follow the same project
   scope as notes, and session start says when memory is unavailable (no brain, failed clone, skipped sync)
@@ -74,7 +74,7 @@ an LLM to answer and to judge every question. Retrieval itself can be evaluated 
 
 | Benchmark | Result | Report |
 |---|---|---|
-| LoCoMo 40 + 40 multi-hop sample, removed Python engine (`recall_beta` 0.3, full spreading: not today's defaults), 3 replicates, Haiku answers and judge | episodes 89.6%, full 91.2% (+1.7 [−4.2, +7.5]) | [2026-10-20-locomo-full-graph-ablation.md](../../experiments/eval/results/2026-10-20-locomo-full-graph-ablation.md) |
+| LoCoMo 40 + 40 multi-hop sample, removed Python engine (`recall_beta` 0.3, full spreading: not today's defaults), 3 replicates, Haiku answers and judge | episodes 89.6%, full consolidation (facts + summaries + per-turn questions) 91.2% (+1.7 [−4.2, +7.5]) | [2026-10-20-locomo-full-graph-ablation.md](../../experiments/eval/results/2026-10-20-locomo-full-graph-ablation.md) |
 | LoCoMo (1,540 questions, Mem0's judge) — historical: removed Python engine, full mode, same-family judge, not re-run | 94.0–94.9% | [experiments/locomo](../../experiments/locomo/README.md) |
 | LongMemEval_S (500 questions, official judge prompts), L1 only — historical, Python engine | 85.4% (10 excerpts); multi-session 83.5% and temporal 90.6% with 20 excerpts | [experiments/longmemeval](../../experiments/longmemeval/README.md) |
 
