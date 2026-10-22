@@ -286,7 +286,7 @@ impl Brain {
         let keys: std::collections::BTreeSet<String> = paths
             .iter()
             .filter(|p| {
-                if p.starts_with("skills/") {
+                if p.to_lowercase().starts_with("skills/") {
                     return true;
                 }
                 // the type the file declares, not its folder, and only what is still in force; a file that does not

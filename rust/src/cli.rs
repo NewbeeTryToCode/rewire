@@ -361,7 +361,7 @@ fn print_items(items: &[Value]) {
         println!("(no matches)");
     }
     for item in items {
-        let s = |k: &str| crate::snapshot::escape(&item.get(k).map(py_str).unwrap_or_default());
+        let s = |k: &str| crate::snapshot::printable(&crate::snapshot::escape(&item.get(k).map(py_str).unwrap_or_default()));
         if item.get("error").is_some() {
             println!("! {}: {}", s("ref"), s("error"));
         } else if s("type") == "episode" {
@@ -491,7 +491,9 @@ pub fn run(cli: Cli) -> Result<()> {
             for s in sessions {
                 let harness_slug = crate::util::slugify(s.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
                 let session_id = s.get("session").and_then(Value::as_str).unwrap_or("");
-                if ops::session_record(&brain, &harness_slug, session_id).is_some() {
+                // a transcript-only record (the LLM step failed before) is consolidated again, not skipped
+                let done = ops::session_consolidated(&brain, &harness_slug, session_id);
+                if done == Some(true) || (!use_llm && done.is_some()) {
                     println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
                     continue;
                 }
@@ -526,10 +528,11 @@ pub fn run(cli: Cli) -> Result<()> {
                         let date = meta.date.clone().unwrap_or_default();
                         let transcript = con.transcript(&turns);
                         let fallback = [crate::consolidate::FALLBACK_SUMMARY.to_string()];
+                        let project = con.project_of(meta.cwd.as_deref());
                         con.write_session(
                             &harness,
                             &session,
-                            None,
+                            project.as_deref(),
                             &fallback,
                             &[],
                             &[],
@@ -637,7 +640,9 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("saved [{}] {}", crate::util::short_of(node.id()), node.title());
                 } else {
                     let id = ops::remember(&brain, &text, &type_, &scope, provenance, Some(json!({"harness": "cli"})))?;
-                    println!("queued for review: {id} (approve with `rewire review approve {id}`)");
+                    println!(
+                        "queued for review as {scope}: {id} (approve with `rewire review approve {id}`; --scope global for every project)"
+                    );
                 }
                 Ok(())
             })();
@@ -650,6 +655,8 @@ pub fn run(cli: Cli) -> Result<()> {
             let brain = open_brain(bp);
             let mut failures = 0;
             if retry {
+                // transcripts that are gone cannot be retried: forget their failures
+                brain.update_state("failed", |f| f.retain(|p, _| std::path::Path::new(p).is_file()))?;
                 files.extend(brain.read_state("failed").keys().map(PathBuf::from));
                 if files.is_empty() {
                     println!("no failed consolidations");
@@ -662,7 +669,19 @@ pub fn run(cli: Cli) -> Result<()> {
                 let r = if pending || files.is_empty() {
                     con.run_pending(&files)
                 } else {
-                    files.iter().map(|f| con.run_file(&crate::brain::absolute(f), harness.as_deref())).collect()
+                    // every file is tried; failures are counted and reported, not a reason to stop
+                    let mut done = Vec::new();
+                    for f in &files {
+                        match con.run_file(&crate::brain::absolute(f), harness.as_deref()) {
+                            Ok(r) => done.push(r),
+                            Err(e @ Error::Locked(_)) => return Err(e),
+                            Err(e) => {
+                                eprintln!("{}: {e}", f.display());
+                                con.failures += 1;
+                            }
+                        }
+                    }
+                    Ok(done)
                 };
                 failures = con.failures;
                 r
@@ -723,7 +742,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
                 for item in items {
                     let m = &item.meta;
-                    let g = |k: &str| m.get(k).map(py_str).unwrap_or_default();
+                    let g = |k: &str| crate::snapshot::printable(&m.get(k).map(py_str).unwrap_or_default());
                     let target =
                         m.get("target").filter(|t| crate::brain::is_set(Some(t))).map(|t| format!(" → {}", py_str(t))).unwrap_or_default();
                     let action = m.get("action").map(py_str).unwrap_or_else(|| "NEW".into());
@@ -737,7 +756,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         g("scope"),
                         g("confidence"),
                         g("provenance"),
-                        item.body.trim().replace('\n', "\n    "),
+                        crate::snapshot::printable(item.body.trim()).replace('\n', "\n    "),
                         g("reason"),
                         flags.map(|f| format!("  flags: {}", python_list(f))).unwrap_or_default()
                     );
@@ -753,7 +772,9 @@ pub fn run(cli: Cli) -> Result<()> {
                             .map(|n| format!("skill:{}", n.trim_end_matches('/')))
                             .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
                             .unwrap_or_else(|| key.clone());
-                        println!("{id}  ({key}){flag}\n    {}", crate::util::take(&text, 400).replace('\n', "\n    "));
+                        // remote text: no terminal escape codes that could hide part of it
+                        let shown = crate::snapshot::printable(&crate::util::take(&text, 400)).replace('\n', "\n    ");
+                        println!("{}  ({}){flag}\n    {shown}", crate::snapshot::printable(&id), crate::snapshot::printable(&key));
                     }
                     println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
                 }
@@ -867,7 +888,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Doctor => {
             let report = ops::doctor(&open_brain(bp));
-            println!("{}", report.join("\n"));
+            println!("{}", crate::snapshot::printable(&report.join("\n")));
             if report.iter().any(|l| ops::is_problem(l)) {
                 std::process::exit(1);
             }
@@ -906,8 +927,8 @@ pub fn run(cli: Cli) -> Result<()> {
             if list.is_empty() {
                 println!("no sessions yet");
             }
-            for (date, harness, session, undone) in list.iter().take(limit) {
-                println!("{date}  {harness:<12} {session}{}", if *undone { "  (undone)" } else { "" });
+            for (date, harness, session, state) in list.iter().take(limit) {
+                println!("{date}  {harness:<12} {session}{}", if state.is_empty() { String::new() } else { format!("  ({state})") });
             }
             if list.len() > limit {
                 println!("… {} more (-n {})", list.len() - limit, list.len());

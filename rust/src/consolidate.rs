@@ -26,6 +26,11 @@ pub const FALLBACK_SUMMARY: &str =
     "Not consolidated yet (the LLM call failed); the transcript is kept and searchable. Retried by `rewire consolidate --retry`.";
 /// The status line of a transcript-only record (no LLM yet), which a later consolidation replaces.
 pub const TRANSCRIPT_ONLY: &str = "- status: transcript only";
+/// The first line of a session's block in its record (control characters in an id never split it).
+pub fn record_header(harness: &str, session: &str) -> String {
+    format!("# {harness} session {}", session.replace(|c: char| c.is_control(), " "))
+}
+
 pub const RECORD_SEPARATOR: &str = "\n\n---\n\n";
 pub const QUESTIONS_HEADING: &str = "## Questions"; // hypothetical questions per turn: indexed with the excerpt, never shown
 const QUESTION_CHARS: usize = 200;
@@ -409,6 +414,9 @@ impl<'a> Consolidator<'a> {
 
     pub fn run_file(&mut self, path: &Path, harness: Option<&str>) -> Result<Meta> {
         let _lock = self.brain.lock(Duration::ZERO)?;
+        if !path.is_file() {
+            return Err(crate::Error::Op(format!("{}: no such transcript", path.display())));
+        }
         let result = match self.process(path, harness) {
             Ok(r) => r,
             Err(e) => {
@@ -457,7 +465,7 @@ impl<'a> Consolidator<'a> {
                 // episodic memory first, with no LLM: the transcript is searchable whatever happens next; the LLM's
                 // record replaces it (write_session) once consolidation succeeds
                 let session = meta.session.clone().unwrap_or_else(|| "unknown".into());
-                if crate::ops::session_record(self.brain, &slugify(&harness, 40), &session).is_none() {
+                {
                     let date = meta
                         .date
                         .clone()
@@ -466,7 +474,7 @@ impl<'a> Consolidator<'a> {
                     self.write_session(
                         &harness,
                         &session,
-                        None,
+                        self.project_of(meta.cwd.as_deref()).as_deref(),
                         &[FALLBACK_SUMMARY.to_string()],
                         &[],
                         &[],
@@ -496,14 +504,18 @@ impl<'a> Consolidator<'a> {
         Ok(result)
     }
 
-    pub fn consolidate(&mut self, harness: &str, meta: &SessionMeta, turns: &[Turn]) -> Result<Meta> {
-        let cwd = meta.cwd.clone();
-        let project = project::detect(cwd.as_deref(), &self.brain.config.projects).or_else(|| {
-            cwd.as_ref().map(|c| {
+    /// The project a session belongs to, from its working directory (the configured map, else the folder name).
+    pub fn project_of(&self, cwd: Option<&str>) -> Option<String> {
+        project::detect(cwd, &self.brain.config.projects).or_else(|| {
+            cwd.map(|c| {
                 let base = Path::new(c.trim_end_matches('/')).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 slugify(&base, 48)
             })
-        });
+        })
+    }
+
+    pub fn consolidate(&mut self, harness: &str, meta: &SessionMeta, turns: &[Turn]) -> Result<Meta> {
+        let project = self.project_of(meta.cwd.as_deref());
         let session = meta.session.clone().unwrap_or_else(|| "unknown".into());
         let roles: HashMap<i64, String> = turns.iter().map(|t| (t.n as i64, t.role.clone())).collect();
         let said: HashMap<i64, String> = turns.iter().map(|t| (t.n as i64, security::drop_private(&t.text))).collect();
@@ -900,7 +912,7 @@ impl<'a> Consolidator<'a> {
         let dir = path.parent().unwrap().to_path_buf();
         let summary = summaries.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n\n");
         let mut lines: Vec<String> = vec![
-            format!("# {harness} session {session}"),
+            record_header(harness, session),
             String::new(),
             format!("- date: {day}"),
             format!("- project: {}", project.unwrap_or("-")),
@@ -961,7 +973,7 @@ impl<'a> Consolidator<'a> {
         fs::create_dir_all(&dir)?;
         // this session's transcript-only block (written before or without the LLM) is replaced, not appended to; other
         // blocks in the file (earlier chunks, another session with the same file name) stay
-        let header = format!("# {harness} session {session}");
+        let header = record_header(harness, session);
         if let Ok(existing) = fs::read_to_string(&path) {
             let blocks: Vec<&str> = existing.split(RECORD_SEPARATOR).collect();
             let kept: Vec<&str> = blocks

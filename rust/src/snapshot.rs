@@ -28,8 +28,14 @@ pub fn escape(text: &str) -> String {
     re.replace_all(text, "&lt;${1}").into_owned()
 }
 
+/// Text with control characters (other than newline and tab) replaced, for anything shown to an agent or a terminal:
+/// escape sequences could hide text from the person reading it.
+pub fn printable(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() && c != '\n' && c != '\t' { '\u{fffd}' } else { c }).collect()
+}
+
 pub fn fenced(text: &str) -> String {
-    format!("{FENCE_OPEN}\n{}\n{FENCE_CLOSE}\n", text.trim_end_matches('\n'))
+    format!("{FENCE_OPEN}\n{}\n{FENCE_CLOSE}\n", printable(&escape(text.trim_end_matches('\n'))))
 }
 
 /// Session-start text when memory could not be loaded: the agent should know memory is missing,
@@ -140,7 +146,11 @@ pub fn health_notes(brain: &Brain) -> Vec<String> {
         ));
     }
     if let Some(e) = &brain.config.error {
-        notes.push(format!("- settings could not be read ({e}); defaults are in use: fix the file, then `rewire doctor`"));
+        // fixed wording: a parse error quotes the file, and brain.toml comes from other devices
+        let file = if e.starts_with("local.toml") { "local.toml" } else { "brain.toml" };
+        notes.push(format!(
+            "- {file} could not be read: the LLM step is off and other settings use defaults until it is fixed (`rewire doctor`)"
+        ));
     }
     // what a silent pull at session start changed (privacy settings kept, rules waiting): shown for a week
     if let Some(sync) = brain.read_state("notices").get("sync") {
@@ -159,12 +169,12 @@ pub fn health_notes(brain: &Brain) -> Vec<String> {
             for key in ["transcripts", "profile"] {
                 if said.iter().any(|n| n.starts_with(&format!("brain.toml from another device changed [consolidation] {key}:"))) {
                     notes.push(format!(
-                        "- another device changed `{key}` in brain.toml; this device kept its own setting (local.toml): `rewire sync` shows the change"
+                        "- another device changed `{key}` in brain.toml; this device kept its own setting (local.toml): `rewire doctor` shows the change"
                     ));
                 }
             }
             if said.iter().any(|n| n.starts_with("retracted by another device") || n.starts_with("removed by another device")) {
-                notes.push("- another device retracted or removed rules, preferences or skills: `rewire sync` lists them".into());
+                notes.push("- another device retracted or removed rules, preferences or skills: `rewire doctor` lists them".into());
             }
         }
     }
@@ -207,6 +217,10 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         &format!("{base} AND type IN ('fact','decision','person','concept') ORDER BY importance DESC, {by_use}recorded_at DESC"),
         &sp,
     )?);
+    // any note marked unreviewed (a rule turned into a fact counts) stays out of every section
+    let unreviewed = brain.untrusted_ids();
+    let profile: Vec<NodeRow> = profile.into_iter().filter(|r| !unreviewed.contains(&r.id)).collect();
+    working.retain(|r| !unreviewed.contains(&r.id));
     let about = fill(&profile, b.profile);
     let shown: std::collections::HashSet<String> =
         about.0.iter().filter_map(|l| l.rsplit_once('[').map(|(_, r)| r.trim_end_matches(']').to_string())).collect();
@@ -249,6 +263,8 @@ pub fn build(brain: &Brain, index: &mut Index, cwd: Option<&str>, project: Optio
         parts.push(format!("## Memory upkeep (tell the user)\n{}\n", health.join("\n")));
     }
     let empty = sections.iter().all(|(_, (l, _))| l.is_empty());
-    let text = format!("{FENCE_OPEN}\n{}{FENCE_CLOSE}\n", parts.join("\n"));
+    // one filter for everything inside the fence, whatever section it came from: nothing tag-like, no control
+    // characters (a remote can reach several sections through sync)
+    let text = format!("{FENCE_OPEN}\n{}{FENCE_CLOSE}\n", printable(&escape(&parts.join("\n"))));
     Ok(Snapshot { project, text, ids, empty })
 }

@@ -184,11 +184,12 @@ fn string(v: Option<&toml::Value>) -> Option<String> {
 pub fn load(path: &Path) -> Config {
     let mut cfg = Config::default();
     let Ok(text) = std::fs::read_to_string(path) else { return cfg };
-    let raw = match text.parse::<toml::Table>() {
-        Ok(raw) => raw,
+    // a brain.toml that does not parse still lets local.toml decide (and keeps no transcripts unless it says so)
+    let (raw, broken) = match text.parse::<toml::Table>() {
+        Ok(raw) => (raw, false),
         Err(e) => {
             cfg.error = Some(format!("brain.toml: {}", e.message()));
-            return cfg;
+            (toml::Table::new(), true)
         }
     };
     let section = |name: &str| raw.get(name).and_then(|v| v.as_table()).cloned().unwrap_or_default();
@@ -252,8 +253,13 @@ pub fn load(path: &Path) -> Config {
     if let Some(v) = num(con.get("max_chunk_chars")) {
         cfg.max_chunk_chars = v as usize;
     }
+    // settings that do not parse: keep no transcripts unless a readable local.toml says otherwise
+    if (broken && !cfg.local_transcripts) || cfg.error.as_deref().is_some_and(|e| e.starts_with("local.toml")) {
+        cfg.transcripts = "none".into();
+    }
     if let Some(projects) = raw.get("projects").and_then(|v| v.as_table()) {
-        for (slug, spec) in projects {
+        // project names are shown to agents: only plain slugs
+        for (slug, spec) in projects.iter().filter(|(s, _)| !s.is_empty() && slug(s) == **s && s.len() <= 48) {
             let patterns = spec
                 .get("match")
                 .and_then(|m| m.as_array())

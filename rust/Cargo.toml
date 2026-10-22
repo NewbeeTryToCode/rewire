@@ -13,6 +13,7 @@ path = "src/main.rs"
 [lib]
 name = "rewire"
 path = "src/lib.rs"
+doctest = false # no doc examples; `cargo test --release` with lto cannot build them
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

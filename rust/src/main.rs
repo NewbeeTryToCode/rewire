@@ -7,7 +7,7 @@ fn main() {
     std::panic::set_hook(Box::new(move |info| {
         let text = info.payload().downcast_ref::<String>().map(String::as_str).or_else(|| info.payload().downcast_ref::<&str>().copied());
         if text.is_some_and(|t| t.contains("failed printing to stdout") && t.contains("Broken pipe")) {
-            std::process::exit(0);
+            std::process::exit(141); // as a shell reports a pipe closed under a command: not success
         }
         default_hook(info);
     }));
