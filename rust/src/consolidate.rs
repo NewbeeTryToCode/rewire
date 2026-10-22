@@ -420,8 +420,8 @@ impl<'a> Consolidator<'a> {
         let result = match self.process(path, harness) {
             Ok(r) => r,
             Err(e) => {
-                // recorded like a pending run's failure: doctor and the snapshot say so, `--retry` picks it up
-                self.failures += 1;
+                // recorded like a pending run's failure: doctor and the snapshot say so, `--retry` picks it up (the
+                // caller counts it)
                 let key = path.to_string_lossy().into_owned();
                 if self.brain.present().is_ok() {
                     self.brain.update_state("failed", |f| {

@@ -247,6 +247,8 @@ pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
         rules.push(format!("Bash({exe} remember --apply:*)"));
         rules.push(format!("Bash({exe} review reject:*)"));
         rules.push(format!("Bash({exe} forget:*)"));
+        rules.push(format!("Bash({exe} undo:*)"));
+        rules.push(format!("Bash({exe} remote set:*)"));
     }
     if let Some(root) = brain {
         // "//" starts an absolute path in a Claude Code permission rule

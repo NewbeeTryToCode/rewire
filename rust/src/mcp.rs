@@ -175,7 +175,7 @@ impl<'a> Server<'a> {
                             text = format!(
                                 "{}\n{}\n{}",
                                 crate::snapshot::FENCE_OPEN,
-                                crate::snapshot::printable(&crate::snapshot::escape(&text)),
+                                crate::snapshot::escape(&crate::snapshot::printable(&text)),
                                 crate::snapshot::FENCE_CLOSE
                             );
                         }

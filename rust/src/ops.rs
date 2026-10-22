@@ -205,16 +205,16 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
                 out.push(json!({"ref": r, "error": "from another device, not reviewed on this device yet (`rewire review`)"}))
             }
             Some(node) => {
+                // the fields the format defines, nothing a file adds on its own
                 let mut m = Meta::new();
                 m.insert("id".into(), json!(node.id()));
-                for (k, v) in &node.meta {
-                    if k != "id" {
-                        m.insert(k.clone(), v.clone());
-                    }
+                for (k, v) in node.meta.iter().filter(|(k, _)| schema::FIELDS.contains(&k.as_str()) && k.as_str() != "id") {
+                    m.insert(k.clone(), v.clone());
                 }
                 m.insert("body".into(), json!(node.body));
-                // every field is returned, so every field is scanned (frontmatter can carry text too)
-                let why = security::blocked(&serde_json::to_string(&m).unwrap_or_default());
+                // every returned value is scanned as the text it is (a JSON dump would turn newlines into "\n")
+                let why =
+                    string_values(&Value::Object(m.clone())).iter().map(|t| security::blocked(t)).find(|w| !w.is_empty()).unwrap_or("");
                 if !why.is_empty() {
                     m = Meta::new();
                     m.insert("id".into(), json!(node.id()));
@@ -622,10 +622,31 @@ pub fn sessions(brain: &Brain) -> Vec<(String, String, String, String)> {
     out
 }
 
+/// Every string inside a JSON value, as written.
+fn string_values(v: &Value) -> Vec<String> {
+    match v {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a.iter().flat_map(string_values).collect(),
+        Value::Object(o) => o.iter().flat_map(|(k, v)| std::iter::once(k.clone()).chain(string_values(v))).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Retract a note: it stays in its file and in git history, marked retracted, and no longer comes back in recall
 /// or the snapshot.
 pub fn forget(brain: &Brain, reference: &str, reason: &str) -> Result<String> {
     let Some(node) = resolve_id(brain, reference) else { return op(format!("{reference}: no such note")) };
+    forget_node(brain, &node, reference, reason)
+}
+
+/// Retract exactly the unreviewed note under a review key (the file that was reviewed, never another note that
+/// happens to share its id).
+pub fn forget_unreviewed(brain: &Brain, key: &str, reason: &str) -> Result<String> {
+    let Some(node) = brain.untrusted_nodes().remove(key) else { return op(format!("{key}: no such unreviewed note")) };
+    forget_node(brain, &node, key, reason)
+}
+
+fn forget_node(brain: &Brain, node: &Node, reference: &str, reason: &str) -> Result<String> {
     if is_set(node.meta.get("retracted_at")) {
         return op(format!("{reference}: already forgotten"));
     }
@@ -674,8 +695,12 @@ pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
                 Some(n) if is_set(n.meta.get("retracted_at")) || is_set(n.meta.get("valid_to")) => continue,
                 Some(n) => {
                     let body = n.body.trim();
-                    let text =
+                    let mut text =
                         if body.is_empty() || body == n.title().trim() { n.title().to_string() } else { format!("{}\n{body}", n.title()) };
+                    // fields the format does not define are shown too: nothing in the file goes unseen
+                    for (k, v) in n.meta.iter().filter(|(k, _)| !schema::FIELDS.contains(&k.as_str())) {
+                        text.push_str(&format!("\n[{k}] {}", crate::util::value_text(v)));
+                    }
                     let why = security::blocked(&text);
                     (format!("{}: {}", n.meta.get("type").and_then(Value::as_str).unwrap_or(""), text), why)
                 }
@@ -737,8 +762,9 @@ pub fn remote_is_public(url: &str) -> Option<bool> {
     };
     // no user name or token from the URL, and (HOME pointed at an empty folder) no ~/.netrc or global config either
     let https = regex::Regex::new(r"^(https?://)[^/@]*@").unwrap().replace(&https, "$1").into_owned();
-    let empty_home = std::env::temp_dir().join(format!("rewire-public-check-{}", std::process::id()));
-    let _ = fs::create_dir_all(&empty_home);
+    // a fresh folder of its own (never one that already exists: someone else could have put a .netrc there)
+    let empty_home = std::env::temp_dir().join(format!("rewire-public-check-{}", crate::util::ulid()));
+    fs::create_dir(&empty_home).ok()?;
     let mut cmd = std::process::Command::new("git");
     cmd.args(["-c", "credential.helper=", "ls-remote", "--heads", &https])
         .env("GIT_TERMINAL_PROMPT", "0")
