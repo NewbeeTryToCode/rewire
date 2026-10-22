@@ -111,7 +111,7 @@ is the same (§6).
 | A-Mem | ≈48.4% | | Mem0 paper (2025) |
 | Mem0 (2026 platform) | 92.5% | median 6.7–7k tokens per retrieval, p50 0.88–1.09 s | Vendor report |
 | Memori evaluation (third party) | Zep 79.1% · LangMem 78.1% · Mem0 62.5% | Mem0 ≈1,764 tokens per question | Memori Labs |
-| rewire (historical) | 94.0–94.9% | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7: removed Python engine, k=50, same-family Claude answerer and judge via `claude -p`, Mem0 prompt; **not comparable** with the rows above. Current Rust engine on a replicated 80-question sample: see [the results](../experiments/eval/results/) |
+| rewire (historical) | 94.0–94.9% | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7: removed Python engine, k=50, same-family Claude answerer and judge via `claude -p`, Mem0 prompt; **not comparable** with the rows above. The replicated 80-question runs in [the results](../experiments/eval/results/) also used the Python engine; no end-to-end number exists yet for the shipped Rust engine (a retrieval parity check, 190 questions, was done before the later review rounds) |
 
 ### LongMemEval_S (accuracy, 500 questions)
 

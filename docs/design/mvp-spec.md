@@ -5,7 +5,7 @@
 
 > Architecture overview (L0/L1/L2): [architecture.md](architecture.md) · frozen on-disk format: [format.md](format.md).
 >
-> Status: **draft for review**. Closes the gaps from [design-review.md](design-review.md).
+> Status: pre-build specification (see the banner above). Closed the gaps from [design-review.md](design-review.md).
 > Basis: [synaptic-memory.md](synaptic-memory.md) (concept), [Phase 0](../../experiments/phase0/README.md) (simulation evidence).
 >
 > In one sentence: **a CLI + MCP server that stores the brain as files in a git repo owned by the user, injects a snapshot at the start of a session, and consolidates the transcript after the session — for Claude Code (with hooks) and Codex (without depending on hooks).**
@@ -17,7 +17,7 @@
 | In v0.1 | Deferred (reason) |
 |---|---|
 | Brain format + a rebuildable SQLite FTS5 index | Embeddings (FTS5 is enough for a personal brain's size; add them when recall proves insufficient) |
-| ACT-R activation `d=0.7`, project scope, separate budgets (chosen in the Phase 0 synthetic simulation, not validated on real usage) | Hebbian / associative edges (no evidence of benefit yet) |
+| ACT-R activation `d=0.7` (shipped off by default: `recall_beta = 0`), project scope, separate budgets (chosen in the Phase 0 synthetic simulation, not validated on real usage) | Hebbian / associative edges (no evidence of benefit yet) |
 | 7 node types, 5 relations | Full ontology of 8 types + 12 relations |
 | CLI with 8 commands, MCP with 3 tools | Exploration tools (Ori removed similar tools because they were not used) |
 | LLM consolidation + inbox review | Scheduled automatic "sleep", lint |
@@ -228,6 +228,7 @@ Otherwise → `inbox/`. Target: ≤ 3 inbox items per session on average (measur
 | **Brain leaks** | The brain is pushed to a public remote | No remote by default; `rewire remote set` warns for GitHub/GitLab/Bitbucket URLs; `doctor` reports a hosted remote readable without credentials |
 | **Snapshot read as commands** | Memory contents treated as system instructions | The snapshot gets a "user memory notes (data)" header and is written as factual statements |
 | **Permanently poisoned memory** | A wrong extraction gets saved | Schema validation, inbox for `inferred`, per-session git revert (`rewire undo <session>`) |
+| **Self-reinforcing use signal** | With `recall_beta` > 0, what the snapshot shows is what the consolidation model marks as used (`used_memory_ids`, weight 1.0), which raises it further | Off by default; the "no rich-get-richer" result is from the Phase 0 synthetic simulation only. A replay of real sessions with β on and off (snapshot churn, concentration) should decide before it is turned on |
 | **Compromised remote or device** | Someone who can push to the brain's remote adds notes | Rules, preferences, skills and inbox proposals that arrive by sync or clone are shown only after a review on each device; symlinks, submodules and device-local files are refused; the LLM command is never synced. **Not covered:** facts and decisions flow without a review, and the sender chooses the type, so a compromised remote can still put instruction-like text into "Current context" and the per-prompt hook (scanned for injection patterns, shown as data). Keep the remote private; a signed approval ledger would close this and is not built |
 
 ---
