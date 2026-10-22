@@ -9,7 +9,7 @@ files in a private git repository; any harness attaches to it through hooks, an 
 |---|---|---|---|
 | **L0 — Working memory** | the active prompt context of the current session, bounded by compaction | inside the harness | the **harness**; rewire only fills it (snapshot at session start, `recall` on demand) and saves it before it is lost (SessionEnd / PreCompact) |
 | **L1 — Episodic memory** | what happened in each past session: a summary plus the secret-redacted transcript, cut into searchable excerpts | `sessions/<date>/<harness>-<session>.md` | rewire |
-| **L2 — Semantic memory** | atomic, typed claims (constraint, preference, fact, decision, project, person, concept) linked in a graph; bitemporal; superseded instead of overwritten; ordering by use (experimental ACT-R decay over the event log, for recall and the session-start snapshot; off by default, `recall_beta = 0`, never measured) | `nodes/<type>/<slug>-<id8>.md` + `events/<device>/<month>.jsonl` | rewire |
+| **L2 — Semantic memory** | atomic, typed claims (constraint, preference, fact, decision, project, person, concept) linked in a graph; bitemporal; superseded instead of overwritten; ordering by use (experimental ACT-R decay over the event log, for recall (`recall_beta = 0`) and the session-start snapshot (`snapshot_use = false`): off by default, never measured) | `nodes/<type>/<slug>-<id8>.md` + `events/<device>/<month>.jsonl` | rewire |
 | **L2 — Procedural memory** | reusable procedures that worked (deploy, release, setup recipes), as Agent Skills; proposed by consolidation, always reviewed | `skills/<name>/SKILL.md` | rewire |
 
 The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at any time.
@@ -33,8 +33,8 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
 - **L1 → L2**: consolidation runs in the background after a session (lazily, resumable by watermarks).
   An LLM extracts atomic claims with dates and keywords, a second call judges each against similar existing
   claims, and a gate decides what is applied automatically (explicit + user-stated + not a constraint + not
-  a supersede) and what goes to the review inbox. Provenance comes from transcript roles, never from the
-  model.
+  a supersede) and what goes to the review inbox. Provenance is the role of the turn the model cites,
+  read from the transcript and checked against that turn's text (a word-overlap check).
 - **L2 / L1 → L0**: at session start `prime` injects, within fixed character budgets: a profile view
   ("About the user": global person notes and the most important global facts), the strongest constraints
   and preferences, the skill index, and working context. On every prompt the UserPromptSubmit hook adds at
@@ -42,8 +42,9 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
   During the session the agent calls `recall` (facts, plus raw excerpts and session summaries; facts pull in
   the excerpt they were extracted from, the top excerpt carries its session's summary; `refers_to` boosts a
   period the model resolved; `also` adds up to 4 queries the model writes for a category question, such as
-  instances for "desserts", fused by rank) and `get` for full notes or `skill:<name>`. Using a note appends an event;
-  the activation computed from those events orders results only with `recall_beta` > 0 (off by default), so today
+  instances for "desserts", fused by rank) and `get` for full notes or `skill:<name>`. The consolidation model's judgment that a note was used appends an event (`get` records a lighter one;
+  recall records none);
+  the activation computed from those events orders results only with `recall_beta` > 0 or `snapshot_use` (both off by default), so today
   the event log is kept for that experiment and for audit, and has no effect on what is shown (it only tells `doctor` which skills went unused).
 - **Safety at load time**: all injected text is fenced (`<rewire-memory>`), notes and transcript excerpts are
   re-scanned when shown (`[BLOCKED]` instead of a secret or an injection), excerpts follow the same project

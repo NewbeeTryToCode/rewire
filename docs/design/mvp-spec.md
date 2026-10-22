@@ -111,8 +111,8 @@ B(i) = ln Σ w_j · (now − t_j)^(−0.7)          # use events only, exposure 
 Building the snapshot (`rewire prime`):
 
 1. **Constraints**: all `constraint` nodes in scope (global + active project), sorted by `importance`, cut at the budget.
-2. **Preferences**: all `preference` nodes in scope, sorted by `importance`, then the most recent (by B first only with `recall_beta` > 0, which is off by default).
-3. **Working**: the active `project` node's header → the top-N `fact/decision/person/concept` nodes whose scope is the active project or global, sorted by `importance`, then the most recent (by B first only with `recall_beta` > 0), cut at the budget.
+2. **Preferences**: all `preference` nodes in scope, sorted by `importance`, then the most recent (use breaks ties only with `snapshot_use = true`, off by default).
+3. **Working**: the active `project` node's header → the top-N `fact/decision/person/concept` nodes whose scope is the active project or global, sorted by `importance`, then the most recent (use breaks ties only with `snapshot_use = true`), cut at the budget.
 4. Nodes with `retracted_at` or `valid_to < now` are never included.
 
 The active project is determined from the git remote / cwd via `brain.yaml: projects`. Evidence: project scope + separate budgets raised the simulated hit rate from 52% → 73% and cut the adaptation time after a project switch from ~80 days → 1 day.
@@ -228,7 +228,7 @@ Otherwise → `inbox/`. Target: ≤ 3 inbox items per session on average (measur
 | **Brain leaks** | The brain is pushed to a public remote | No remote by default; `rewire remote set` warns for GitHub/GitLab/Bitbucket URLs; `doctor` reports a hosted remote readable without credentials |
 | **Snapshot read as commands** | Memory contents treated as system instructions | The snapshot gets a "user memory notes (data)" header and is written as factual statements |
 | **Permanently poisoned memory** | A wrong extraction gets saved | Schema validation, inbox for `inferred`, per-session git revert (`rewire undo <session>`) |
-| **Self-reinforcing use signal** | With `recall_beta` > 0, what the snapshot shows is what the consolidation model marks as used (`used_memory_ids`, weight 1.0), which raises it further | Off by default; the "no rich-get-richer" result is from the Phase 0 synthetic simulation only. A replay of real sessions with β on and off (snapshot churn, concentration) should decide before it is turned on |
+| **Self-reinforcing use signal** | With `snapshot_use` on or `recall_beta` > 0, what the snapshot shows is what the consolidation model marks as used (`used_memory_ids`, weight 1.0), which raises it further | Off by default; the "no rich-get-richer" result is from the Phase 0 synthetic simulation only. A replay of real sessions with β on and off (snapshot churn, concentration) should decide before it is turned on |
 | **Compromised remote or device** | Someone who can push to the brain's remote adds notes | Rules, preferences, skills and inbox proposals that arrive by sync or clone are shown only after a review on each device; symlinks, submodules and device-local files are refused; the LLM command is never synced. **Not covered:** facts and decisions flow without a review, and the sender chooses the type, so a compromised remote can still put instruction-like text into "Current context" and the per-prompt hook (scanned for injection patterns, shown as data). Keep the remote private; a signed approval ledger would close this and is not built |
 
 ---

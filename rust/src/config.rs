@@ -8,6 +8,7 @@ schema = 1
 model = "actr"
 d = 0.7                  # decay; tuned in experiments/phase0
 recall_beta = 0.0        # weight of activation in recall ranking (0 = off); experimental, never ablated, so off
+snapshot_use = false     # use (activation) breaks ties within an importance level in the snapshot; experimental
 spread = "supersedes"    # recall follows links: "supersedes" (an outdated note leads to its replacement), "full"
                          # (2-hop spreading over every link; experimental, +0.0 measured) or "off"
 
@@ -54,6 +55,8 @@ pub struct Config {
     pub sync_auto: bool,
     pub d: f64,
     pub recall_beta: f64,
+    /// the snapshot breaks importance ties by use (activation); its own switch, apart from recall's weight
+    pub snapshot_use: bool,
     /// which links recall follows: "supersedes", "full" or "off"
     pub spread: String,
     pub budgets: Budgets,
@@ -87,6 +90,7 @@ impl Default for Config {
             d: 0.7,
             recall_beta: 0.0,
             spread: "supersedes".into(),
+            snapshot_use: false,
             budgets: Budgets { profile: 600, constraints: 1500, preferences: 800, working: 2500, skills: 400 },
             profile: "coding".into(),
             transcripts: "auto".into(),
@@ -200,6 +204,7 @@ pub fn load(path: &Path) -> Config {
     cfg.sync_auto = section("sync").get("auto").and_then(|v| v.as_bool()).unwrap_or(false);
     cfg.d = num(act.get("d")).unwrap_or(cfg.d);
     cfg.recall_beta = num(act.get("recall_beta")).unwrap_or(cfg.recall_beta);
+    cfg.snapshot_use = act.get("snapshot_use").and_then(|v| v.as_bool()).unwrap_or(false);
     if let Some(v) = string(act.get("spread")).filter(|v| ["supersedes", "full", "off"].contains(&v.as_str())) {
         cfg.spread = v;
     }

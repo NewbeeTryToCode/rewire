@@ -111,7 +111,7 @@ is the same (§6).
 | A-Mem | ≈48.4% | | Mem0 paper (2025) |
 | Mem0 (2026 platform) | 92.5% | median 6.7–7k tokens per retrieval, p50 0.88–1.09 s | Vendor report |
 | Memori evaluation (third party) | Zep 79.1% · LangMem 78.1% · Mem0 62.5% | Mem0 ≈1,764 tokens per question | Memori Labs |
-| rewire (historical) | 94.0–94.9% | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7: removed Python engine, k=50, same-family Claude answerer and judge via `claude -p`, Mem0 prompt; **not comparable** with the rows above. The replicated 80-question runs in [the results](../experiments/eval/results/) also used the Python engine; no end-to-end number exists yet for the shipped Rust engine (a retrieval parity check, 190 questions, was done before the later review rounds) |
+| rewire (historical) | 94.0–94.9% | context ≈2.7k tokens per question (dry run conv-26, k=30, 10 excerpts) | Iterations 6–7: removed Python engine, k=50, same-family Claude answerer and judge via `claude -p`, Mem0 prompt; **not comparable** with the rows above. The replicated 80-question runs in [the results](../experiments/eval/results/) also used the Python engine; the shipped Rust engine was last measured end to end in a parity run (Rust recall over sessions written by Python, 190 questions, 72.2% = Python's 72.2%, the same verdict on every question) before Rust-only ingest and review rounds 1–5; nothing since |
 
 ### LongMemEval_S (accuracy, 500 questions)
 
@@ -125,9 +125,9 @@ is the same (§6).
 | Mem0 | 94.4% | Vendor report |
 | Mastra (observational memory) | 94.9% (GPT-5-mini); 84.2% with GPT-4o | Vendor report; shows how much the answering model matters |
 | Agent Zero Memory | 95.6% | Agent Zero Memory paper (2026) |
-| **rewire** (`episodes`, no extraction) | **85.4%** (10 excerpts); ≈89.8% (20 excerpts) | Iteration 8; answerer + judge Claude via `claude -p`, official prompts |
-| **rewire** (`episodes`, no extraction) | **78.4%** (10 excerpts; abstention 76.7%) | 2026-10-16, all 500: answerer Haiku 5.5, judge Haiku 4.5 via `claude -p`, official prompts; per-question diagnosis in `experiments/eval/results/2026-10-16-longmemeval-haiku55-ep10-analysis.md` |
-| **rewire** (`episodes`, recall changes of 2026-10-16) | **83.6%**; **85.6%** with query expansion (`also`) | Same models and questions as the 78.4% row; whole turns + query-aware condensing, session opener, semantic at 0.25, 2× excerpts for counting questions. `experiments/eval/results/2026-10-16-longmemeval-improvements.md` |
+| rewire (`episodes`, no extraction), not comparable: Claude judge | 85.4% (10 excerpts); ≈89.8% (20 excerpts) | Iteration 8, removed Python engine; answerer + judge Claude via `claude -p`, official prompts (not the official GPT-4o judge) |
+| rewire (`episodes`, no extraction), not comparable: Claude judge | 78.4% (10 excerpts; abstention 76.7%) | 2026-10-16, all 500: answerer Haiku 5.5, judge Haiku 4.5 via `claude -p`, official prompts; per-question diagnosis in `experiments/eval/results/2026-10-16-longmemeval-haiku55-ep10-analysis.md` |
+| rewire (`episodes`, recall changes of 2026-10-16), not comparable: Claude judge | 83.6%; 85.6% with query expansion (`also`) | Same models and questions as the 78.4% row; whole turns + query-aware condensing, session opener, semantic at 0.25, 2× excerpts for counting questions. `experiments/eval/results/2026-10-16-longmemeval-improvements.md` |
 
 rewire retrieval (no LLM, LongMemEval_S, 470 non-abstention questions): evidence session found 97.0%, all
 evidence sessions 87.9%, mean context ≈11.2k tokens out of ≈115k.
