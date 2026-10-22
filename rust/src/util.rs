@@ -148,16 +148,14 @@ pub fn run_with_timeout(
     let deadline = std::time::Instant::now() + timeout;
     #[cfg(unix)]
     {
-        use std::io::IsTerminal;
         // with no terminal (hooks, the MCP server, background work): its own process group, so a timeout also stops
         // what it started (git's ssh and https helpers), and ssh never waits for a passphrase. At a terminal the
         // child stays in the foreground group: Ctrl-C reaches it, and ssh can ask.
-        if !std::io::stdin().is_terminal() {
+        // (the user's own ssh settings are left alone: an ssh prompt in the background group stops, and the
+        // deadline ends it)
+        if !foreground() {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
-            if std::env::var_os("GIT_SSH_COMMAND").is_none() {
-                cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
-            }
         }
     }
     let mut child = cmd.spawn()?;
@@ -206,12 +204,22 @@ pub fn run_with_timeout(
     Ok(std::process::Output { status, stdout: stdout.unwrap_or_default(), stderr: stderr.unwrap_or_default() })
 }
 
+/// Whether this process runs in the foreground of a terminal (decided once): only then does a child stay in its
+/// process group, so Ctrl-C reaches it and ssh can ask for a passphrase. `rewire sync &` is not in the foreground.
+#[cfg(unix)]
+fn foreground() -> bool {
+    static FG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FG.get_or_init(|| {
+        // SAFETY: plain queries about this process and its terminal
+        unsafe { libc::isatty(0) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() }
+    })
+}
+
 /// Kill a child and its process group (run_with_timeout starts each child in a group of its own).
 fn kill_group(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        use std::io::IsTerminal;
-        if !std::io::stdin().is_terminal() {
+        if !foreground() {
             // SAFETY: killpg only sends a signal; the group id is the child's pid (process_group(0) above)
             unsafe {
                 libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);

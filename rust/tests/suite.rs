@@ -2403,3 +2403,26 @@ fn a_command_that_fails_before_reading_its_input_is_an_error_not_a_crash() {
     assert!(String::from_utf8_lossy(&rewire(&["recall", "Fridays"]).stdout).contains("Fridays"));
     assert!(String::from_utf8_lossy(&rewire(&["doctor"]).stdout).contains("failed consolidations: 1"));
 }
+
+#[test]
+fn transcript_only_blocks_are_replaced_per_session_and_bad_settings_never_run_the_default() {
+    let c = Case::new();
+    let con = Consolidator::new(&c.brain, Some(Fake::new(vec![])), Box::new(|_| {})).unwrap();
+    let fb = [rewire::consolidate::FALLBACK_SUMMARY.to_string()];
+    let write = |session: &str, summary: &[String], text: &str| {
+        con.write_session("import", session, None, summary, &[], &[], &[], 0, &Default::default(), "2026-10-01", &[text.to_string()], &[])
+            .unwrap()
+    };
+    // two ids, one file name
+    write("a.b", &fb, "[1 user] first");
+    write("a-b", &fb, "[1 user] second");
+    write("a-b", &["done".to_string()], "[1 user] second, consolidated");
+    let text = read(&c.brain.path(&["sessions", "2026-10-01", "import-a-b.md"]));
+    assert!(text.contains("first") && text.contains("second, consolidated"), "{text}");
+    assert_eq!(text.matches(rewire::consolidate::TRANSCRIPT_ONLY).count(), 1, "{text}");
+    assert!(ops::session_record(&c.brain, "import", "a-b").is_some() && ops::session_record(&c.brain, "import", "a.b").is_some());
+
+    std::fs::write(c.brain.path(&["local.toml"]), "[consolidation]\ncommand = \"x\"\n[consolidation]\n").unwrap();
+    let err = rewire::llm::make(&c.reopen().config, &c.brain.root).err().unwrap().to_string();
+    assert!(err.contains("settings could not be read"), "{err}");
+}

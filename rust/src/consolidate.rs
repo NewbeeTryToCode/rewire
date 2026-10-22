@@ -24,6 +24,9 @@ pub const TRANSCRIPT_HEADING: &str = "## Transcript";
 /// at once, and the record is replaced when a retry succeeds.
 pub const FALLBACK_SUMMARY: &str =
     "Not consolidated yet (the LLM call failed); the transcript is kept and searchable. Retried by `rewire consolidate --retry`.";
+/// The status line of a transcript-only record (no LLM yet), which a later consolidation replaces.
+pub const TRANSCRIPT_ONLY: &str = "- status: transcript only";
+pub const RECORD_SEPARATOR: &str = "\n\n---\n\n";
 pub const QUESTIONS_HEADING: &str = "## Questions"; // hypothetical questions per turn: indexed with the excerpt, never shown
 const QUESTION_CHARS: usize = 200;
 const LINK_RELS: [&str; 3] = ["part_of", "depends_on", "related_to"];
@@ -914,6 +917,9 @@ impl<'a> Consolidator<'a> {
             String::new(),
             "## Applied".into(),
         ];
+        if summaries.len() == 1 && summaries[0] == FALLBACK_SUMMARY {
+            lines.insert(3, TRANSCRIPT_ONLY.to_string());
+        }
         if applied.is_empty() {
             lines.push("-".into());
         }
@@ -953,14 +959,27 @@ impl<'a> Consolidator<'a> {
             lines.extend(transcript.iter().map(|l| l.replace('\n', " ")));
         }
         fs::create_dir_all(&dir)?;
-        // a record written without the LLM after a failure is replaced, not appended to, once consolidation works
-        let fallback_only = fs::read_to_string(&path).is_ok_and(|t| t.contains(FALLBACK_SUMMARY) && !t.contains("\n---\n"));
-        if fallback_only {
-            fs::remove_file(&path)?;
+        // this session's transcript-only block (written before or without the LLM) is replaced, not appended to; other
+        // blocks in the file (earlier chunks, another session with the same file name) stay
+        let header = format!("# {harness} session {session}");
+        if let Ok(existing) = fs::read_to_string(&path) {
+            let blocks: Vec<&str> = existing.split(RECORD_SEPARATOR).collect();
+            let kept: Vec<&str> = blocks
+                .iter()
+                .copied()
+                .filter(|b| !(b.lines().next() == Some(header.as_str()) && b.lines().any(|l| l == TRANSCRIPT_ONLY)))
+                .collect();
+            if kept.len() != blocks.len() {
+                if kept.iter().all(|b| b.trim().is_empty()) {
+                    fs::remove_file(&path)?;
+                } else {
+                    crate::util::atomic_write(&path, &format!("{}\n", kept.join(RECORD_SEPARATOR).trim_end()))?;
+                }
+            }
         }
         let exists = path.exists();
         let mut fh = fs::OpenOptions::new().create(true).append(true).open(&path)?;
-        let text = format!("{}{}\n", if exists { "\n\n---\n\n" } else { "" }, lines.join("\n"));
+        let text = format!("{}{}\n", if exists { RECORD_SEPARATOR } else { "" }, lines.join("\n"));
         fh.write_all(text.as_bytes())?;
         Ok(())
     }

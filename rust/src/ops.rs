@@ -580,7 +580,7 @@ pub fn session_record(brain: &Brain, harness: &str, session: &str) -> Option<std
         .ok()?
         .flatten()
         .map(|d| d.path().join(&name))
-        .find(|p| fs::read_to_string(p).is_ok_and(|t| t.lines().next() == Some(header.as_str())))
+        .find(|p| fs::read_to_string(p).is_ok_and(|t| t.lines().any(|l| l == header)))
 }
 
 /// Session records, newest first: (date, harness, session id, undone).
