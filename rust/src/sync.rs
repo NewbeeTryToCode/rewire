@@ -101,8 +101,8 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                 (Some(ours), Some(theirs)) => {
                     let (m_ours, b_ours) = nodefmt::parse(&ours).map_err(Error::Sync)?;
                     let (m_theirs, b_theirs) = nodefmt::parse(&theirs).map_err(Error::Sync)?;
-                    let (winner, m_lose, b_lose) =
-                        if stamp(&m_theirs) > stamp(&m_ours) { (theirs, m_ours, b_ours) } else { (ours, m_theirs, b_theirs) };
+                    let own_lost = stamp(&m_theirs) > stamp(&m_ours);
+                    let (winner, m_lose, b_lose) = if own_lost { (theirs, m_ours, b_ours) } else { (ours, m_theirs, b_theirs) };
                     crate::util::atomic_write(&full, &winner)?;
                     let mut item = Meta::new();
                     for k in ["type", "title", "scope", "importance", "confidence", "provenance"] {
@@ -111,15 +111,24 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                     item.insert("action".into(), json!("UPDATE"));
                     item.insert("target".into(), m_lose.get("id").cloned().unwrap_or(Value::Null));
                     item.insert("created".into(), json!(now_iso()));
-                    item.insert("reason".into(), json!("sync conflict: this version lost to a newer edit from another device"));
+                    item.insert(
+                        "reason".into(),
+                        json!(if own_lost {
+                            "sync conflict: your edit on this device lost to a newer edit from another device"
+                        } else {
+                            "sync conflict: another device's edit lost to a newer edit on this device"
+                        }),
+                    );
                     item.insert("source".into(), json!({"harness": "sync"}));
                     if let Some(kept) = brain.read_node(&full) {
                         item.insert("target_hash".into(), json!(crate::ops::content_hash(&kept)));
                     }
                     let id = brain.write_inbox(&item, &b_lose)?;
-                    // whichever side lost, its text came from a merge with another device: a look, not approve all
-                    brain
-                        .mark_keys(&brain.review_key(&brain.root.join("inbox").join(format!("{id}.md"))).into_iter().collect::<Vec<_>>())?;
+                    // the other device's losing text needs a look (not approve all); this device's own does not
+                    if !own_lost {
+                        let key = brain.review_key(&brain.root.join("inbox").join(format!("{id}.md")));
+                        brain.mark_keys(&key.into_iter().collect::<Vec<_>>())?;
+                    }
                     notes.push(format!("{path}: kept the newest version; the other one is in the inbox"));
                 }
                 (ours, theirs) => {
@@ -180,6 +189,10 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     }
     // git overwrites an ignored file with a tracked one on merge: a remote that tracks local.toml would choose the
     // command this device runs; a symlink would let a note or skill reach outside the brain
+    let incoming_toml = g(brain, &["show", &format!("{reference}:brain.toml")])?;
+    if incoming_toml.status.success() && String::from_utf8_lossy(&incoming_toml.stdout).parse::<toml::Table>().is_err() {
+        return Err(Error::Sync("refused to pull: the remote's brain.toml does not parse (fix it on the device that pushed it)".into()));
+    }
     let found = crate::brain::unsafe_paths(brain, Some(&reference));
     if !found.is_empty() {
         return Err(Error::Sync(format!(
@@ -283,12 +296,15 @@ fn diff_names(brain: &Brain, filter: &str, range: &[&str]) -> Result<Vec<String>
 
 /// Mark the rules, preferences, skills and inbox proposals among `paths` (as they are at `rev`) unreviewed on this
 /// device; notes on what arrived and what was retracted.
-fn mark_changed(brain: &Brain, rev: &str, paths: &[String]) -> Result<(usize, usize, Vec<String>)> {
+fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Result<(usize, usize, Vec<String>)> {
     let notes_at: Vec<String> = paths.iter().filter(|p| p.to_lowercase().starts_with("nodes/")).cloned().collect();
     let texts = blobs(brain, rev, &notes_at)?;
+    let before = blobs(brain, old_rev, &notes_at)?;
     let mut keys = Vec::new();
     let mut retracted = Vec::new();
-    for (path, text) in notes_at.iter().zip(texts) {
+    for ((path, text), old) in notes_at.iter().zip(texts).zip(before) {
+        // a reviewed rule turned into something else (a fact, say) under the same file is a change to a rule
+        let was_rule = old.as_deref().is_some_and(|t| matches!(rule_status(t), (true, true, _)));
         // a changed note git could not hand over is not known to be harmless: it waits for review (fail closed)
         let Some(text) = text else {
             keys.extend(brain.review_key(&brain.root.join(path)));
@@ -297,6 +313,7 @@ fn mark_changed(brain: &Brain, rev: &str, paths: &[String]) -> Result<(usize, us
         match rule_status(&text) {
             (true, true, _) => keys.extend(brain.review_key(&brain.root.join(path))),
             (true, false, title) => retracted.push(if title.is_empty() { path.clone() } else { title }),
+            (false, true, _) if was_rule => keys.extend(brain.review_key(&brain.root.join(path))),
             _ => {}
         }
     }
@@ -313,12 +330,37 @@ fn mark_changed(brain: &Brain, rev: &str, paths: &[String]) -> Result<(usize, us
     Ok((keys.len() - proposals, proposals, retracted))
 }
 
+/// A note that arrives with the id of a different note here would hide it (the index keeps one note per id):
+/// the pull is refused.
+fn refuse_shared_ids(brain: &Brain, theirs: &str, paths: &[String]) -> Result<()> {
+    let notes: Vec<String> = paths.iter().filter(|p| p.to_lowercase().starts_with("nodes/")).cloned().collect();
+    let mut clashes = Vec::new();
+    for (path, text) in notes.iter().zip(blobs(brain, theirs, &notes)?) {
+        let Some(id) = text.and_then(|t| nodefmt::parse(&t).ok()).and_then(|(m, _)| m.get("id").and_then(Value::as_str).map(String::from))
+        else {
+            continue;
+        };
+        if let Some(local) = brain.get_node(&id) {
+            if local.path != brain.root.join(path) {
+                clashes.push(format!("{path} reuses the id of {}", local.path.strip_prefix(&brain.root).unwrap_or(&local.path).display()));
+            }
+        }
+    }
+    if clashes.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Sync(format!("refused to pull: {}; check who pushed it", clashes.join(", "))))
+    }
+}
+
 /// Before a merge: what the other side added or changed since the common ancestor is marked unreviewed, so a merge
 /// interrupted afterwards never leaves it trusted (Brain::untrusted). After the merge `mark_merged` marks what
 /// actually landed (a rename can carry their change into another file).
 fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
     let range = format!("HEAD...{theirs}");
-    let (rules, proposals, retracted) = mark_changed(brain, theirs, &diff_names(brain, "--diff-filter=AMR", &[&range])?)?;
+    let incoming = diff_names(brain, "--diff-filter=AMR", &[&range])?;
+    refuse_shared_ids(brain, theirs, &incoming)?;
+    let (rules, proposals, retracted) = mark_changed(brain, "HEAD", theirs, &incoming)?;
     let mut notes = Vec::new();
     if rules > 0 {
         notes.push(format!(
@@ -352,7 +394,7 @@ fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
 /// but did not change here (this device's own edit won a conflict) is this device's own again.
 fn mark_merged(brain: &Brain, before: &str, prior: &std::collections::HashSet<String>) -> Result<()> {
     let landed = diff_names(brain, "--diff-filter=AMR", &[before, "HEAD"])?;
-    mark_changed(brain, "HEAD", &landed)?;
+    mark_changed(brain, before, "HEAD", &landed)?;
     let landed: std::collections::HashSet<String> = landed.iter().filter_map(|p| brain.review_key(&brain.root.join(p))).collect();
     brain.update_state("untrusted", |u| u.retain(|k, _| prior.contains(k) || landed.contains(k)))?;
     Ok(())

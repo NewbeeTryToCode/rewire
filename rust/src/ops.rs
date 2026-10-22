@@ -213,8 +213,11 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
                     }
                 }
                 m.insert("body".into(), json!(node.body));
-                let why = security::blocked(&format!("{} {}", node.title(), node.body));
+                // every field is returned, so every field is scanned (frontmatter can carry text too)
+                let why = security::blocked(&serde_json::to_string(&m).unwrap_or_default());
                 if !why.is_empty() {
+                    m = Meta::new();
+                    m.insert("id".into(), json!(node.id()));
                     m.insert("title".into(), json!(security::blocked_label(why)));
                     m.insert("body".into(), json!(""));
                 }
@@ -392,7 +395,9 @@ fn inbox_path(brain: &Brain, inbox_id: &str) -> Result<std::path::PathBuf> {
     let id = inbox_id.to_uppercase();
     let ok = (6..=26).contains(&id.len()) && id.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
     if !ok {
-        return op(format!("not an inbox id: {inbox_id:?} (ids look like 01M5CR22VG093P636AQMVY10G3; a unique start of one works)"));
+        return op(format!(
+            "not an inbox id: {inbox_id:?} (ids look like 01M5CR22VG093P636AQMVY10G3; or a unique start of 6 or more characters)"
+        ));
     }
     if id.len() == 26 {
         return Ok(brain.path(&["inbox", &format!("{id}.md")]));
@@ -575,7 +580,7 @@ pub fn undo(brain: &Brain, session: &str) -> Result<String> {
 pub fn session_record(brain: &Brain, harness: &str, session: &str) -> Option<std::path::PathBuf> {
     // by the id in the record's first line: two ids can share a file name ("a.b" and "a-b")
     let name = format!("{harness}-{}.md", crate::util::slugify(session, 40));
-    let header = format!("# {harness} session {session}");
+    let header = crate::consolidate::record_header(harness, session);
     fs::read_dir(brain.path(&["sessions"]))
         .ok()?
         .flatten()
@@ -583,8 +588,17 @@ pub fn session_record(brain: &Brain, harness: &str, session: &str) -> Option<std
         .find(|p| fs::read_to_string(p).is_ok_and(|t| t.lines().any(|l| l == header)))
 }
 
-/// Session records, newest first: (date, harness, session id, undone).
-pub fn sessions(brain: &Brain) -> Vec<(String, String, String, bool)> {
+/// Whether a session's record is consolidated (Some(true)) or transcript only (Some(false)); None without a record.
+pub fn session_consolidated(brain: &Brain, harness: &str, session: &str) -> Option<bool> {
+    let path = session_record(brain, harness, session)?;
+    let text = fs::read_to_string(path).ok()?;
+    let header = crate::consolidate::record_header(harness, session);
+    let mine: Vec<&str> = text.split(crate::consolidate::RECORD_SEPARATOR).filter(|b| b.lines().next() == Some(header.as_str())).collect();
+    Some(mine.iter().any(|b| !b.lines().any(|l| l == crate::consolidate::TRANSCRIPT_ONLY)))
+}
+
+/// Session records, newest first: (date, harness, session id, state: "", "undone" or "transcript only").
+pub fn sessions(brain: &Brain) -> Vec<(String, String, String, String)> {
     let mut out = Vec::new();
     for day in fs::read_dir(brain.path(&["sessions"])).into_iter().flatten().flatten() {
         for file in fs::read_dir(day.path()).into_iter().flatten().flatten() {
@@ -594,8 +608,14 @@ pub fn sessions(brain: &Brain) -> Vec<(String, String, String, bool)> {
             else {
                 continue;
             };
-            let undone = text.contains("\n## Undone\n");
-            out.push((day.file_name().to_string_lossy().into_owned(), harness.to_string(), session.trim().to_string(), undone));
+            let state = if text.contains("\n## Undone\n") {
+                "undone"
+            } else if text.lines().any(|l| l == crate::consolidate::TRANSCRIPT_ONLY) {
+                "transcript only"
+            } else {
+                ""
+            };
+            out.push((day.file_name().to_string_lossy().into_owned(), harness.to_string(), session.trim().to_string(), state.to_string()));
         }
     }
     out.sort_by(|a, b| b.cmp(a));
@@ -671,17 +691,25 @@ pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
 pub fn unreviewed_key(brain: &Brain, id: &str) -> Option<String> {
     let id = id.trim();
     let lower = id.to_lowercase();
-    brain
-        .untrusted()
+    let untrusted = brain.untrusted();
+    // exact first; a prefix only when it names one item (never "the first that matches")
+    if untrusted.contains_key(id) {
+        return Some(id.to_string());
+    }
+    let matches: Vec<&String> = untrusted
         .keys()
-        .find(|k| {
+        .filter(|k| {
             *k == id
                 || lower.strip_prefix("skill:").is_some_and(|n| **k == format!("skills/{n}/"))
                 || (lower.len() >= 4
                     && k.starts_with("nodes/")
                     && k.rsplit_once('-').is_some_and(|(_, tail)| tail.trim_end_matches(".md").starts_with(&crate::util::short_of(&lower))))
         })
-        .cloned()
+        .collect();
+    match matches.as_slice() {
+        [one] => Some((*one).clone()),
+        _ => None,
+    }
 }
 
 /// Show an unreviewed rule, preference or skill to agents on this device from now on.
@@ -699,18 +727,30 @@ pub fn remote_is_public(url: &str) -> Option<bool> {
         let (host, path) = rest.split_once(':')?;
         format!("https://{host}/{path}")
     } else if let Some(rest) = url.strip_prefix("ssh://git@") {
-        format!("https://{}", rest.replacen(':', "/", 1))
-    } else if url.starts_with("https://") {
+        // ssh://git@host:22/me/b → https://host/me/b (an ssh port is not an https one)
+        let (host, path) = rest.split_once('/')?;
+        format!("https://{}/{path}", host.split(':').next().unwrap_or(host))
+    } else if url.starts_with("https://") || url.starts_with("http://") {
         url.to_string()
     } else {
         return None;
     };
+    // no user name or token from the URL, and (HOME pointed at an empty folder) no ~/.netrc or global config either
+    let https = regex::Regex::new(r"^(https?://)[^/@]*@").unwrap().replace(&https, "$1").into_owned();
+    let empty_home = std::env::temp_dir().join(format!("rewire-public-check-{}", std::process::id()));
+    let _ = fs::create_dir_all(&empty_home);
     let mut cmd = std::process::Command::new("git");
     cmd.args(["-c", "credential.helper=", "ls-remote", "--heads", &https])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "true")
+        .env("HOME", &empty_home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env_remove("XDG_CONFIG_HOME")
         .env_remove("SSH_ASKPASS");
-    let out = crate::util::run_with_timeout(cmd, None, std::time::Duration::from_secs(10)).ok()?;
+    let out = crate::util::run_with_timeout(cmd, None, std::time::Duration::from_secs(5));
+    let _ = fs::remove_dir_all(&empty_home);
+    let out = out.ok()?;
     let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
     if out.status.success() {
         Some(true)
@@ -769,14 +809,15 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     let remotes = out_str(&brain.git(&["remote", "-v"]));
     let device = brain.device();
     if !remotes.is_empty() {
+        let shown =
+            regex::Regex::new(r"(https?://)[^/@\s]*@").unwrap().replace(remotes.lines().next().unwrap_or(""), "$1***@").into_owned();
         report.push(format!(
-            "sync: {} · device {device} · make sure the brain repository is PRIVATE:\n  {}",
+            "sync: {} · device {device} · make sure the brain repository is PRIVATE:\n  {shown}",
             if brain.config.sync_auto { "auto" } else { "manual" },
-            remotes.lines().next().unwrap_or("")
         ));
         if let Some(url) = remotes.lines().next().and_then(|l| l.split_whitespace().nth(1)) {
             if remote_is_public(url) == Some(true) {
-                report.push(format!("UNSAFE: the brain's remote {url} can be read without credentials: make it private"));
+                report.push("UNSAFE: the brain's remote can be read without credentials: make it private".into());
             }
         }
     } else {
@@ -785,6 +826,16 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     if !["command", "anthropic"].contains(&brain.config.provider.as_str()) {
         report
             .push(format!("consolidation: unknown provider {:?} in local.toml (use \"command\" or \"anthropic\")", brain.config.provider));
+    }
+    if brain.config.provider == "anthropic" && std::env::var("ANTHROPIC_API_KEY").map_or(true, |k| k.trim().is_empty()) {
+        report.push("consolidation: provider = \"anthropic\" but ANTHROPIC_API_KEY is not set".into());
+    }
+    if let Some(sync) = brain.read_state("notices").get("sync") {
+        // what the last pull changed, in full (here, for the user; the snapshot only says that something did)
+        for n in sync.get("notes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            let clean: String = n.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            report.push(format!("last sync ({}): {clean}", sync.get("at").and_then(Value::as_str).unwrap_or("")));
+        }
     }
     if brain.config.provider == "command" {
         let program = shlex::split(&brain.config.command).and_then(|a| a.into_iter().next()).unwrap_or_default();
@@ -810,7 +861,7 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         ));
     }
     if let Some(e) = &brain.config.error {
-        report.push(format!("settings: could not be read, defaults are in use: {e}"));
+        report.push(format!("settings: could not be read ({e}): the LLM step is off and other settings use defaults until it is fixed"));
     }
     let waiting = unreviewed(brain).len();
     if waiting > 0 {
@@ -861,7 +912,9 @@ fn md_link(brain: &Brain, path: &str, title: &str) -> String {
 /// timestamps, no activation-based order) so it only changes when the memory itself changes.
 pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf> {
     index.refresh()?;
-    let active = index.rows("active = 1 ORDER BY importance DESC, recorded_at DESC, id", &[])?;
+    let mut active = index.rows("active = 1 ORDER BY importance DESC, recorded_at DESC, id", &[])?;
+    let unreviewed = brain.untrusted_ids(); // from another device and not reviewed here: not on the home page either
+    active.retain(|r| !unreviewed.contains(&r.id));
     let mut by_type: indexmap::IndexMap<String, Vec<&crate::index::NodeRow>> = indexmap::IndexMap::new();
     for r in &active {
         by_type.entry(r.type_.clone()).or_default().push(r);
