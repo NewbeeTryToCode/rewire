@@ -49,7 +49,8 @@ pub fn set_remote(brain: &mut Brain, url: &str) -> Result<Vec<String>> {
         g(brain, &["remote", "set-url", "origin", url])?;
     }
     enable_auto(brain)?;
-    let mut notes = vec![format!("origin = {url}; auto sync enabled (pull at session start, push after consolidation)")];
+    let mut notes =
+        vec![format!("origin = {}; auto sync enabled (pull at session start, push after consolidation)", crate::ops::redact_url(url))];
     if Regex::new(r"github\.com|gitlab\.com|bitbucket\.org").unwrap().is_match(url) {
         notes.push("WARNING: your brain contains personal memory. Make sure this repository is PRIVATE.".into());
     }
@@ -80,6 +81,10 @@ fn stamp(meta: &Meta) -> String {
     std::cmp::max(s("recorded_at"), s("retracted_at"))
 }
 
+fn empty_output() -> Output {
+    Output { status: crate::brain::failed_status(), stdout: Vec::new(), stderr: Vec::new() }
+}
+
 fn stage(brain: &Brain, n: u8, path: &str) -> Option<String> {
     let o = g(brain, &["show", &format!(":{n}:{path}")]).ok()?;
     if o.status.success() {
@@ -101,7 +106,11 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                 (Some(ours), Some(theirs)) => {
                     let (m_ours, b_ours) = nodefmt::parse(&ours).map_err(Error::Sync)?;
                     let (m_theirs, b_theirs) = nodefmt::parse(&theirs).map_err(Error::Sync)?;
-                    let own_lost = stamp(&m_theirs) > stamp(&m_ours);
+                    // newest edit wins: by the notes' own times, and (a hand edit changes neither) by when each side
+                    // last committed the file
+                    let committed =
+                        |rev: &str| out_str(&g(brain, &["log", "-1", "--format=%ct", rev, "--", path]).unwrap_or_else(|_| empty_output()));
+                    let own_lost = (stamp(&m_theirs), committed("MERGE_HEAD")) > (stamp(&m_ours), committed("HEAD"));
                     let (winner, m_lose, b_lose) = if own_lost { (theirs, m_ours, b_ours) } else { (ours, m_theirs, b_theirs) };
                     crate::util::atomic_write(&full, &winner)?;
                     let mut item = Meta::new();
@@ -113,11 +122,11 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                     item.insert("created".into(), json!(now_iso()));
                     item.insert(
                         "reason".into(),
-                        json!(if own_lost {
-                            "sync conflict: your edit on this device lost to a newer edit from another device"
-                        } else {
-                            "sync conflict: another device's edit lost to a newer edit on this device"
-                        }),
+                        json!(format!(
+                            "sync conflict: this version lost to a newer edit (resolved on {}, where it was {})",
+                            brain.device(),
+                            if own_lost { "this device's own edit" } else { "another device's edit" }
+                        )),
                     );
                     item.insert("source".into(), json!({"harness": "sync"}));
                     if let Some(kept) = brain.read_node(&full) {
@@ -302,7 +311,15 @@ fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Re
     let before = blobs(brain, old_rev, &notes_at)?;
     let mut keys = Vec::new();
     let mut retracted = Vec::new();
+    let trusted_before: std::collections::HashSet<String> = brain.untrusted().keys().cloned().collect();
+    let mut previous: Vec<(String, String)> = Vec::new();
     for ((path, text), old) in notes_at.iter().zip(texts).zip(before) {
+        // the version approved here so far, kept to show while its change waits for review
+        if let (Some(old), Some(key)) = (old.as_deref(), brain.review_key(&brain.root.join(path))) {
+            if matches!(rule_status(old), (true, true, _)) && !trusted_before.contains(&key) {
+                previous.push((key, old.to_string()));
+            }
+        }
         // a reviewed rule turned into something else (a fact, say) under the same file is a change to a rule
         let was_rule = old.as_deref().is_some_and(|t| matches!(rule_status(t), (true, true, _)));
         // a changed note git could not hand over is not known to be harmless: it waits for review (fail closed)
@@ -327,6 +344,9 @@ fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Re
     keys.sort();
     keys.dedup();
     brain.mark_keys(&keys)?;
+    for (key, old) in previous.iter().filter(|(k, _)| keys.contains(k)) {
+        brain.keep_previous(key, old)?;
+    }
     Ok((keys.len() - proposals, proposals, retracted))
 }
 

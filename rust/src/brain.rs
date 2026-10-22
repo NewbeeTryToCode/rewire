@@ -310,11 +310,22 @@ impl Brain {
         if !keys.is_empty() {
             self.update_state("untrusted", |u| {
                 for k in keys {
-                    u.insert(k.clone(), json!({"from": "sync", "at": now_iso()}));
+                    // an entry already there keeps what it holds (the approved version kept to show meanwhile)
+                    u.entry(k.clone()).or_insert_with(|| json!({"from": "sync", "at": now_iso()}));
                 }
             })?;
         }
         Ok(keys.len())
+    }
+
+    /// Keep the version of a rule the user had approved while a change to it from another device waits for review:
+    /// the snapshot shows that version meanwhile, so a rule never silently drops out of an agent's context.
+    pub fn keep_previous(&self, key: &str, text: &str) -> Result<()> {
+        self.update_state("untrusted", |u| {
+            if let Some(Value::Object(entry)) = u.get_mut(key) {
+                entry.entry("previous").or_insert_with(|| json!(text));
+            }
+        })
     }
 
     /// Writers check first: a brain deleted or moved while a background consolidation was waiting on the LLM must
