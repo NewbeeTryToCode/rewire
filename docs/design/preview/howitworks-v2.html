@@ -2,7 +2,7 @@
 <html lang="id">
 <head>
 <meta charset="UTF-8">
-<title>rewire — How it works · synapse bidirectional v2</title>
+<title>rewire — How it works · bidirectional synapse v2</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#07060f; font-family:'Segoe UI',system-ui,sans-serif; }
@@ -24,7 +24,7 @@
   <p class="sub">Nothing flows through rewire untouched — it distills, judges, and commits upstream; it filters back the few notes that matter.</p>
 
   <svg viewBox="0 0 1000 360">
-    <!-- ============ HARNESS LOGOCluster (kiri) — jarang, tiap logo punya mini-jaringan ============ -->
+    <!-- ============ HARNESS LOGOS (left) — spaced out, each with its own mini-network ============ -->
     <g>
       <g transform="translate(30,62)">
         <rect x="0" y="0" width="60" height="60" rx="16" fill="#0b0920" stroke="rgba(176,157,255,.35)"/>
@@ -57,7 +57,7 @@
     <text x="60" y="336" text-anchor="middle" class="lblb">ANY HARNESS</text>
     <text x="60" y="355" text-anchor="middle" class="lbl">Claude · ChatGPT · OpenCode · +MCP</text>
 
-    <!-- ============ REWIRE = CHIP (tengah, bentuk baru) ============ -->
+    <!-- ============ REWIRE = CHIP (center, new shape) ============ -->
     <g>
       <!-- pins -->
       <g stroke="#b09dff" stroke-width="2" opacity=".55">
@@ -81,7 +81,7 @@
     <text x="500" y="62" text-anchor="middle" class="lane" fill="#b09dff" opacity=".9">WRITE →</text>
     <text x="500" y="322" text-anchor="middle" class="lane" fill="#7dd3fc" opacity=".9">← READ</text>
 
-    <!-- ============ BRAIN (kanan) — icon otak ============ -->
+    <!-- ============ BRAIN (right) — brain icon ============ -->
     <g>
       <text x="872" y="196" text-anchor="middle" font-size="86">🧠</text>
     </g>
@@ -145,7 +145,7 @@
 </section>
 
 <script>
-  /* hover center → tampilkan dua arah flow sebagai teks bergantian + ring pulse */
+  /* hover the center → rotate the two flow directions as text + a ring pulse */
   const svg = document.getElementById("syn2");
   const say = document.getElementById("say");
   const core = document.getElementById("core");

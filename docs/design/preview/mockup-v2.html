@@ -195,8 +195,8 @@
 </div></footer>
 
 <script>
-/* Neural synapse graph — port Singularity.tsx (vanilla). hover = dot + neighbour menyala,
-   pulse di wire, EASTER EGG: 1 dot acak — hover menyalakan SELURUH jaringan bergelombang. */
+/* Neural synapse graph — port of Singularity.tsx (vanilla). hover = dot + neighbours glow,
+   pulses on wires, EASTER EGG: one random dot — hovering it lights the WHOLE network in a wave. */
 (() => {
   const cv = document.getElementById("sing");
   const ctx = cv.getContext("2d");
@@ -244,7 +244,7 @@
       }
     });
   }
-  function fireAll(){       /* easter egg — seluruh otak menyala, gelombang staggered */
+  function fireAll(){       /* easter egg — the whole brain lights up as a staggered wave */
     nodes.forEach(n=>n.e=1);
     if(reduced) return;
     edges.forEach((ed,i)=>{
