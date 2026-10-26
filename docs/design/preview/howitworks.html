@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>rewire — How it works · 6 design alternatif</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#07060f; font-family:'Segoe UI',system-ui,sans-serif; }
+  .label { position:sticky; top:0; z-index:9; padding:9px 24px; font:600 12px monospace; color:#0b0920; background:#fdf9c4; }
+  .sec { max-width:1080px; margin:0 auto; padding:80px 32px 100px; }
+  h2 { font:600 34px/1.2 system-ui; color:#fff; margin-bottom:10px; }
+  h2 em { font-style:normal; background:linear-gradient(92deg,#b09dff,#7dd3fc); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .hud { font:600 11px monospace; letter-spacing:.14em; color:#6a63a8; margin-bottom:40px; }
+
+  .node { text-align:center; border-radius:14px; padding:20px 18px; }
+  .node .t { font:700 14px 'Cascadia Code',monospace; letter-spacing:.08em; }
+  .node .d { font-size:13px; line-height:1.5; color:#8a84c8; margin-top:8px; }
+
+  /* ===== 1. CIRCUIT / PCB TRACE ===== */
+  .pcb { }
+  .pcb svg { width:100%; display:block; }
+  .pcb .pulse { stroke-dasharray:10 130; animation:run 3s linear infinite; }
+  @keyframes run { to { stroke-dashoffset:-140; } }
+
+  /* ===== 2. TERMINAL NARRATION ===== */
+  .term { background:#0b0920; border:1px solid rgba(138,132,200,.25); border-radius:12px; overflow:hidden; }
+  .term .bar { display:flex; gap:8px; align-items:center; padding:9px 14px; background:rgba(255,255,255,.04); border-bottom:1px solid rgba(138,132,200,.1); }
+  .term .bar i { width:9px; height:9px; border-radius:50%; background:#3a355e; }
+  .term .bar .bt { font:600 11px monospace; color:#6a63a8; }
+  .term .log { padding:20px 24px; font:500 14px/2.1 'Cascadia Code',Consolas,monospace; }
+  .term .ln { color:#6a63a8; } .term .hl { color:#b09dff; } .term .ok { color:#28c840; } .term .dim { color:#56506e; }
+  .caret { display:inline-block; width:8px; height:15px; background:#b09dff; vertical-align:text-bottom; animation:bl 1s steps(1) infinite; }
+  @keyframes bl { 50%{opacity:0} }
+
+  /* ===== 3. PIPELINE / CI RUN ===== */
+  .pipe { display:flex; gap:0; align-items:flex-start; }
+  .stage { flex:1; position:relative; padding-top:44px; }
+  .stage .badge { position:absolute; top:0; left:50%; transform:translateX(-50%); width:34px; height:34px; border-radius:10px;
+    display:flex; align-items:center; justify-content:center; font:700 15px monospace; background:#0b0920; border:1px solid rgba(176,157,255,.35); color:#b09dff; z-index:2; }
+  .stage .badge.g { color:#28c840; }
+  .stage .line { position:absolute; top:16px; left:calc(50% + 22px); right:calc(-50% + 22px); height:2px; background:linear-gradient(90deg,rgba(176,157,255,.5),rgba(176,157,255,.12)); }
+  .stage .line::after { content:""; position:absolute; inset:-3px; background:radial-gradient(5px at 50% 50%, #fdf9c4 45%, transparent 75%); animation:run2 2.2s linear infinite; }
+  @keyframes run2 { from { left:0 } to { left:100%; } }
+  .stage .box { margin:0 10px; background:rgba(255,255,255,.03); border:1px solid rgba(176,157,255,.16); border-radius:14px; padding:18px 16px; }
+  .stage .dt { font:600 11px monospace; color:#28c840; letter-spacing:.1em; }
+  .stage .nm { font:600 16px system-ui; color:#fff; margin:8px 0 6px; }
+  .stage .sb { font-size:12.5px; color:#8a84c8; line-height:1.5; }
+
+  /* ===== 4. ORBIT ===== */
+  .orbit { position:relative; height:340px; margin-top:20px; }
+  .core { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:190px; height:190px; border-radius:50%;
+    background:radial-gradient(circle at 38% 32%, rgba(176,157,255,.45), rgba(23,17,58,.95) 70%);
+    border:1px solid rgba(176,157,255,.5); box-shadow:0 0 60px rgba(176,157,255,.3), inset 0 0 40px rgba(176,157,255,.15);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; }
+  .core .t { font:700 20px monospace; color:#fff; }
+  .core .d { font-size:11.5px; color:#c9c2ff; }
+  .ring { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); border:1px dashed rgba(138,132,200,.3); border-radius:50%; }
+  .r1 { width:300px; height:300px; } .r2 { width:430px; height:430px; }
+  .sat { position:absolute; width:150px; padding:14px; background:#0b0920; border:1px solid rgba(176,157,255,.3); border-radius:14px; text-align:center; }
+  .sat .st { font:700 13px monospace; color:#fdf9c4; letter-spacing:.08em; }
+  .sat .sd { font-size:11.5px; color:#8a84c8; margin-top:6px; line-height:1.45; }
+  .s1 { left:2%; top:12%; }
+  .s2 { right:2%; bottom:12%; }
+  .float1 { animation:fl 7s ease-in-out infinite; } .float2 { animation:fl 7s ease-in-out infinite reverse; }
+  @keyframes fl { 50% { transform:translateY(-14px); } }
+
+  /* ===== 5. SYNAPSE SECTION-LEVEL ===== */
+  .syn { position:relative; height:300px; overflow:hidden; }
+  .syn svg { width:100%; height:100%; }
+  .lbl { font:600 10.5px 'Cascadia Code',monospace; fill:#8a84c8; letter-spacing:.08em; }
+  .lblb { font:700 12px 'Cascadia Code',monospace; fill:#fff; letter-spacing:.06em; }
+
+  /* ===== 6. BEFORE/AFTER ===== */
+  .ba { display:grid; grid-template-columns:1fr 60px 1fr; gap:18px; align-items:center; }
+  .ba .box { border-radius:16px; padding:26px 24px; }
+  .ba .no { background:rgba(255,255,255,.02); border:1px solid rgba(138,132,200,.15); }
+  .ba .yes { background:rgba(176,157,255,.08); border:1px solid rgba(176,157,255,.45); }
+  .ba .k { font:700 11px monospace; letter-spacing:.14em; }
+  .ba .no .k { color:#56506e; } .ba .yes .k { color:#b09dff; }
+  .ba .big { font:600 20px system-ui; color:#fff; margin:12px 0 10px; }
+  .ba ul { list-style:none; margin-top:6px; }
+  .ba li { font-size:13px; color:#8a84c8; line-height:1.6; padding:5px 0 5px 22px; position:relative; }
+  .ba .no li::before { content:"✕"; position:absolute; left:0; color:#56506e; font-size:11px; }
+  .ba .yes li::before { content:"✓"; position:absolute; left:0; color:#28c840; }
+  .ba .mid { text-align:center; font:700 26px monospace; color:#b09dff; }
+</style>
+</head>
+<body>
+
+<!-- 1. PCB -->
+<div class="label">1 · PCB — rewire sebagai chip di papan sirkuit, trace menyala dengan pulse</div>
+<section class="sec pcb">
+  <div class="hud">// 01 — HOW IT WORKS</div>
+  <svg viewBox="0 0 1000 300">
+    <defs>
+      <linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="#b09dff" stop-opacity="0"/><stop offset=".5" stop-color="#b09dff" stop-opacity=".8"/><stop offset="1" stop-color="#b09dff" stop-opacity="0"/></linearGradient>
+    </defs>
+    <!-- traces -->
+    <path d="M200 150 H 420" stroke="rgba(176,157,255,.15)" stroke-width="2" fill="none"/>
+    <path d="M200 150 H 420 M200 150 q 60 0 60 -40 t 60 -40" stroke="none"/>
+    <path d="M580 150 H 800" stroke="rgba(176,157,255,.15)" stroke-width="2"/>
+    <!-- vias / pads -->
+    <circle cx="110" cy="150" r="34" fill="#0b0920" stroke="rgba(176,157,255,.35)"/>
+    <circle cx="110" cy="150" r="5" fill="#b09dff"/>
+    <circle cx="500" cy="150" r="52" fill="#140f33" stroke="#b09dff" stroke-width="1.6"/>
+    <circle cx="500" cy="150" r="40" fill="none" stroke="rgba(176,157,255,.25)"/>
+    <circle cx="890" cy="150" r="34" fill="#0b0920" stroke="rgba(176,157,255,.35)"/>
+    <circle cx="890" cy="150" r="5" fill="#b09dff"/>
+    <!-- glowing pulse riding the trace -->
+    <path d="M200 150 H 420" stroke="url(#lg)" stroke-width="3" fill="none" class="pulse"/>
+    <path d="M580 150 H 800" stroke="url(#lg)" stroke-width="3" fill="none" class="pulse" style="animation-delay:1.5s"/>
+    <text x="110" y="215" text-anchor="middle" fill="#fff" font-family="monospace" font-weight="700" font-size="13">AGENT</text>
+    <text x="110" y="234" text-anchor="middle" fill="#8a84c8" font-size="11">any harness · MCP + hooks</text>
+    <text x="500" y="128" text-anchor="middle" fill="#fff" font-family="monospace" font-weight="700" font-size="15">REWIRE ⌁</text>
+    <text x="500" y="228" text-anchor="middle" fill="#b09dff" font-size="11" font-family="monospace">consolidate · prime · recall</text>
+    <text x="500" y="246" text-anchor="middle" fill="#56506e" font-size="10" font-family="monospace">0 LLM TOKENS</text>
+    <text x="890" y="215" text-anchor="middle" fill="#fff" font-family="monospace" font-weight="700" font-size="13">THE BRAIN</text>
+    <text x="890" y="234" text-anchor="middle" fill="#8a84c8" font-size="11">~/brain — your git repo</text>
+  </svg>
+</section>
+
+<!-- 2. TERMINAL -->
+<div class="label">2 · TERMINAL NARRATION — flow diceritakan sebagai log sesi</div>
+<section class="sec">
+  <div class="hud">// 01 — HOW IT WORKS</div>
+  <div class="term">
+    <div class="bar"><i></i><i></i><i></i><span class="bt">rewire — how it works</span></div>
+    <div class="log">
+      <div class="ln"><span class="hl">$ rewire watch --brain ~/brain</span> <span class="dim"># memory attached</span></div>
+      <div class="ln">⏺ session ended (claude-code) → transcript queued <span class="dim">[secrets redacted]</span></div>
+      <div class="ln">⏺ consolidating… extract → judge → gate <span class="ok">✓ 7 claims committed to ~/brain</span></div>
+      <div class="ln">⏺ new session started → primed: profile + 5 strongest notes <span class="ok">✓ 0 LLM tokens</span></div>
+      <div class="ln"><span class="hl">$</span> <span class="caret"></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. PIPELINE -->
+<div class="label">3 · PIPELINE — seperti CI run: tiap tahap status ✓, uang mengalir kiri→kanan</div>
+<section class="sec">
+  <div class="hud">// 01 — HOW IT WORKS</div>
+  <div class="pipe">
+    <div class="stage"><div class="badge">1</div><div class="line"></div>
+      <div class="box"><div class="dt">● RUNNING IN YOUR AGENT</div><div class="nm">Agent works</div><div class="sb">Any harness — the session just happens, no ceremony.</div></div></div>
+    <div class="stage"><div class="badge">2</div><div class="line"></div>
+      <div class="box"><div class="dt">● HOOK FIRES</div><div class="nm">Session ends</div><div class="sb">Transcript queued, secrets redacted. You do nothing.</div></div></div>
+    <div class="stage"><div class="badge">3</div><div class="line"></div>
+      <div class="box"><div class="dt">● BACKGROUND, ~2 LLM CALLS</div><div class="nm">Consolidate</div><div class="sb">Atomic claims judged: NEW / SAME / UPDATE / SUPERSEDE. Git commit.</div></div></div>
+    <div class="stage"><div class="badge g">✓</div>
+      <div class="box"><div class="dt">NEXT SESSION</div><div class="nm">Remembered</div><div class="sb">Prime injects what matters. Recall answers on demand.</div></div></div>
+  </div>
+</section>
+
+<!-- 4. ORBIT -->
+<div class="label">4 · ORBIT — rewire sebagai bintang di pusatnya, agent & brain mengorbitnya</div>
+<section class="sec" style="padding-bottom:60px">
+  <div class="hud">// 01 — HOW IT WORKS</div>
+  <div class="orbit">
+    <div class="ring r1"></div><div class="ring r2"></div>
+    <div class="core"><div class="t">REWIRE ⌁</div><div class="d">0 LLM tokens,<br>always between them</div></div>
+    <div class="sat s1 float1"><div class="st">AGENT</div><div class="sd">asks at session start — primed with what matters · MCP recall on demand</div></div>
+    <div class="sat s2 float2"><div class="st">THE BRAIN</div><div class="sd">~/brain git — md + jsonl<br>append-only, diffable</div></div>
+  </div>
+</section>
+
+<!-- 5. SYNAPSE BIG -->
+<div class="label">5 · SYNAPSE SECTION — 3 node raksasa digambar sebagai neuron analog dengan hero</div>
+<section class="sec">
+  <div class="hud">// 01 — HOW IT WORKS</div>
+  <div class="syn">
+    <svg viewBox="0 0 1000 300">
+      <!-- wires -->
+      <path d="M240 150 C 340 90, 380 90, 470 140" stroke="rgba(176,157,255,.28)" stroke-width="1.6" fill="none"/>
+      <path d="M610 160 C 700 210, 740 210, 830 150" stroke="rgba(176,157,255,.28)" stroke-width="1.6" fill="none"/>
+      <!-- travelling pulses -->
+      <circle r="4" fill="#fdf9c4"><animateMotion dur="3s" repeatCount="indefinite" path="M240 150 C 340 90, 380 90, 470 140"/></circle>
+      <circle r="4" fill="#fdf9c4"><animateMotion dur="3s" begin="1.4s" repeatCount="indefinite" path="M610 160 C 700 210, 740 210, 830 150"/></circle>
+      <!-- neuron -->
+      <g opacity=".92"><circle cx="175" cy="150" r="26" fill="#0b0920" stroke="#b09dff"/><circle cx="175" cy="150" r="9" fill="#b09dff" opacity=".8"/>
+        <circle cx="148" cy="122" r="3.5" fill="#b09dff" opacity=".5"/><circle cx="205" cy="126" r="3" fill="#b09dff" opacity=".5"/>
+        <circle cx="146" cy="178" r="3" fill="#b09dff" opacity=".5"/><circle cx="204" cy="175" r="3.5" fill="#b09dff" opacity=".5"/></g>
+      <g><circle cx="540" cy="150" r="40" fill="#140f33" stroke="#b09dff" stroke-width="1.8"/>
+        <circle cx="508" cy="134" r="5" fill="#b09dff"/><circle cx="572" cy="134" r="5" fill="#b09dff"/>
+        <circle cx="508" cy="168" r="5" fill="#b09dff"/><circle cx="572" cy="168" r="5" fill="#b09dff"/>
+        <circle cx="540" cy="188" r="5" fill="#b09dff"/></g>
+      <g opacity=".92"><circle cx="880" cy="150" r="26" fill="#0b0920" stroke="#b09dff"/><circle cx="880" cy="150" r="9" fill="#b09dff" opacity=".8"/>
+        <circle cx="853" cy="122" r="3.5" fill="#b09dff" opacity=".5"/><circle cx="910" cy="126" r="3" fill="#b09dff" opacity=".5"/></g>
+      <text x="540" y="62" text-anchor="middle" class="lblb">REWIRE ⌁</text>
+      <text x="540" y="80" text-anchor="middle" class="lbl">consolidate · prime · recall</text>
+      <text x="175" y="215" text-anchor="middle" class="lblb">AGENT</text>
+      <text x="175" y="234" text-anchor="middle" class="lbl">MCP + hooks</text>
+      <text x="880" y="215" text-anchor="middle" class="lblb">THE BRAIN</text>
+      <text x="880" y="234" text-anchor="middle" class="lbl">~/brain — your git repo</text>
+    </svg>
+  </div>
+</section>
+
+<!-- 6. BEFORE/AFTER -->
+<div class="label">6 · BEFORE / AFTER — jual value dulu: hidup tanpa rewire vs dengan rewire</div>
+<section class="sec">
+  <div class="hud">// 01 — WHY REWIRE</div>
+  <div class="ba">
+    <div class="box no"><div class="k">WITHOUT</div><div class="big">Every session starts empty.</div>
+      <ul><li>re-explaining the same prefs, again</li><li>context lost at every compaction</li><li>context scattered across tools</li><li>memory is locked inside the vendor</li></ul></div>
+    <div class="mid">→</div>
+    <div class="box yes"><div class="k">WITH REWIRE</div><div class="big">One brain, every agent.</div>
+      <ul><li>memory as plain markdown you own</li><li>auto-consolidated after each session</li><li>primed before, recalled during — free</li><li>git: diff, branch, restore, portable</li></ul></div>
+  </div>
+</section>
+
+</body>
+</html>

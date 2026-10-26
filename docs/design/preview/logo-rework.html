@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>rewire — logo rework · 5 opsi R + opsi brain</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#07060f; font-family:'Segoe UI',system-ui,sans-serif; color:#e6e6f5; }
+  .grid { max-width:1180px; margin:0 auto; padding:80px 32px; display:grid; grid-template-columns:repeat(3,1fr); gap:22px; }
+  h1 { font:600 26px system-ui; color:#fff; padding:40px 60px 0; } h1 em { color:#b09dff; font-style:normal; }
+  .hud { font:600 11px monospace; color:#6a63a8; letter-spacing:.14em; padding:8px 60px 30px; }
+  .card { background:rgba(255,255,255,.03); border:1px solid rgba(176,157,255,.18); border-radius:18px; overflow:hidden; transition:.25s; cursor:default; }
+  .card:hover { border-color:rgba(176,157,255,.5); }
+  .card svg { width:100%; display:block; background:rgba(255,255,255,.02); }
+  .card .m { padding:16px 18px 20px; }
+  .card .num { font:700 11px monospace; color:#7dd3fc; letter-spacing:.12em; }
+  .card .nm { font:600 16px system-ui; color:#fff; margin:8px 0 6px; }
+  .card .ds { font-size:12.5px; color:#8a84c8; line-height:1.55; }
+  @media(max-width:900px){ .grid{grid-template-columns:1fr 1fr} }
+</style>
+</head>
+<body>
+<h1>Logo <em>Rewiring</em> — rework</h1>
+<div class="hud">// 5 ARAH BENTUK · HOVER CARD UNTUK MELIHAT GLOW</div>
+<div class="grid">
+
+<!-- A -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <!-- A: SINAPSE — neuron dengan core melayang, dendrit + pulse -->
+  <g stroke="#b09dff" stroke-width="1.6" fill="none" opacity=".8">
+    <line x1="150" y1="104" x2="150" y2="58"/><line x1="150" y1="124" x2="150" y2="170"/>
+    <line x1="136" y1="112" x2="96" y2="86"/><line x1="164" y1="112" x2="204" y2="86"/>
+    <line x1="136" y1="118" x2="96" y2="148"/><line x1="164" y1="118" x2="204" y2="148"/>
+  </g>
+  <circle cx="150" cy="58" r="4" fill="#b09dff" opacity=".85"/><circle cx="150" cy="170" r="4" fill="#b09dff" opacity=".85"/>
+  <circle cx="96" cy="86" r="3.5" fill="#b09dff" opacity=".6"/><circle cx="204" cy="86" r="3.5" fill="#b09dff" opacity=".6"/>
+  <circle cx="96" cy="148" r="3.5" fill="#b09dff" opacity=".6"/><circle cx="204" cy="148" r="3.5" fill="#b09dff" opacity=".6"/>
+  <circle cx="150" cy="114" r="30" fill="#140f33" stroke="#fdf9c4" stroke-width="1.5" style="filter:drop-shadow(0 0 14px rgba(176,157,255,.55))"/>
+  <circle cx="150" cy="114" r="13" fill="#b09dff">
+    <animate attributeName="opacity" values=".55;1;.55" dur="2s" repeatCount="indefinite"/>
+  </circle>
+  <text x="150" y="212" text-anchor="middle" font-family="monospace" font-weight="700" font-size="13" fill="#fff">⌁</text>
+</svg><div class="m"><div class="num">A · SYNAPSE</div><div class="nm">Neuron inti berdenyut</div><div class="ds">Core melayang dengan 6 dendrit + ujung tuak ber-halo halus. Paling menyatu dengan dot syaraf pada halaman utama.</div></div></div>
+
+<!-- B -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <!-- B: CHIP — IC dengan pin, berdiri di atas trace -->
+  <g stroke="#b09dff" stroke-width="2" opacity=".5">
+    <line x1="92" y1="88" x2="70" y2="88"/><line x1="92" y1="106" x2="70" y2="106"/>
+    <line x1="92" y1="124" x2="70" y2="124"/><line x1="92" y1="142" x2="70" y2="142"/>
+    <line x1="208" y1="88" x2="230" y2="88"/><line x1="208" y1="106" x2="230" y2="106"/>
+    <line x1="208" y1="124" x2="230" y2="124"/><line x1="208" y1="142" x2="230" y2="142"/>
+    <line x1="120" y1="66" x2="120" y2="50"/><line x1="150" y1="66" x2="150" y2="50"/>
+    <line x1="180" y1="66" x2="180" y2="50"/><line x1="120" y1="164" x2="120" y2="180"/>
+    <line x1="150" y1="164" x2="150" y2="180"/><line x1="180" y1="164" x2="180" y2="180"/>
+  </g>
+  <rect x="92" y="66" width="116" height="98" rx="14" fill="#140f33" stroke="#b09dff" stroke-width="1.8" style="filter:drop-shadow(0 0 16px rgba(176,157,255,.4))"/>
+  <rect x="106" y="80" width="88" height="70" rx="10" fill="none" stroke="rgba(176,157,255,.28)"/>
+  <text x="150" y="115" text-anchor="middle" font-family="monospace" font-weight="700" font-size="15" fill="#fff">⌁</text>
+  <text x="150" y="140" text-anchor="middle" font-family="monospace" font-size="9.5" fill="#b09dff" letter-spacing="2">REWIRE</text>
+</svg><div class="m"><div class="num">B · CHIP</div><div class="nm">IC 12-pin</div><div class="ds">Sesuai realita: satu binary Rust yang dipasang. Bahasa devtool kuat. (Pada gambar ini, opsi diagram yang tadi)</div></div></div>
+
+<!-- C -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <!-- C: GIT MERGE — graf git: dua commit masuk, merge node, keluar satu -->
+  <circle cx="80" cy="88" r="13" fill="none" stroke="#8a84c8" stroke-width="2"/>
+  <circle cx="80" cy="150" r="13" fill="none" stroke="#8a84c8" stroke-width="2"/>
+  <path d="M93 88 C 130 88, 146 106, 150 113 M93 150 c 40 0 58 -24 60 -34" stroke="rgba(138,132,200,.6)" stroke-width="2" fill="none"/>
+  <circle cx="160" cy="114" r="17" fill="#140f33" stroke="#fdf9c4" stroke-width="2" style="filter:drop-shadow(0 0 12px rgba(253,249,196,.35))"/>
+  <text x="160" y="119" text-anchor="middle" font-family="monospace" font-weight="700" font-size="12" fill="#fdf9c4">rw</text>
+  <line x1="177" y1="114" x2="228" y2="114" stroke="rgba(176,157,255,.55)" stroke-width="2"/>
+  <circle cx="240" cy="114" r="12" fill="#b09dff"/>
+  <circle cx="240" cy="114" r="5" fill="#07060f"/>
+</svg><div class="m"><div class="num">C · GIT MERGE</div><div class="nm">Node git graf</div><div class="ds">Dua lini (harness & brain) menyatu di satu merge-node. Menceritakan "satu otak, banyak tanggal".</div></div></div>
+
+<!-- D -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <!-- D: HUB — berputar pelan, 3 jalur radial + 3 node pelanggan -->
+  <circle cx="150" cy="112" r="58" fill="none" stroke="rgba(138,132,200,.16)" stroke-width="22"/>
+  <g transform="rotate(0 150 112)">
+    <circle cx="150" cy="112" r="26" fill="#140f33" stroke="#b09dff" stroke-width="2" style="filter:drop-shadow(0 0 14px rgba(176,157,255,.45))"/>
+    <text x="150" y="118" text-anchor="middle" font-family="monospace" font-weight="700" font-size="13" fill="#fff">⌁</text>
+    <animateTransform attributeName="transform" type="rotate" from="0 150 112" to="360 150 112" dur="14s" repeatCount="indefinite"/>
+  </g>
+  <g fill="#fdf9c4">
+    <circle cx="150" cy="40" r="6"><animate attributeName="opacity" values="1;.3;1" dur="2s" repeatCount="indefinite"/></circle>
+    <circle cx="219" cy="132" r="6"><animate attributeName="opacity" values=".3;1;.3" dur="2s" repeatCount="indefinite"/></circle>
+    <circle cx="92" cy="158" r="6"><animate attributeName="opacity" values="1;.3;1" dur="2s" begin="1s" repeatCount="indefinite"/></circle>
+  </g>
+</svg><div class="m"><div class="num">D · HUB</div><div class="nm">Orbit roda cincin</div><div class="ds">Rewire berputar pelan; 3 node di tepi ring mewakili harness berdenyut bergantian. Hidup & sirkular.</div></div></div>
+
+<!-- E -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <!-- E: PRISMA — satu input, tiga output terdispersi -->
+  <g stroke="rgba(176,157,255,.4)" stroke-width="2" fill="none">
+    <line x1="40" y1="94" x2="118" y2="94"/>
+    <line x1="40" y1="116" x2="118" y2="116"/>
+    <line x1="40" y1="138" x2="118" y2="138"/>
+  </g>
+  <polygon points="118,72 182,160 118,160" fill="#140f33" stroke="#b09dff" stroke-width="1.8" style="filter:drop-shadow(0 0 14px rgba(176,157,255,.4))"/>
+  <text x="137" y="126" text-anchor="middle" font-family="monospace" font-weight="700" font-size="11" fill="#fdf9c4">rw</text>
+  <line x1="182" y1="118" x2="238" y2="118" stroke="rgba(253,249,196,.5)" stroke-width="2"/>
+  <circle cx="248" cy="118" r="5" fill="#fdf9c4"><animate attributeName="opacity" values=".3;1;.3" dur="1.8s" repeatCount="indefinite"/></circle>
+  <line x1="40" y1="94" x2="238" y2="94" stroke="rgba(176,157,255,.12)" stroke-width="1"/>
+</svg><div class="m"><div class="num">E · PRISMA</div><div class="nm">A pola sangat bersih</div><div class="ds">Tiga garis datang kiri (transcript mentah), tersaring, keluar satu garis terang kanan (klaim). Metafora distilasi: banyak masuk, sedikit yang penting keluar.</div></div></div>
+
+</div>
+
+<h1 style="margin-top:30px">Logo <em>brain</em> — sekalian rework</h1>
+<div class="hud">// BONUS — emoji 🧠 beda tampilan antar-OS; ini dua versi SVG konsisten</div>
+<div class="grid" style="padding-top:6px">
+
+<!-- B1 -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <ellipse cx="150" cy="106" rx="58" ry="46" fill="#140f33" stroke="#b09dff" stroke-width="1.8"/>
+  <path d="M150 60 C 143 90, 143 122, 150 152" stroke="#b09dff" stroke-width="1.6" fill="none"/>
+  <path d="M112 88 q12 -6 24 2 M112 112 q14 -4 26 4 M112 132 q12 -2 22 6 M182 86 q-14 -6 -28 2 M184 110 q-14 -4 -28 4 M184 134 q-12 -2 -24 6" stroke="rgba(176,157,255,.55)" stroke-width="1.4" fill="none"/>
+</svg><div class="m"><div class="num">B1 · ANATOMI</div><div class="nm">Otak anatomis khusus</div><div class="ds">Dua hemisfer khusus dengan fisure tengah. Elegant, no-emoji, konsisten di semua OS.</div></div></div>
+
+<!-- B2 -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <!-- 9 pixel nodes wired as a brain grid -->
+  <g stroke="rgba(176,157,255,.35)" stroke-width="1.5">
+    <line x1="112" y1="84" x2="150" y2="66"/><line x1="188" y1="84" x2="150" y2="66"/>
+    <line x1="112" y1="84" x2="112" y2="122" fill="none"/><line x1="188" y1="84" x2="188" y2="122"/>
+    <line x1="112" y1="122" x2="150" y2="140"/><line x1="188" y1="122" x2="150" y2="140"/>
+    <line x1="112" y1="84" x2="188" y2="122" stroke-dasharray="3 5"/><line x1="188" y1="84" x2="112" y2="122" stroke-dasharray="3 5"/>
+    <line x1="150" y1="66" x2="150" y2="140" stroke-dasharray="3 5"/>
+  </g>
+  <g fill="#b09dff">
+    <circle cx="150" cy="66" r="7"/><circle cx="112" cy="84" r="6"/><circle cx="188" cy="84" r="6"/>
+    <circle cx="112" cy="122" r="6"/><circle cx="188" cy="122" r="6"/><circle cx="150" cy="140" r="7"/>
+  </g>
+  <circle cx="150" cy="103" r="5" fill="#fdf9c4"><animate attributeName="opacity" values=".3;1;.3" dur="1.6s" repeatCount="indefinite"/></circle>
+</svg><div class="m"><div class="num">B2 · GRAPH</div><div class="nm">Mosaik node bergrid</div><div class="ds">Otak sebagai mosaic node yang saling terhubung — beberapa edge putus-putus. Paling "rewire": graf yang terlihat hidup dan sejalan dengan sinapsis dot hero.</div></div></div>
+
+</div>
+</body>
+</html>

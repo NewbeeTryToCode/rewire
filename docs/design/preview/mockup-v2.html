@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rewire — mockup v3 · cosmic + premium + mono · synapse dots · terminal</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { background:#07060f; color:#e6e6f5; font-family:'Segoe UI',system-ui,sans-serif; overflow-x:hidden; }
+  .mono { font-family:'Cascadia Code',Consolas,monospace; }
+  .page { max-width:1080px; margin:0 auto; padding:0 32px; }
+
+  /* ===== NAV ===== */
+  nav.top { position:relative; z-index:5; display:flex; align-items:center; gap:28px; padding:26px 0; }
+  nav.top .brand { font:700 20px 'Cascadia Code',Consolas,monospace; color:#fff; text-decoration:none; }
+  nav.top .brand em { color:#b09dff; font-style:normal; }
+  nav.top a { color:#8a84c8; font-size:13.5px; text-decoration:none; }
+  nav.top a:hover { color:#fdf9c4; }
+  nav.top .ver { margin-left:auto; font:600 11.5px monospace; color:#b09dff; border:1px solid rgba(176,157,255,.3); border-radius:999px; padding:5px 14px; letter-spacing:.08em; }
+
+  /* ===== HERO ===== */
+  .hero-wrap { position:relative; }
+  #sing { position:absolute; inset:0; width:100%; height:100%; }
+  .hero { position:relative; z-index:2; padding:96px 0 120px; pointer-events:none; }
+  .hero .inner { max-width:600px; pointer-events:auto; }
+  .kicker { font:600 12px monospace; letter-spacing:.22em; color:#b09dff; margin-bottom:24px; }
+  .kicker .dot { color:#7dd3fc; }
+  h1 { font:600 62px/1.08 system-ui,sans-serif; letter-spacing:-0.02em; color:#fff; }
+  h1 em { font-style:normal; background:linear-gradient(92deg,#b09dff 10%,#7dd3fc 55%,#fdf9c4 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .lede { font-size:18.5px; line-height:1.65; color:#9a94d8; max-width:520px; margin:26px 0 38px; }
+  .lede b { color:#dfd9ff; font-weight:600; }
+
+  /* ===== TERMINAL WINDOW — tenang, monokrom, ringkas ===== */
+  .term { background:#0b0920; border:1px solid rgba(138,132,200,.22); border-radius:10px;
+    overflow:hidden; box-shadow:0 4px 20px rgba(0,0,0,.4); }
+  .term .bar { display:flex; align-items:center; gap:10px; padding:7px 12px; background:rgba(255,255,255,.035); border-bottom:1px solid rgba(138,132,200,.08); }
+  .term .d { width:8px; height:8px; border-radius:50%; background:#3a355e; }  /* monokrom, bukan lampu warna */
+  .term .bt { font:500 10.5px monospace; color:#6a63a8; letter-spacing:.08em; }
+  .term .body { display:flex; align-items:center; gap:10px; padding:10px 14px; font:400 13px monospace; color:#9a94d8; }
+  .term .pre { padding:10px 14px; font:400 12.5px monospace; color:#9a94d8; line-height:1.6; white-space:nowrap; overflow-x:auto; }
+  .term .p { color:#6a63a8; font-weight:600; }
+  .term .cm { color:#56506e; }
+  .term .cb { margin-left:auto; font:600 10.5px monospace; color:#8a84c8; background:transparent;
+    border:1px solid rgba(138,132,200,.3); border-radius:6px; padding:5px 12px; cursor:pointer; }
+  .term .cb:hover { color:#fdf9c4; border-color:rgba(253,249,196,.4); }
+  .term .tabs { display:flex; gap:2px; }
+  .term .tabs span { font:500 11px monospace; color:#6a63a8; padding:4px 10px; cursor:pointer; border-radius:6px; }
+  .term .tabs span.on { color:#dfd9ff; background:rgba(176,157,255,.14); }
+
+  .compat { margin-top:40px; }
+  .compat .lab { font:600 11px monospace; letter-spacing:.18em; color:#6a63a8; display:block; margin-bottom:16px; }
+  .compat .showcase { max-width:340px; overflow:hidden; -webkit-mask:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent); mask:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent); pointer-events:none; }
+  .compat .tr { display:flex; gap:44px; width:max-content; animation:compat 18s linear infinite; }
+  @keyframes compat { to { transform:translateX(-50%) } }
+  .compat .l { display:flex; align-items:center; color:#8a84c8; white-space:nowrap; }
+  .compat img { width:22px; height:22px; opacity:.8; transition:.25s; }
+  .compat .l:hover img { opacity:1; }
+
+  /* ===== SECTIONS ===== */
+  section { padding:110px 0; }
+  h2 { font:600 40px/1.2 system-ui; letter-spacing:-0.015em; color:#fff; margin-bottom:14px; }
+  h2 em { font-style:normal; background:linear-gradient(92deg,#b09dff,#7dd3fc); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .sub { color:#9a94d8; font-size:16.5px; line-height:1.7; max-width:560px; margin-bottom:44px; }
+
+  .flowwrap { display:flex; align-items:center; gap:0; }
+  .fcard { background:rgba(255,255,255,.035); border:1px solid rgba(176,157,255,.18); border-radius:16px; padding:22px 24px; box-shadow:0 4px 24px rgba(0,0,0,.35); flex:1; min-width:0; text-align:center; }
+  .fcard .t { font:700 12.5px monospace; letter-spacing:.1em; color:#dfd9ff; margin-bottom:7px; }
+  .fcard .s { font-size:13px; color:#9a94d8; line-height:1.55; }
+  .fcard.hot { border-color:rgba(176,157,255,.45); background:rgba(176,157,255,.07); }
+  .arr { width:88px; padding:0 10px; text-align:center; flex:none; }
+  .arr .al { font:600 10.5px monospace; color:#6a63a8; letter-spacing:.06em; line-height:1.5; }
+  .arr .st { height:2px; margin-top:10px; background:linear-gradient(90deg,transparent,rgba(176,157,255,.6),transparent); position:relative; }
+  .arr .st::after { content:""; position:absolute; inset:-3px 0; background:radial-gradient(5px 5px at 50% 50%, #fdf9c4 40%, transparent 70%); animation:strike 2.4s infinite; }
+  @keyframes strike { 0%{left:-8%;opacity:0} 12%{opacity:1} 88%{opacity:1} 100%{left:104%;opacity:0} }
+  .flownote { margin-top:26px; text-align:center; font:500 12px monospace; color:#56506e; letter-spacing:.04em; }
+  .conslab { margin-bottom:34px; font:600 11.5px monospace; letter-spacing:.14em; color:#6a63a8; }
+
+  .steps { margin-top:24px; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .step { background:rgba(255,255,255,.03); border:1px solid rgba(176,157,255,.16); border-radius:16px; padding:24px 26px; }
+  .step .n { font:700 13px monospace; color:#7dd3fc; letter-spacing:.1em; }
+  .step h3 { font-size:17px; color:#fff; margin:10px 0 8px; font-weight:600; }
+  .step p { font-size:14px; color:#9a94d8; line-height:1.6; margin-bottom:16px; }
+  .step .term { margin-top:2px; }
+
+  .marq { margin-top:44px; overflow:hidden; border-block:1px solid rgba(176,157,255,.15); padding:16px 0; }
+  .marq .tr { display:flex; gap:44px; width:max-content; animation:mv 26s linear infinite; }
+  @keyframes mv { to { transform:translateX(-50%) } }
+  .marq span { font:600 13px monospace; letter-spacing:.14em; color:#8a84c8; white-space:nowrap; }
+  .marq span.hi { color:#fdf9c4; }
+
+  .cta { text-align:center; }
+  .btn { display:inline-block; font:600 15px system-ui; color:#0b0920; background:linear-gradient(92deg,#b09dff,#7dd3fc); border-radius:999px; padding:15px 34px; text-decoration:none; box-shadow:0 8px 32px rgba(176,157,255,.25); }
+  footer { border-top:1px solid rgba(176,157,255,.14); padding:30px 0; }
+  footer .page { display:flex; justify-content:space-between; font:500 13px monospace; color:#6a63a8; }
+  footer a { color:#8a84c8; text-decoration:none; }
+  @media (max-width:900px){ .flowwrap{flex-direction:column} .arr{width:100%;padding:6px 0} .steps{grid-template-columns:1fr} h1{font-size:44px} }
+</style>
+</head>
+<body>
+
+<div class="hero-wrap">
+  <canvas id="sing" aria-hidden="true"></canvas>
+  <div class="page">
+    <nav class="top">
+      <a class="brand" href="#">rewire<em>_</em></a>
+      <a href="#how">how it works</a>
+      <a href="#connect">connect</a>
+      <a href="#harnesses">harnesses</a>
+      <span class="ver">V0.2.0 · MIT</span>
+    </nav>
+  </div>
+  <div class="hero"><div class="page"><div class="inner">
+    <div class="kicker">$ rewire --status <span class="dot">· healthy</span> ▊</div>
+    <h1>One brain,<br>wired into<br><em>every agent.</em></h1>
+    <p class="lede">Your agents' memory as <b>plain markdown</b> in a git repo you own — consolidated after every session, primed before the next one.</p>
+    <div class="term" style="max-width:600px">
+      <div class="bar"><span class="d r"></span><span class="d y"></span><span class="d g"></span>
+        <div class="tabs"><span class="on">CARGO</span><span>PIPX</span></div>
+        <span class="bt" style="margin-left:auto">rewire-install — sh</span>
+      </div>
+      <div class="body"><span class="p">$</span>cargo install --git github.com/NewbeeTryToCode/rewire rewire<button class="cb">COPY</button></div>
+    </div>
+    <div class="compat">
+      <span class="lab">COMPATIBLE</span>
+      <div class="showcase"><div class="tr" role="list" aria-label="compatible harnesses">
+        <span class="l" role="listitem"><img src="https://cdn.simpleicons.org/claude/8a84c8" alt="Claude" title="Claude"></span>
+        <span class="l" role="listitem"><img src="https://cdn.simpleicons.org/openai/8a84c8" alt="ChatGPT" title="ChatGPT"></span>
+        <span class="l" role="listitem"><img src="https://cdn.simpleicons.org/googlegemini/8a84c8" alt="Gemini" title="Gemini"></span>
+        <span class="l" role="listitem"><img src="https://cdn.simpleicons.org/opencode/8a84c8" alt="OpenCode" title="OpenCode"></span>
+        <span class="l" role="listitem"><img src="https://cdn.simpleicons.org/obsidian/8a84c8" alt="Obsidian" title="Obsidian"></span>
+        <span class="l" aria-hidden="true"><img src="https://cdn.simpleicons.org/claude/8a84c8" alt=""></span>
+        <span class="l" aria-hidden="true"><img src="https://cdn.simpleicons.org/openai/8a84c8" alt=""></span>
+        <span class="l" aria-hidden="true"><img src="https://cdn.simpleicons.org/googlegemini/8a84c8" alt=""></span>
+        <span class="l" aria-hidden="true"><img src="https://cdn.simpleicons.org/opencode/8a84c8" alt=""></span>
+        <span class="l" aria-hidden="true"><img src="https://cdn.simpleicons.org/obsidian/8a84c8" alt=""></span>
+      </div></div>
+    </div>
+  </div></div></div>
+</div>
+
+<section id="how"><div class="page">
+  <div class="conslab mono">// 01 — HOW IT WORKS</div>
+  <h2>Transcripts in. <em>Memory out.</em></h2>
+  <p class="sub">Consolidation distills transcripts into atomic claims; strength is recomputed with ACT-R decay over an append-only event log; priming injects what matters — fenced and re-scanned.</p>
+  <div class="flowwrap">
+    <div class="fcard"><div class="t">AGENT</div><div class="s">any harness — Claude Code, Codex, OpenCode… asks rewire for memory</div></div>
+    <div class="arr"><div class="al">MCP / hooks</div><div class="st"></div></div>
+    <div class="fcard hot"><div class="t">REWIRE ⌁</div><div class="s">consolidates sessions in the background, recalls what matters at 0 LLM tokens</div></div>
+    <div class="arr"><div class="al">read / write</div><div class="st"></div></div>
+    <div class="fcard"><div class="t">THE BRAIN</div><div class="s">plain markdown in your own git repo — committed, diffable, yours</div></div>
+  </div>
+  <p class="flownote mono">in: SessionEnd &amp; PreCompact hooks queue transcripts → consolidation commits atomic claims<br>out: prime at session start · recall / get via MCP · &lt;rewire-memory&gt; fenced, secrets blocked</p>
+</div></section>
+
+<section id="connect"><div class="page">
+  <div class="conslab mono">// 02 — CONNECT</div>
+  <h2>Connect in <em>4 steps.</em></h2>
+  <div class="steps">
+    <div class="step"><span class="n">[ 01 ]</span><h3>Install</h3><p>One Rust binary. SQLite bundled, no runtime.</p>
+      <div class="term"><div class="bar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="bt">sh</span></div>
+      <div class="pre"><span class="p">$</span> <span class="hl">cargo install</span> --git github.com/NewbeeTryToCode/rewire rewire</div></div></div>
+    <div class="step"><span class="n">[ 02 ]</span><h3>Create the brain</h3><p>A private git repo of markdown — yours, portable, diffable.</p>
+      <div class="term"><div class="bar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="bt">sh</span></div>
+      <div class="pre"><span class="p">$</span> <span class="hl">rewire init</span></div></div></div>
+    <div class="step"><span class="n">[ 03 ]</span><h3>Attach your harness</h3><p>Hooks for Claude Code. MCP or AGENTS.md snippet for the rest.</p>
+      <div class="term"><div class="bar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="bt">sh</span></div>
+      <div class="pre"><span class="p">$</span> <span class="hl">rewire install claude-code</span> --write</div></div></div>
+    <div class="step"><span class="n">[ 04 ]</span><h3>Work as usual</h3><p>Sessions consolidate in the background. Arm the honeypot for proof:</p>
+      <div class="term"><div class="bar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="bt">sh</span></div>
+      <div class="pre"><span class="p">$</span> <span class="hl">rewire canary</span> <span class="cm"># optional</span></div></div></div>
+  </div>
+</div></section>
+
+<section id="harnesses"><div class="page">
+  <div class="conslab mono">// 03 — HARNESS & MCP</div>
+  <h2>Supported <em>harnesses & MCP.</em></h2>
+  <div class="marq"><div class="tr">
+    <span>CLAUDE CODE</span><span>CODEX</span><span>OPENCODE</span><span>HERMES</span><span class="hi">GEMINI CLI</span><span>OPENHUMAN</span><span>ZCODE</span><span class="hi">ANY MCP</span>
+    <span>CLAUDE CODE</span><span>CODEX</span><span>OPENCODE</span><span>HERMES</span><span class="hi">GEMINI CLI</span><span>OPENHUMAN</span><span>ZCODE</span><span class="hi">ANY MCP</span>
+  </div></div>
+  <p class="sub" style="margin-top:30px">Hooks for Claude Code · MCP server for any client · AGENTS.md snippet for the rest. Write here today, ask there tomorrow — the brain is a git repo.</p>
+</div></section>
+
+<section class="cta"><div class="page">
+  <div class="conslab mono">// 04 — TEST IT</div>
+  <h2>Give it a <em>test.</em></h2>
+  <p class="sub" style="margin:0 auto 38px">Five commands. One private git repo. No server, no vendor.</p>
+  <a class="btn" href="https://github.com/NewbeeTryToCode/rewire">star on GitHub →</a>
+</div></section>
+
+<footer><div class="page">
+  <span>rewire — portable synaptic memory · MIT</span>
+  <span><a href="#">source</a> · <a href="#">architecture</a> · <a href="#">security</a></span>
+</div></footer>
+
+<script>
+/* Neural synapse graph — port Singularity.tsx (vanilla). hover = dot + neighbour menyala,
+   pulse di wire, EASTER EGG: 1 dot acak — hover menyalakan SELURUH jaringan bergelombang. */
+(() => {
+  const cv = document.getElementById("sing");
+  const ctx = cv.getContext("2d");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ACCENT = "176,157,255";
+  const HOTC   = "253,249,196";
+  const COUNT = 42;
+  let w,h,t=0,frame,nodes=[],edges=[],pulses=[],selected=-1,egg=0,eggLast=-1e4,mx=-1e4,my=-1e4;
+  const T = [];
+
+  function layout(){
+    const dpr = Math.min(devicePixelRatio||1,2);
+    w = cv.clientWidth; h = cv.clientHeight;
+    cv.width=w*dpr; cv.height=h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+    const cx=w*0.76, cy=h*0.45, spread=Math.min(w*0.24,h*0.34);
+    const minX=w*(w>900?0.56:0.6);
+    nodes = Array.from({length:COUNT},()=>{
+      const a=Math.random()*Math.PI*2, d=Math.pow(Math.random(),0.7)*spread;
+      let bx=cx+Math.cos(a)*d*1.2; if(bx<minX) bx=minX+(minX-bx)*0.22;
+      const by=cy+Math.sin(a)*d;
+      return {bx,by,x:bx,y:by,r:2+Math.random()*3.2,ph:Math.random()*6.28,e:0,last:0};
+    });
+    egg=Math.floor(Math.random()*COUNT);
+    const seen=new Set(); edges=[];
+    nodes.forEach((n,i)=>{
+      nodes.map((m,j)=>({j,d:Math.hypot(m.bx-n.bx,m.by-n.by)}))
+        .filter(m=>m.j!==i).sort((p,q)=>p.d-q.d).slice(0,2)
+        .forEach(m=>{
+          const k=i<m.j?i+"-"+m.j:m.j+"-"+i;
+          if(!seen.has(k)){seen.add(k);edges.push({a:i,b:m.j});}
+        });
+    });
+    pulses=[];
+  }
+  function fire(i,depth=0){
+    if(performance.now()-nodes[i].last<450) return;
+    nodes[i].last=performance.now(); nodes[i].e=1;
+    if(depth>2||reduced) return;
+    edges.forEach(ed=>{
+      if(ed.a!==i&&ed.b!==i) return;
+      if(Math.random()<.5){
+        const to=ed.a===i?ed.b:ed.a;
+        const id=setTimeout(()=>{fire(to,depth+1)},240);
+        T.push(id); pulses.push({a:i,b:to,t:0});
+      }
+    });
+  }
+  function fireAll(){       /* easter egg — seluruh otak menyala, gelombang staggered */
+    nodes.forEach(n=>n.e=1);
+    if(reduced) return;
+    edges.forEach((ed,i)=>{
+      const id=setTimeout(()=>{pulses.push({a:ed.a,b:ed.b,t:0})},(i%9)*55);
+      T.push(id);
+    });
+  }
+  const nearest=(x,y,max)=>{let b=-1,bd=max;nodes.forEach((n,i)=>{const d=Math.hypot(n.x-x,n.y-y);if(d<bd){bd=d;b=i}});return b};
+  cv.addEventListener("mousemove",e=>{
+    const r=cv.getBoundingClientRect(); mx=e.clientX-r.left; my=e.clientY-r.top;
+    const hit=nearest(mx,my,130); cv.style.cursor=hit>=0?"pointer":"default";
+    if(hit===egg&&performance.now()-eggLast>3000){eggLast=performance.now();fireAll();return;}
+    if(hit>=0&&nodes[hit].e<.5) fire(hit);
+    nodes.forEach(n=>{const d=Math.hypot(n.x-mx,n.y-my);if(d<260)n.e=Math.max(n.e,(1-d/260)*.9)});
+  });
+  cv.addEventListener("click",e=>{
+    const r=cv.getBoundingClientRect(); selected=nearest(e.clientX-r.left,e.clientY-r.top,26);
+  });
+  function draw(){
+    t++; ctx.clearRect(0,0,w,h);
+    for(const n of nodes){
+      if(!reduced){ n.x=n.bx+Math.sin(n.ph+t*.004)*6; n.y=n.by+Math.cos(n.ph+t*.003)*5; }
+      n.e*=.972;
+    }
+    if(mx>0){const hit=nearest(mx,my,260); if(hit>=0){const d=Math.hypot(nodes[hit].x-mx,nodes[hit].y-my);nodes[hit].e=Math.max(nodes[hit].e,(1-d/260)*.9);}}
+    if(selected>=0&&nodes[selected]) nodes[selected].e=Math.max(nodes[selected].e,.55);
+    for(const ed of edges){
+      const a=nodes[ed.a],b=nodes[ed.b];
+      const sel=ed.a===selected||ed.b===selected;
+      const act=sel||a.e>.35||b.e>.35;
+      ctx.strokeStyle=`rgba(${ACCENT},${act?(sel?.5:.3):.07})`;
+      ctx.lineWidth=act?1.4:1;
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+    }
+    pulses=pulses.filter(p=>p.t<=1);
+    for(const p of pulses){
+      p.t+=reduced?1:.028;
+      const a=nodes[p.a],b=nodes[p.b],x=a.x+(b.x-a.x)*p.t,y=a.y+(b.y-a.y)*p.t;
+      ctx.save();ctx.shadowColor=`rgba(${ACCENT},1)`;ctx.shadowBlur=12;
+      ctx.fillStyle=`rgba(${HOTC},.95)`;ctx.beginPath();ctx.arc(x,y,2.2,0,7);ctx.fill();ctx.restore();
+      if(p.t>=1)nodes[p.b].e=Math.max(nodes[p.b].e,.85);
+    }
+    nodes.forEach((n,i)=>{
+      const nb=selected>=0&&edges.some(ed=>(ed.a===selected&&ed.b===i)||(ed.b===selected&&ed.a===i));
+      const e=Math.max(n.e,i===selected||nb?.6:0);
+      const rr=n.r*(1+e*.35)+(i===selected?2:0);
+      ctx.save();ctx.shadowColor=`rgba(${ACCENT},${.4+e*.6})`;ctx.shadowBlur=4+e*18;
+      ctx.fillStyle=`rgba(${e>.5?HOTC:ACCENT},${(.35+e*.6).toFixed(3)})`;
+      ctx.beginPath();ctx.arc(n.x,n.y,rr,0,7);ctx.fill();
+      if(i===selected){ctx.shadowBlur=0;ctx.strokeStyle=`rgba(${HOTC},.9)`;ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(n.x,n.y,rr+5,0,7);ctx.stroke();}
+      if(i===egg&&n.e>.9){ctx.shadowBlur=0;ctx.strokeStyle=`rgba(${HOTC},.8)`;ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(n.x,n.y,rr+7,0,7);ctx.stroke();}
+      ctx.restore();
+    });
+    frame=requestAnimationFrame(draw);
+  }
+  layout(); draw(); addEventListener("resize",layout);
+})();
+</script>
+</body>
+</html>

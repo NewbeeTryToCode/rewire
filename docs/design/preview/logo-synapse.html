@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>rewire — logo rework · vektor A (synapse), 5 eksekusi berbeda</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#07060f; font-family:'Segoe UI',system-ui,sans-serif; color:#e6e6f5; }
+  .grid { max-width:1180px; margin:0 auto; padding:70px 32px 40px; display:grid; grid-template-columns:repeat(3,1fr); gap:22px; }
+  h1 { font:600 26px system-ui; color:#fff; padding:50px 60px 0; } h1 em { color:#b09dff; font-style:normal; }
+  .hud { font:600 11px monospace; color:#6a63a8; letter-spacing:.14em; padding:8px 60px 26px; }
+  .card { background:rgba(255,255,255,.03); border:1px solid rgba(176,157,255,.18); border-radius:18px; overflow:hidden; transition:.25s; }
+  .card:hover { border-color:rgba(176,157,255,.5); }
+  .card svg { width:100%; display:block; background:rgba(255,255,255,.02); }
+  .card .m { padding:16px 18px 20px; }
+  .num { font:700 11px monospace; color:#7dd3fc; letter-spacing:.12em; }
+  .nm { font:600 16px system-ui; color:#fff; margin:8px 0 6px; }
+  .ds { font-size:12.5px; color:#8a84c8; line-height:1.55; }
+  @media(max-width:900px){ .grid{grid-template-columns:1fr 1fr} }
+</style>
+</head>
+<body>
+<h1>6 eksekusi dari ide <em>A (synapse)</em></h1>
+<div class="hud">// KONSEP: satu neurit inti + dendrit — GAJI core/dendrit diubah total</div>
+<div class="grid">
+
+<!-- A1: core_membrane gradient -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <defs>
+    <radialGradient id="cg1" cx=".4" cy=".35" r=".8">
+      <stop offset="0" stop-color="#fdf9c4"/><stop offset=".45" stop-color="#b09dff"/><stop offset="1" stop-color="#4d3f9e"/>
+    </radialGradient>
+  </defs>
+  <g stroke="rgba(176,157,255,.25)" stroke-width="10" fill="none" stroke-linecap="round">
+    <line x1="150" y1="96" x2="150" y2="56"/>
+    <path d="M138 106 Q 96 84 92 62"/><path d="M162 106 Q 204 84 208 62"/>
+    <path d="M138 122 Q 96 146 92 168"/><path d="M162 122 Q 204 146 208 168"/>
+  </g>
+  <circle cx="150" cy="112" r="34" fill="url(#cg1)" style="filter:drop-shadow(0 0 26px rgba(176,157,255,.6))"/>
+  <circle cx="140" cy="102" r="9" fill="#fff" opacity=".35"/>
+  <circle cx="92" cy="62" r="5" fill="#b09dff" opacity=".9"/><circle cx="208" cy="62" r="5" fill="#b09dff" opacity=".9"/>
+  <circle cx="92" cy="168" r="5" fill="#b09dff" opacity=".9"/><circle cx="208" cy="168" r="5" fill="#b09dff" opacity=".9"/>
+  <circle cx="150" cy="56" r="5" fill="#b09dff" opacity=".9"/>
+</svg><div class="m"><div class="num">A1 · SMOOTH</div><div class="nm">Core membrand gradient</div><div class="ds">Gospektif: glow gradient from kuning → ungu (sama seperti headline hero). Dendrit tebal rounded tanpa ring.</div></div></div>
+
+<!-- A2: matisoic core -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <g stroke="rgba(176,157,255,.25)" stroke-width="10" fill="none" stroke-linecap="round">
+    <line x1="150" y1="96"        x2="150" y2="54"/>
+    <path d="M138 104 Q 96 84 96 62"/><path d="M162 104 Q 204 84 204 62"/>
+    <path d="M138 128 Q 96 146 96 168"/><path d="M162 128 Q 204 146 204 168"/>
+  </g>
+  <rect x="112" y="76" width="76" height="76" rx="20" fill="#140f33" stroke="#b09dff" stroke-width="1.8" style="filter:drop-shadow(0 0 18px rgba(176,157,255,.5))"/>
+  <circle cx="150" cy="114" r="13" fill="#b09dff"><animate attributeName="opacity" values=".5;1;.5" dur="1.8s" repeatCount="indefinite"/></circle>
+  <circle cx="96" cy="62" r="5" fill="#b09dff" opacity=".9"/><circle cx="204" cy="62" r="5" fill="#b09dff" opacity=".9"/>
+  <circle cx="96" cy="168" r="5" fill="#b09dff" opacity=".9"/><circle cx="204" cy="168" r="5" fill="#b09dff" opacity=".9"/>
+  <circle cx="150" cy="54" r="5" fill="#b09dff" opacity=".9"/>
+</svg><div class="m"><div class="num">A2 · SQUARCLE</div><div class="nm">Dendrit + core square rounded</div><div class="ds">Ingatlike B tapi neuron: square rounded + dendrit kaki. Menyatukan两个方面: silicon + synapse.</div></div></div>
+
+<!-- A3: ring only -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <g stroke="rgba(176,157,255,.28)" stroke-width="8" fill="none" stroke-linecap="round">
+    <line x1="150" y1="78" x2="150" y2="48"/>
+    <path d="M132 90 Q 96 70 92 50"/><path d="M168 90 Q 204 70 208 50"/>
+    <path d="M132 128 Q 96 150 92 170"/><path d="M168 128 Q 204 150 208 170"/>
+    <line x1="150" y1="146" x2="150" y2="176"/>
+  </g>
+  <circle cx="150" cy="112" r="36" fill="none" stroke="#b09dff" stroke-width="5" style="filter:drop-shadow(0 0 16px rgba(176,157,255,.5))"/>
+  <circle cx="150" cy="112" r="16" fill="none" stroke="rgba(176,157,255,.4)" stroke-width="2"/>
+  <circle cx="150" cy="112" r="5" fill="#fdf9c4"><animate attributeName="opacity" values=".4;1;.4" dur="1.6s" repeatCount="indefinite"/></circle>
+  <circle cx="92" cy="50" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="208" cy="50" r="4.5" fill="#b09dff" opacity=".8"/>
+  <circle cx="92" cy="170" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="208" cy="170" r="4.5" fill="#b09dff" opacity=".8"/>
+  <circle cx="150" cy="48" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="150" cy="176" r="4.5" fill="#b09dff" opacity=".8"/>
+</svg><div class="m"><div class="num">A3 · RING</div><div class="nm">Cincin terbuka</div><div class="ds">Core jadi ring dengan titik kuning kecil. Ring terbuka, minimal, tetap terbaca sampai favicon 16px.</div></div></div>
+
+<!-- A4: letterform -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <g stroke="rgba(176,157,255,.3)" stroke-width="9" fill="none" stroke-linecap="round">
+    <path d="M108 128 Q 78 108 74 84"/><path d="M192 128 Q 222 108 226 84"/>
+    <path d="M108 152 Q 78 174 74 196"/><path d="M192 152 Q 222 174 226 196"/>
+  </g>
+  <text x="150" y="164" text-anchor="middle" font-family="system-ui" font-weight="800" font-size="76" fill="#fff" style="filter:drop-shadow(0 0 12px rgba(176,157,255,.45))">rw</text>
+  <text x="150" y="196" text-anchor="middle" font-family="monospace" font-size="10" fill="#b09dff" letter-spacing="4">⌁⌁⌁⌁⌁</text>
+</svg><div class="m"><div class="num">A4 · LETTERFORM</div><div class="nm">Dimensional letter "rw"</div><div class="ds">Tulisan "rw" bronco besar dengan 4 dendrit di belakang + gelombang ⌁ di bawah. Logotype, langung tebal.</div></div></div>
+
+<!-- A5: дворик "mitochondria" -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <g stroke="rgba(176,157,255,.25)" stroke-width="10" fill="none" stroke-linecap="round">
+    <line x1="150" y1="94" x2="150" y2="56"/>
+    <path d="M138 106 Q 104 88 100 62"/><path d="M162 106 Q 196 88 200 62"/>
+    <path d="M138 128 Q 104 148 100 174"/><path d="M162 128 Q 196 148 200 174"/>
+  </g>
+  <path d="M116 76 L 184 76 L 178 148 L 122 148 Z" fill="none" stroke="#fdf9c4" stroke-width="2.2" style="filter:drop-shadow(0 0 14px rgba(253,249,196,.35))"/>
+  <path d="M128 96 L 172 96 M124 112 L 176 112 M122 128 L 178 128" stroke="rgba(176,157,255,.5)" stroke-width="2" fill="none"/>
+  <circle cx="100" cy="62" r="5" fill="#b09dff" opacity=".9"/><circle cx="200" cy="62" r="5" fill="#b09dff" opacity=".9"/>
+  <circle cx="100" cy="174" r="5" fill="#b09dff" opacity=".9"/><circle cx="200" cy="174" r="5" fill="#b09dff" opacity=".9"/>
+  <circle cx="150" cy="56" r="5" fill="#b09dff" opacity=".9"/>
+</svg><div class="m"><div class="num">A5 · STACKS</div><div class="nm">Dendrit + halaman jsonl</div><div class="ds">Core = tumpukan garis (file markdown). Memberi berat pada "memory as plain files".</div></div></div>
+
+<!-- A6: dot + dashed synapse = hero clone -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <g stroke="rgba(176,157,255,.22)" stroke-width="1.6" fill="none">
+    <line x1="150" y1="112" x2="96" y2="66"/><line x1="150" y1="112" x2="214" y2="66"/>
+    <line x1="150" y1="112" x2="96" y2="162"/><line x1="150" y1="112" x2="214" y2="162"/>
+    <line x1="150" y1="112" x2="242" y2="112"/><line x1="150" y1="112" x2="58" y2="112"/>
+    <line x1="150" y1="112" x2="150" y2="46"/><line x1="150" y1="112" x2="150" y2="178"/>
+  </g>
+  <circle cx="150" cy="112" r="26" fill="#b09dff" style="filter:drop-shadow(0 0 20px rgba(176,157,255,.55))"/>
+  <circle cx="150" cy="112" r="10" fill="#fdf9c4"/>
+  <circle cx="96" cy="66" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="214" cy="66" r="4.5" fill="#b09dff" opacity=".8"/>
+  <circle cx="96" cy="162" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="214" cy="162" r="4.5" fill="#b09dff" opacity=".8"/>
+  <circle cx="242" cy="112" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="58" cy="112" r="4.5" fill="#b09dff" opacity=".8"/>
+  <circle cx="150" cy="46" r="4.5" fill="#b09dff" opacity=".8"/><circle cx="150" cy="178" r="4.5" fill="#b09dff" opacity=".8"/>
+  <circle cx="58" cy="112" r="9" fill="none" stroke="rgba(176,157,255,.35)"><animate attributeName="r" values="9;16" dur="1.8s" repeatCount="indefinite" />
+    <animate attributeName="opacity" values=".6;0" dur="1.8s" repeatCount="indefinite"/></circle>
+</svg><div class="m"><div class="num">A6 · STAR</div><div class="nm">Dot dengan 8 satelit</div><div class="ds">Satu dot besar dengan core kuning + 8 satelit. Paling literal: one dot connects everything.</div></div></div>
+
+</div>
+</body>
+</html>

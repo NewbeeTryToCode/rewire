@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rewire — redesign preview (6 style OpenDesign)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#111; font-family:'Segoe UI', sans-serif; }
+  .variant { margin:56px 0; }
+  .vlabel {
+    position:sticky; top:0; z-index:10; padding:10px 24px; font:600 13px/1.2 monospace;
+    color:#111; background:#ffd54a; border-bottom:1px solid rgba(0,0,0,.2);
+  }
+  .page { max-width:1080px; margin:0 auto; padding:0 32px; }
+
+  /* ============ 1. MINIMAL ============ */
+  .v-minimal { background:#F4F4F1; color:#0C0C09; padding:64px 0 88px; }
+  .v-minimal nav { display:flex; gap:28px; font-size:14px; color:#4a4a44; padding-bottom:80px; }
+  .v-minimal nav b { color:#0C0C09; }
+  .v-minimal h1 { font:800 64px/1.05 'Segoe UI', Inter, sans-serif; letter-spacing:-0.03em; max-width:640px; }
+  .v-minimal h1 em { color:#312C85; font-style:normal; }
+  .v-minimal .lede { font-size:19px; line-height:1.6; color:#4c4c46; max-width:520px; margin:24px 0 36px; }
+  .v-minimal .inst { background:#fff; border:1px solid #dedede; border-radius:10px; padding:18px 22px; display:flex; gap:16px; align-items:center; max-width:600px; font:500 14px monospace; }
+  .v-minimal .inst .p { color:#999; }
+  .v-minimal .inst .cb { margin-left:auto; font:700 12px sans; background:#0C0C09; color:#fff; padding:9px 18px; border-radius:7px; }
+  .v-minimal .chips { display:flex; gap:24px; margin-top:40px; font-size:13px; color:#8a8a82; }
+  .v-minimal .chips span b { color:#0C0C09; font-weight:600; }
+
+  /* ============ 2. PREMIUM (Apple) ============ */
+  .v-premium { background:#fbfbfd; color:#1d1d1f; padding:48px 0 96px; text-align:center; }
+  .v-premium nav { display:flex; gap:40px; justify-content:center; font-size:12px; color:#6e6e73; padding-bottom:88px; }
+  .v-premium h1 { font:600 72px/1.06 -apple-system,'SF Pro Display','Segoe UI',sans-serif; letter-spacing:-0.02em; }
+  .v-premium h1 em { font-style:normal; background:linear-gradient(92deg,#0071e3,#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .v-premium .lede { font-size:22px; line-height:1.5; color:#6e6e73; max-width:640px; margin:26px auto 40px; font-weight:400; }
+  .v-premium .btns { display:flex; gap:16px; justify-content:center; }
+  .v-premium .b1 { background:#0071e3; color:#fff; border-radius:980px; padding:15px 30px; font-size:16px; }
+  .v-premium .b2 { color:#0071e3; padding:15px 12px; font-size:16px; }
+  .v-premium .inst { margin:44px auto 0; background:#fff; border:1px solid #e8e8ed; border-radius:14px; box-shadow:0 2px 12px rgba(0,0,0,.05); padding:20px 28px; max-width:640px; font:500 14px monospace; color:#1d1d1f; text-align:left; }
+  .v-premium .chips { margin-top:44px; font-size:13px; color:#86868b; display:flex; gap:28px; justify-content:center; }
+
+  /* ============ 3. NEOBRUTALISM ============ */
+  .v-brut { background:#FFE14D; color:#0c0c0c; padding:64px 0 96px; border-top:4px solid #0c0c0c; border-bottom:4px solid #0c0c0c; }
+  .v-brut nav { display:flex; gap:8px; padding-bottom:72px; font:800 14px sans; }
+  .v-brut nav span { border:3px solid #0c0c0c; background:#fff; padding:7px 14px; box-shadow:4px 4px 0 #0c0c0c; }
+  .v-brut h1 { font:900 62px/1.0 'Arial Black',sans-serif; text-transform:uppercase; max-width:720px; letter-spacing:-0.02em; }
+  .v-brut h1 em { background:#FF6B4a; color:#fff; padding:0 10px; box-shadow:5px 5px 0 #0c0c0c; font-style:normal; display:inline-block; transform:rotate(-1.5deg); }
+  .v-brut .lede { font:700 19px/1.5 sans; max-width:520px; margin:28px 0 36px; }
+  .v-brut .inst { background:#fff; border:4px solid #0c0c0c; box-shadow:8px 8px 0 #0c0c0c; padding:18px 22px; display:flex; gap:14px; align-items:center; max-width:620px; font:700 14px monospace; }
+  .v-brut .inst .cb { margin-left:auto; font:900 13px sans; background:#7C5CFF; color:#fff; padding:10px 20px; border:3px solid #0c0c0c; box-shadow:4px 4px 0 #0c0c0c; }
+  .v-brut .chips { display:flex; gap:10px; margin-top:44px; flex-wrap:wrap; }
+  .v-brut .chips span { border:3px solid #0c0c0c; background:#fff; padding:6px 14px; font:800 12px sans; box-shadow:3px 3px 0 #0c0c0c; }
+
+  /* ============ 4. COSMIC (dark futuristic) ============ */
+  .v-cosmic { background:radial-gradient(1200px 600px at 70% -10%, #1a1440 0%, #07060f 55%); color:#e6e6f5; padding:56px 0 96px; border-top:1px solid #2a2450; }
+  .v-cosmic nav { display:flex; gap:28px; font-size:13px; color:#8a84c8; padding-bottom:84px; }
+  .v-cosmic nav b { color:#fff; }
+  .v-cosmic .kicker { font:600 12px monospace; letter-spacing:.2em; color:#b09dff; margin-bottom:20px; }
+  .v-cosmic h1 { font:600 58px/1.1 'Segoe UI',sans-serif; letter-spacing:-0.01em; max-width:660px; }
+  .v-cosmic h1 em { font-style:normal; color:#b09dff; text-shadow:0 0 30px rgba(176,157,255,.5); }
+  .v-cosmic .lede { font-size:18px; line-height:1.65; color:#9a94d8; max-width:540px; margin:24px 0 38px; }
+  .v-cosmic .inst { background:rgba(255,255,255,.04); border:1px solid rgba(176,157,255,.25); backdrop-filter:blur(8px); border-radius:12px; padding:18px 22px; display:flex; gap:16px; max-width:600px; font:500 14px monospace; color:#cfc9ff; }
+  .v-cosmic .inst .p { color:#6a63a8; }
+  .v-cosmic .inst .cb { margin-left:auto; font:600 12px sans; color:#0b0920; background:linear-gradient(90deg,#b09dff,#7dd3fc); border-radius:8px; padding:9px 18px; }
+  .v-cosmic .chips { display:flex; gap:26px; margin-top:42px; font-size:13px; color:#6a63a8; }
+
+  /* ============ 5. MODERN EDITORIAL ============ */
+  .v-edit { background:#FAF7F2; color:#1c1a17; padding:56px 0 96px; border-top:1px solid #dcd6ca; }
+  .v-edit nav { display:flex; justify-content:space-between; font:500 14px 'Georgia',serif; color:#6b6255; padding-bottom:84px; }
+  .v-edit nav b { font:700 20px Georgia,serif; color:#1c1a17; }
+  .v-edit .kicker { font:600 11px monospace; letter-spacing:.18em; color:#B4542B; margin-bottom:22px; }
+  .v-edit h1 { font:400 58px/1.08 Georgia,'Times New Roman',serif; max-width:680px; }
+  .v-edit h1 em { font-style:italic; color:#B4542B; }
+  .v-edit .lede { font:400 19px/1.65 Georgia,serif; color:#57503f; max-width:520px; margin:26px 0 38px; }
+  .v-edit .inst { border-top:2px solid #1c1a17; border-bottom:1px solid #dcd6ca; padding:16px 4px; display:flex; gap:16px; align-items:center; max-width:640px; font:500 14px monospace; }
+  .v-edit .inst .cb { margin-left:auto; font:700 12px sans; letter-spacing:.08em; border:1.5px solid #1c1a17; padding:8px 20px; border-radius:999px; }
+  .v-edit .chips { margin-top:40px; font:italic 14px Georgia,serif; color:#8a8172; }
+
+  /* ============ 6. MATRIX / MONO ============ */
+  .v-matrix { background:#0b0d0b; color:#c9ffd8; padding:56px 0 96px; }
+  .v-matrix nav { display:flex; gap:24px; font:600 13px monospace; color:#3d5c47; padding-bottom:76px; }
+  .v-matrix .kicker { font:600 12px monospace; color:#39FF6E; margin-bottom:18px; }
+  .v-matrix .kicker .blink { animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0 } }
+  .v-matrix h1 { font:700 46px/1.15 'Cascadia Code',Consolas,monospace; max-width:720px; }
+  .v-matrix h1 em { font-style:normal; color:#39FF6E; }
+  .v-matrix .lede { font:400 15px/1.8 monospace; color:#7ea189; max-width:560px; margin:24px 0 34px; }
+  .v-matrix .inst { background:#101410; border:1px solid #1e3324; padding:14px 18px; display:flex; gap:14px; max-width:620px; font:500 14px monospace; }
+  .v-matrix .inst .p { color:#39FF6E; font-weight:700; }
+  .v-matrix .inst .cb { margin-left:auto; border:1px solid #39FF6E; color:#39FF6E; padding:7px 16px; font:700 12px monospace; }
+  .v-matrix .chips { display:flex; gap:18px; margin-top:38px; font:600 12px monospace; color:#3d5c47; }
+
+  /* shared mini-sections inside each variant */
+  .mini { margin-top:84px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .mini .card { padding:20px; font-size:13px; line-height:1.5; opacity:.92; }
+  .steps { margin-top:26px; display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  .steps div { font-size:13px; }
+  .steps b { display:block; font-size:26px; margin-bottom:8px; }
+  .v-cosmic .mini .card { background:rgba(255,255,255,.03); border:1px solid #2a2450; border-radius:12px; color:#9a94d8; }
+  .v-cosmic .steps b { color:#b09dff; }
+  .v-minimal .mini .card { background:#fff; border:1px solid #dedede; border-radius:10px; color:#4c4c46; }
+  .v-minimal .steps b { color:#312C85; }
+  .v-premium .mini .card { background:#fff; border-radius:16px; box-shadow:0 2px 12px rgba(0,0,0,.05); color:#6e6e73; }
+  .v-premium .steps b { color:#0071e3; font-weight:700; }
+  .v-brut .mini .card { background:#fff; border:4px solid #0c0c0c; box-shadow:6px 6px 0 #0c0c0c; font-weight:600; }
+  .v-brut .steps b { color:#FF6B4a; font-weight:900; }
+  .v-edit .mini .card { border-top:2px solid #1c1a17; color:#57503f; }
+  .v-edit .steps b { color:#B4542B; font-family:Georgia,serif; font-style:italic; }
+  .v-matrix .mini .card { background:#101410; border:1px solid #1e3324; color:#7ea189; }
+  .v-matrix .steps b { color:#39FF6E; font-family:monospace; }
+</style>
+</head>
+<body>
+
+<!-- ===== 1. MINIMAL ===== -->
+<div class="variant"><div class="vlabel">1 · MINIMAL — clean, tempat napas luas, warna netral terbatas</div>
+<div class="v-minimal"><div class="page">
+  <nav><b>rewire</b><span>github</span><span>how it works</span><span>connect</span><span>harnesses</span></nav>
+  <h1>One brain, wired into <em>every agent.</em></h1>
+  <p class="lede">rewire stores your agents' memory as plain markdown in a git repo you own — consolidated after every session, primed before the next one.</p>
+  <div class="inst"><span class="p">$</span> cargo install --git github.com/NewbeeTryToCode/rewire rewire<span class="cb">COPY</span></div>
+  <div class="chips"><span><b>COMPATIBLE</b> Claude · ChatGPT · Gemini · OpenCode · Obsidian</span></div>
+  <div class="mini"><div class="card">Transcripts → brain. Consolidation distills sessions into atomic claims.</div><div class="card">ACT-R decay over an append-only event log — memory bisa di-diff.</div><div class="card">Priming injects what matters, fenced and re-scanned.</div></div>
+  <div class="steps"><div><b>1</b>Install</div><div><b>2</b>Create the brain</div><div><b>3</b>Attach harness</div><div><b>4</b>Work as usual</div></div>
+</div></div></div>
+
+<!-- ===== 2. PREMIUM ===== -->
+<div class="variant"><div class="vlabel">2 · PREMIUM (Apple-acak) — elegan, gradient accent, halo halus</div>
+<div class="v-premium"><div class="page">
+  <nav><span>rewire</span><span>how it works</span><span>connect</span><span>harnesses</span><span>github</span></nav>
+  <h1>One brain, wired<br>into <em>every agent.</em></h1>
+  <p class="lede">Plain markdown. A git repo you own. Consolidated after every session, primed before the next one.</p>
+  <div class="btns"><span class="b1">Install now</span><span class="b2">Read the docs ›</span></div>
+  <div class="inst">$ cargo install --git github.com/NewbeeTryToCode/rewire rewire</div>
+  <div class="chips"><span>Claude</span><span>ChatGPT</span><span>Gemini</span><span>OpenCode</span><span>Obsidian</span></div>
+  <div class="mini"><div class="card">Consolidation distills transcripts into atomic claims.</div><div class="card">Strength recomputed with ACT-R decay.</div><div class="card">Priming injects what matters — fenced and re-scanned.</div></div>
+  <div class="steps"><div><b>1</b>Install</div><div><b>2</b>Create the brain</div><div><b>3</b>Attach harness</div><div><b>4</b>Work as usual</div></div>
+</div></div></div>
+
+<!-- ===== 3. NEOBRUTALISM ===== -->
+<div class="variant"><div class="vlabel">3 · NEOBRUTALISM — berani, border tebal, shadow keras, kuning mencolok</div>
+<div class="v-brut"><div class="page">
+  <nav><span style="background:#0c0c0c;color:#FFe14D">rewire★</span><span>github</span><span>how it works</span><span>connect</span></nav>
+  <h1>ONE BRAIN, WIRED INTO <em>EVERY AGENT.</em></h1>
+  <p class="lede">Your agents' memory = plain markdown in a git repo YOU own. No server. No vendor. No bull.</p>
+  <div class="inst"><span>pipx</span> / <span>cargo</span> → install rewire<span class="cb">COPY →</span></div>
+  <div class="chips"><span>CLAUDE CODE</span><span>CODEX</span><span>OPENCODE</span><span>GEMINI CLI</span><span>ANY MCP</span></div>
+  <div class="mini"><div class="card">⚡ TRANSCRIPTS → THE BRAIN → AGENT SESSIONS (beams animate!)</div><div class="card">ACT-R decay. Append-only event log. Diffable.</div><div class="card">Honeypot canary: proof your agent reads memory.</div></div>
+  <div class="steps"><div><b>1</b>Install</div><div><b>2</b>Init brain</div><div><b>3</b>Attach harness</div><div><b>4</b>Just work</div></div>
+</div></div></div>
+
+<!-- ===== 4. COSMIC ===== -->
+<div class="variant"><div class="vlabel">4 · COSMIC — gelap futuristik, glow ungu, (paling mirip vibe lama)</div>
+<div class="v-cosmic"><div class="page">
+  <nav><b>rewire</b><span style="color:#b09dff">v0.2.0</span><span>github</span><span>how it works</span><span>connect</span></nav>
+  <div class="kicker">V0.2.0 · OPEN SOURCE · MIT</div>
+  <h1>One brain, wired into <em>every agent.</em></h1>
+  <p class="lede">Your agents' memory, stored as plain markdown in a git repo you own — consolidated after every session, primed before the next one.</p>
+  <div class="inst"><span class="p">$</span> cargo install --git github.com/NewbeeTryToCode/rewire rewire<span class="cb">COPY</span></div>
+  <div class="chips"><span>CLAude</span><span>CODEX</span><span>GEMINI</span><span>OPENCODE</span><span>HERMES</span><span>ANY MCP</span></div>
+  <div class="mini"><div class="card">✦ TRANSCRIPTS → THE BRAIN → AGENT SESSIONS — light packets travel the wire.</div><div class="card">Atomic claims. ACT-R decay. Append-only event log.</div><div class="card">Fenced priming injection, re-scanned every session.</div></div>
+  <div class="steps"><div><b>1</b>Install</div><div><b>2</b>Create brain</div><div><b>3</b>Attach harness</div><div><b>4</b>Work as usual</div></div>
+</div></div></div>
+
+<!-- ===== 5. MODERN EDITORIAL ===== -->
+<div class="variant"><div class="vlabel">5 · MODERN EDITORIAL — serif, hangat, seperti jurnal ilmiah</div>
+<div class="v-edit"><div class="page">
+  <nav><b>rewire</b><span>№ 0.2 — open source, MIT</span><span>github ↗</span></nav>
+  <div class="kicker">ON AGENT MEMORY</div>
+  <h1>One brain, wired into <em>every agent.</em></h1>
+  <p class="lede">rewire stores your agents' memory as plain markdown in a git repo you own — consolidated after every session, primed before the next one.</p>
+  <div class="inst"><span>$</span> cargo install --git github.com/NewbeeTryToCode/rewire rewire<span class="cb">COPY</span></div>
+  <div class="chips">Compatible with Claude, ChatGPT, Gemini, OpenCode, Hermes &amp; Obsidian.</div>
+  <div class="mini"><div class="card">Transcripts consolidate into atomic claims.</div><div class="card">Strength is recomputed with ACT-R decay.</div><div class="card">Priming injects what matters — fenced, re-scanned.</div></div>
+  <div class="steps"><div><b>i.</b>Install</div><div><b>ii.</b>Create the brain</div><div><b>iii.</b>Attach harness</div><div><b>iv.</b>Work as usual</div></div>
+</div></div></div>
+
+<!-- ===== 6. MATRIX / MONO ===== -->
+<div class="variant"><div class="vlabel">6 · MATRIX / MONO — terminal, hacker-chic, hijau neon</div>
+<div class="v-matrix"><div class="page">
+  <nav><span>rewire</span><span>github</span><span>#how</span><span>#connect</span><span>#harnesses</span></nav>
+  <div class="kicker">$ rewire --status <span class="blink">▊</span></div>
+  <h1>one brain, wired<br>into <em>&lt;every agent/></em></h1>
+  <p class="lede">agents' memory = plain markdown. in a git repo you own. consolidated after every session. primed before the next.</p>
+  <div class="inst"><span class="p">$</span> cargo install --git github.com/NewbeeTryToCode/rewire rewire<span class="cb">[COPY]</span></div>
+  <div class="chips"><span>[CLAUDE CODE]</span><span>[CODEX]</span><span>[OPENCODE]</span><span>[GEMINI CLI]</span><span>[ANY_MCP]</span><span>[OBSIDIAN]</span></div>
+  <div class="mini"><div class="card">&gt; transcripts --&gt; THE BRAIN --&gt; agent sessions // light packets on the wire</div><div class="card">&gt; ACT-R decay :: append-only event log :: git-diffable</div><div class="card">&gt; rewire canary # honeypot proof your agent read memory</div></div>
+  <div class="steps"><div><b>[1]</b>install</div><div><b>[2]</b>init brain</div><div><b>[3]</b>attach</div><div><b>[4]</b>work</div></div>
+</div></div></div>
+
+</body>
+</html>
