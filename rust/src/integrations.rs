@@ -38,8 +38,9 @@ pub fn spawn_consolidation(brain: &Brain) {
     }
     let Ok(exe) = std::env::current_exe() else { return };
     let log = fs::OpenOptions::new().create(true).append(true).open(brain.path(&[".state", "consolidate.log"]));
+    let handle = |f: &fs::File| f.try_clone().map(Stdio::from).unwrap_or_else(|_| Stdio::null());
     let (out, err) = match &log {
-        Ok(f) => (Stdio::from(f.try_clone().unwrap()), Stdio::from(f.try_clone().unwrap())),
+        Ok(f) => (handle(f), handle(f)),
         Err(_) => (Stdio::null(), Stdio::null()),
     };
     let mut cmd = Command::new(exe);
@@ -58,22 +59,22 @@ fn remember_shown(brain: &Brain, session: &str, ids: &[String]) -> Result<()> {
     if session.is_empty() {
         return Ok(());
     }
-    let mut state = brain.read_state("prompt_shown");
-    let mut all: std::collections::BTreeSet<String> = state
-        .get(session)
-        .and_then(|e| e.get("ids"))
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    all.extend(ids.iter().cloned());
-    state.insert(session.into(), json!({"t": crate::util::now_ts(), "ids": all.into_iter().collect::<Vec<_>>()}));
-    let t = |v: &Value| v.get("t").and_then(Value::as_f64).unwrap_or(0.0);
-    let mut by_age: Vec<(String, f64)> = state.iter().map(|(k, v)| (k.clone(), t(v))).collect();
-    by_age.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    for (old, _) in by_age.iter().take(by_age.len().saturating_sub(PROMPT_SESSIONS)) {
-        state.remove(old);
-    }
-    brain.write_state("prompt_shown", &state)
+    brain.update_state("prompt_shown", |state| {
+        let mut all: std::collections::BTreeSet<String> = state
+            .get(session)
+            .and_then(|e| e.get("ids"))
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        all.extend(ids.iter().cloned());
+        state.insert(session.into(), json!({"t": crate::util::now_ts(), "ids": all.into_iter().collect::<Vec<_>>()}));
+        let t = |v: &Value| v.get("t").and_then(Value::as_f64).unwrap_or(0.0);
+        let mut by_age: Vec<(String, f64)> = state.iter().map(|(k, v)| (k.clone(), t(v))).collect();
+        by_age.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (old, _) in by_age.iter().take(by_age.len().saturating_sub(PROMPT_SESSIONS)) {
+            state.remove(old);
+        }
+    })
 }
 
 /// UserPromptSubmit: notes clearly related to this prompt that the session has not seen yet.
@@ -85,6 +86,7 @@ pub fn prompt_context(brain: &Brain, payload: &Value) -> Result<String> {
     }
     let session = payload.get("session_id").and_then(Value::as_str).unwrap_or("");
     let mut index = Index::new(brain);
+    index.embed_limit = crate::index::EMBED_BATCH; // a hook has seconds: embed a batch, the rest later
     index.refresh()?;
     let cwd = payload
         .get("cwd")
@@ -93,7 +95,12 @@ pub fn prompt_context(brain: &Brain, payload: &Value) -> Result<String> {
         .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
     let scopes = crate::project::scopes_for(crate::project::detect(Some(&cwd), &brain.config.projects).as_deref());
     let opts = crate::index::SearchOpts { scopes: Some(scopes), k: PROMPT_HITS * 2, ..Default::default() };
-    let hits: Vec<_> = index.search(&prompt, &opts)?.into_iter().filter(|h| h.status == "active" && h.type_ != "project").collect();
+    let unreviewed = brain.untrusted_ids(); // rules from another device wait for a review here
+    let hits: Vec<_> = index
+        .search(&prompt, &opts)?
+        .into_iter()
+        .filter(|h| h.status == "active" && h.type_ != "project" && !unreviewed.contains(&h.id))
+        .collect();
     if hits.is_empty() {
         return Ok(String::new());
     }
@@ -190,6 +197,7 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
             .map(String::from)
             .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
         let mut index = Index::new(&brain);
+        index.embed_limit = crate::index::EMBED_BATCH;
         // never break session start; tell the agent memory is missing instead
         match index.refresh().and_then(|_| snapshot::build(&brain, &mut index, Some(&cwd), None)) {
             Ok(snap) if !snap.empty => {
@@ -209,9 +217,9 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
     }
     if let Some(transcript) = payload.get("transcript_path").and_then(Value::as_str).filter(|s| !s.is_empty()) {
         if event == "session-end" || event == "pre-compact" {
-            let mut pending = brain.read_state("pending");
-            pending.insert(transcript.into(), json!(harness));
-            brain.write_state("pending", &pending)?;
+            brain.update_state("pending", |pending| {
+                pending.insert(transcript.into(), json!(harness));
+            })?;
         }
     }
     // Lazy consolidation: every hook nudges a background run; the lock and the watermarks make extra
@@ -220,46 +228,122 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
     Ok(out)
 }
 
-pub fn claude_code_settings(command: &str) -> Value {
-    let entry = |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
-    json!({"hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)}})
+pub fn claude_code_settings(command: &str, brain: Option<&Path>) -> Value {
+    let entry =
+        |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
+    json!({
+        "hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)},
+        "permissions": {"deny": deny_rules(command, brain)},
+    })
 }
 
-pub fn install_claude_code(write: bool, settings_path: Option<&Path>) -> Result<String> {
-    let settings_path = settings_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| crate::brain::expand_user("~/.claude/settings.json"));
-    let wanted = claude_code_settings("rewire");
+/// Claude Code permission rules that keep the agent from approving its own memories: it proposes with
+/// `rewire remember` and the user approves with `rewire review`. Also checked by rewire itself (cli::agent_shell);
+/// neither stops an agent that runs arbitrary shell code as the user, so `review` shows where each item came from.
+pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
+    let mut rules = Vec::new();
+    for exe in ["rewire", command].into_iter().collect::<indexmap::IndexSet<_>>() {
+        rules.push(format!("Bash({exe} review approve:*)"));
+        rules.push(format!("Bash({exe} remember --apply:*)"));
+        rules.push(format!("Bash({exe} review reject:*)"));
+        rules.push(format!("Bash({exe} forget:*)"));
+        rules.push(format!("Bash({exe} undo:*)"));
+        rules.push(format!("Bash({exe} remote set:*)"));
+    }
+    if let Some(root) = brain {
+        // "//" starts an absolute path in a Claude Code permission rule
+        // the path as given and the real one: an agent may reach the brain through either
+        let given = crate::brain::absolute(root);
+        let real = root.canonicalize().unwrap_or_else(|_| given.clone());
+        for path in [given, real].into_iter().collect::<indexmap::IndexSet<_>>() {
+            let abs = path.to_string_lossy().trim_start_matches('/').to_string();
+            for tool in ["Edit", "Write"] {
+                rules.push(format!("{tool}(//{abs}/**)"));
+            }
+        }
+    }
+    rules
+}
+
+/// This binary by its full path: a hook shell may not have ~/.cargo/bin on PATH.
+fn exe_command() -> String {
+    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.to_string_lossy().into_owned());
+    exe.filter(|p| !p.contains(char::is_whitespace)).unwrap_or_else(|| "rewire".into())
+}
+
+pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Option<&Path>) -> Result<String> {
+    let settings_path = settings_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does)
+        let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
+        crate::brain::expand_user(&dir).join("settings.json")
+    });
+    let command = exe_command();
+    let wanted = claude_code_settings(&command, brain);
     let mut lines = Vec::new();
     if write {
         let mut current: Value = json!({});
-        let backup = settings_path.with_file_name(format!("{}.bak-rewire", settings_path.file_name().unwrap().to_string_lossy()));
-        if settings_path.exists() {
-            current = serde_json::from_str(&fs::read_to_string(&settings_path)?)?;
+        let name = settings_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "settings.json".into());
+        let backup = settings_path.with_file_name(format!("{name}.bak-rewire"));
+        let had_settings = settings_path.exists();
+        if had_settings {
+            current = serde_json::from_str(&fs::read_to_string(&settings_path)?)
+                .map_err(|e| Error::Op(format!("{}: not valid JSON ({e}); fix it by hand or move it away", settings_path.display())))?;
             // Keep the first backup: it holds the user's settings from before rewire.
             if !backup.exists() {
                 fs::copy(&settings_path, &backup)?;
             }
         }
-        let obj = current.as_object_mut().ok_or_else(|| Error::Op("settings.json is not an object".into()))?;
-        let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
-        for (event, entries) in wanted["hooks"].as_object().unwrap() {
-            let existing = hooks.as_object_mut().unwrap().entry(event.clone()).or_insert_with(|| json!([]));
-            let cmd = entries[0]["hooks"][0]["command"].clone();
-            let present = existing.as_array().unwrap().iter().any(|e| {
-                e.get("hooks").and_then(Value::as_array).is_some_and(|hs| hs.iter().any(|h| h.get("command") == Some(&cmd)))
+        let unexpected = |what: &str| Error::Op(format!("{}: {what}; fix it by hand or move it away", settings_path.display()));
+        let obj = current.as_object_mut().ok_or_else(|| unexpected("not a JSON object"))?;
+        let hooks =
+            obj.entry("hooks").or_insert_with(|| json!({})).as_object_mut().ok_or_else(|| unexpected("\"hooks\" is not an object"))?;
+        for (event, entries) in wanted["hooks"].as_object().into_iter().flatten() {
+            let existing = hooks
+                .entry(event.clone())
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| unexpected(&format!("\"hooks.{event}\" is not a list")))?;
+            let wanted_cmd = entries[0]["hooks"][0]["command"].as_str().unwrap_or_default().to_string();
+            let suffix = wanted_cmd.split_once(" hook ").map(|(_, e)| format!(" hook {e}")).unwrap_or_default();
+            // already installed, by full path or (older installs) by bare name
+            let present = existing.iter().any(|e| {
+                e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
+                    hs.iter()
+                        .filter_map(|h| h.get("command").and_then(Value::as_str))
+                        .any(|c| c == wanted_cmd || (c.ends_with(&suffix) && c.contains("rewire")))
+                })
             });
             if !present {
-                existing.as_array_mut().unwrap().extend(entries.as_array().unwrap().iter().cloned());
+                existing.extend(entries.as_array().into_iter().flatten().cloned());
             }
         }
-        fs::create_dir_all(settings_path.parent().unwrap())?;
-        fs::write(&settings_path, serde_json::to_string_pretty(&current)?)?;
-        lines.push(format!("hooks written to {} (backup: {})", settings_path.display(), backup.display()));
+        let deny = obj
+            .entry("permissions")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| unexpected("\"permissions\" is not an object"))?
+            .entry("deny")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| unexpected("\"permissions.deny\" is not a list"))?;
+        for rule in wanted["permissions"]["deny"].as_array().into_iter().flatten() {
+            if !deny.contains(rule) {
+                deny.push(rule.clone());
+            }
+        }
+        if let Some(dir) = settings_path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        crate::util::atomic_write(&settings_path, &serde_json::to_string_pretty(&current)?)?;
+        lines.push(format!(
+            "hooks and permission rules (the agent may not approve memories or edit the brain directly) written to {}{}",
+            settings_path.display(),
+            if had_settings { format!(" (backup: {})", backup.display()) } else { String::new() }
+        ));
     } else {
         lines.push(format!("Add to {}:\n{}", settings_path.display(), serde_json::to_string_pretty(&wanted)?));
     }
-    lines.push("Register the MCP server:\n  claude mcp add --scope user rewire -- rewire mcp".into());
+    lines.push(format!("Register the MCP server:\n  claude mcp add --scope user rewire -- {command} mcp"));
     Ok(lines.join("\n\n"))
 }
 
@@ -267,12 +351,19 @@ pub fn install_codex(skills_dir: Option<&str>) -> Result<String> {
     let dir = crate::brain::expand_user(skills_dir.unwrap_or("~/.agents/skills"));
     let target = dir.join("rewire").join("SKILL.md");
     fs::create_dir_all(target.parent().unwrap())?;
-    fs::write(&target, SKILL)?;
+    crate::util::atomic_write(&target, SKILL)?;
     Ok([
         format!("Agent Skill written to {}", target.display()),
-        "Register the MCP server (optional; the skill also works through the CLI):\n  codex mcp add rewire -- rewire mcp".into(),
+        format!(
+            "Register the MCP server (optional; the skill also works through the CLI):\n  codex mcp add rewire -- {} mcp",
+            exe_command()
+        ),
         format!("Add this to your global or project AGENTS.md so the agent primes memory without hooks:\n\n{AGENTS_SNIPPET}"),
-        "Codex sessions are consolidated lazily from ~/.codex/sessions on the next `rewire` hook or `rewire consolidate --pending`.".into(),
+        format!(
+            "Codex has no hooks: its sessions in {} are consolidated when a Claude Code hook runs, or with \
+             `rewire consolidate --pending` (for example from cron).",
+            crate::brain::expand_user(&std::env::var("CODEX_HOME").unwrap_or_else(|_| "~/.codex".into())).join("sessions").display()
+        ),
     ]
     .join("\n\n"))
 }

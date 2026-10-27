@@ -1,6 +1,9 @@
 # Design: Synaptic Memory for rewire
 
-> Status: **draft for review**. Nothing has been implemented yet.
+> Status: **background and hypotheses**, not a description of the shipped system. Implemented: §3.1 base-level
+> activation (ranking only, experimental, off by default), spreading over links (only from an outdated note to its
+> replacement by default; full spreading measured +0.0), supersession. Not implemented: Hebbian edges (§3.2), tiers,
+> lateral inhibition, replay.
 > Follows on from the [memory approaches research](../research/memory-approaches.md) and [Karpathy LLM Wiki](../research/karpathy-llm-wiki.md).
 >
 > **Rev 2:** the MVP specification is in [mvp-spec.md](mvp-spec.md). The Phase 0 results changed the defaults: `d = 0.7`, an **active project scope** and a **separate constraint budget** are mandatory, and Hebbian learning is deferred to v0.2 ([details](../../experiments/phase0/README.md)).
@@ -9,7 +12,7 @@
 
 ## 0. Goals & principles
 
-1. **Like human memory**: memories that are used often grow stronger, memories that are rarely used fade (but are not lost), and memories that are often used *together* become more strongly connected (Hebbian: *neurons that fire together, wire together*).
+1. **Like human memory** (aspirational, not implemented: nothing learns from co-use yet): memories that are used often grow stronger, memories that are rarely used fade (but are not lost), and memories that are often used *together* become more strongly connected (Hebbian: *neurons that fire together, wire together*).
 2. **Update after the session** (the Hermes pattern): the session writes quickly, and then a consolidation phase updates the brain.
 3. **Graph/ontology structure**: memories are typed nodes connected by typed relations.
 4. **Own the brain, transfer anywhere**: the brain remains a set of files owned by the user. It can be put in git, it can be read by humans, and it does not require a server.
@@ -33,7 +36,7 @@ Principles that bind every decision below:
 | **Procedural** | `skills/` — SKILL.md | "How to release project X" | Invoked when relevant |
 | **External sources** *(rev 1)* | `sources/` — articles, papers, documents | Karpathy's gist | Immutable; *ingested* into `nodes/` (the LLM Wiki pattern) |
 
-Consolidation = moving from episodic to semantic, exactly as sleep moves memories from the hippocampus to the neocortex.
+Consolidation = moving from episodic to semantic, loosely analogous to how sleep is thought to move memories from the hippocampus to the neocortex.
 
 ---
 
@@ -46,7 +49,7 @@ Consolidation = moving from episodic to semantic, exactly as sleep moves memorie
 | `person` | A person (including the user themselves) | `@me`, a coworker |
 | `project` | Project / repo / initiative | `rewire` |
 | `concept` | Idea, technology, term | "Hebbian learning", "SQLite" |
-| `preference` | How the user wants to work | "answer in Indonesian" |
+| `preference` | How the user wants to work | "answer in the user's language" |
 | `decision` | A decision + its rationale | "use files as the source of truth" |
 | `fact` | A factual statement that can change | "API X rate limit is 100/minute" |
 | `procedure` | Pointer to a skill | `skills/release/` |
@@ -75,7 +78,7 @@ This mimics the brain: there is structured knowledge, and there are associations
 
 ## 3. The "synapse" model: the math
 
-Foundation: **ACT-R** (Anderson's cognitive model), which has been validated for decades against human memory data, plus **Hebbian learning** for edges and **spreading activation** for retrieval.
+Foundation: **ACT-R** (Anderson's cognitive model), which has been validated for decades against human memory data (that validation is about human memory, not agent retrieval), plus **Hebbian learning** for edges and **spreading activation** for retrieval.
 
 ### 3.1 Node strength — base-level activation
 
@@ -128,7 +131,7 @@ When the agent needs memory (a query or session context):
    with a filter: `superseded` nodes / nodes with `valid_to < now` are dropped unless the query is historical.
 4. Take the top-k until the **token budget** runs out; return summaries + IDs (claude-mem's progressive pattern: `search → get`).
 
-This approach is close to **HippoRAG** (Personalized PageRank over a knowledge graph, inspired by the hippocampus) and the *recency × importance × relevance* score from the **Generative Agents** paper. Both are proven in research.
+This approach is close to **HippoRAG** (Personalized PageRank over a knowledge graph, inspired by the hippocampus) and the *recency × importance × relevance* score from the **Generative Agents** paper. Both report gains in their own papers; neither was reproduced here.
 
 ### 3.4 What counts as "used"? (the most fragile part)
 
@@ -330,7 +333,7 @@ Safety rule: destructive actions (SUPERSEDE, merging nodes, changing `importance
 
 Recommended order (cheap → expensive):
 
-1. **Phase 0 — Mathematical simulation** (no LLM, no harness). A script that generates a synthetic event log (frequently used memories, rarely used ones, spaced patterns, hub nodes, superseded facts) and plots B, H, and tiers over time. Goal: choose `d`, `θ`, and the `α/β/γ` weights, and prove there is no rich-get-richer effect. **This is the fastest way to prove the design is solid.**
+1. **Phase 0 — Mathematical simulation** (no LLM, no harness). A script that generates a synthetic event log (frequently used memories, rarely used ones, spaced patterns, hub nodes, superseded facts) and plots B, H, and tiers over time. Goal: choose `d`, `θ`, and the `α/β/γ` weights, and prove there is no rich-get-richer effect. **A cheap first check, synthetic only.**
 2. **Phase 1 — Storage + index + CLI**: file format, event log, SQLite rebuild, `recall/get/remember`, `CORE.md` generation. Test: delete `.index/` → rebuild → identical results.
 3. **Phase 2 — Consolidation**: the SessionEnd pipeline with replay of real transcripts. Metrics: duplicate rate, extraction precision, how many candidates go to the inbox.
 4. **Phase 3 — Harness adapters**: Claude Code (hooks + MCP), Codex, and one harness without hooks (AGENTS.md + CLI).

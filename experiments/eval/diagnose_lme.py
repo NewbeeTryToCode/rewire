@@ -27,16 +27,13 @@ import importlib.util
 import json
 import os
 import re
-import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("eval_run", os.path.join(HERE, "run.py"))
 RUN = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(RUN)
-LME = RUN.LME
 
 DEEP = 60  # excerpts in the deep recall that locates missing evidence
 
@@ -103,15 +100,11 @@ def norm(s: str) -> str:
 def deep_ranks(q: dict, out: str) -> dict:
     """Rank (1-based, by first excerpt) of every evidence session in a DEEP recall on the same brain and clock."""
     root = os.path.join(out, "longmemeval", "brains-episodes", q["question_id"])
-    RUN._now.at = datetime.fromtimestamp(os.path.getmtime(os.path.join(root, ".state", "lme_done")), timezone.utc)
-    try:
-        ctx = LME.recall(q, root, 30, DEEP)
-    finally:
-        RUN._now.at = None
+    hits, _ = RUN.rw.recall(root, q["question"], 30, DEEP, now=RUN.frozen_now(root))
     first = {}
-    for i, e in enumerate(ctx["episodes"], 1):
-        first.setdefault(e["session"], i)
-    return {LME.session_file(s): first.get(LME.session_file(s)) for s in q["answer_session_ids"]}
+    for i, h in enumerate((h for h in hits if h["type"] == "episode"), 1):
+        first.setdefault(os.path.basename(h["session"]), i)
+    return {RUN.lme_session_file(s): first.get(RUN.lme_session_file(s)) for s in q["answer_session_ids"]}
 
 
 def rule(row: dict) -> str:
@@ -155,7 +148,7 @@ def main():
     def one(row: dict) -> dict:
         q = data[row["qid"]]
         judge_text = (cache.get(RUN.Cache.key("judge", judge_model,
-                                              LME.judge_prompt({**q, "response": row["response"]}))) or {}).get("text", "")
+                                              RUN.LME_PROMPTS.judge_prompt({**q, "response": row["response"]}))) or {}).get("text", "")
         diag = rule(row)
         ranks = deep_ranks(q, args.out) if not row["abstention"] else {}
         context = (row.get("trace") or {}).get("context", "")
@@ -164,7 +157,7 @@ def main():
         for sid, sess in zip(q["haystack_session_ids"], q["haystack_sessions"]):
             for t in sess:
                 if t.get("has_answer"):
-                    turns.append({"session": LME.session_file(sid), "role": t["role"],
+                    turns.append({"session": RUN.lme_session_file(sid), "role": t["role"],
                                   "in_context": norm(t["content"])[:60] in ctx_norm, "text": t["content"]})
         rank_lines = "\n".join(f"  {s}: rank {r or '-'}{' (in context)' if r and r <= args.budget else ''}"
                                for s, r in ranks.items()) or "  (abstention question: no evidence)"
@@ -185,7 +178,7 @@ def main():
                 "diagnosis": diag, "evidence_ranks": ranks, "evidence_all": (row.get("evidence") or {}).get("all"),
                 "evidence_turns_in_context": f"{sum(t['in_context'] for t in turns)}/{len(turns)}",
                 "context_tokens": row["context_tokens"], "answer_words": len(row["response"].split()),
-                "f1": RUN.LOCOMO.f1(row["response"], row["gold"]), "bleu1": RUN.bleu1(row["response"], row["gold"]),
+                "f1": RUN.f1(row["response"], row["gold"]), "bleu1": RUN.bleu1(row["response"], row["gold"]),
                 **{k: a.get(k) for k in ("why", "root_cause", "owner", "key_insight", "judge_ok")}}
 
     out = []

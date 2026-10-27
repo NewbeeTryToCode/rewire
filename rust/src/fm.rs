@@ -40,11 +40,7 @@ pub fn loads(text: &str) -> Result<(Meta, String), String> {
             return Err(format!("invalid frontmatter line: {line:?}"));
         };
         let raw = raw.trim();
-        let value = if raw.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
-        };
+        let value = if raw.is_empty() { Value::Null } else { serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string())) };
         meta.insert(key.trim().to_string(), value);
     }
     Ok((meta, body))
@@ -63,7 +59,10 @@ mod tests {
         meta.insert("valid_to".into(), Value::Null);
         meta.insert("title".into(), json!("Ünïcode: yes"));
         let text = dumps(&meta, "hello\nworld");
-        assert_eq!(text, "---\nid: \"X\"\nedges: [{\"rel\": \"about\", \"to\": \"Y\"}]\nvalid_to: null\ntitle: \"Ünïcode: yes\"\n---\nhello\nworld\n");
+        assert_eq!(
+            text,
+            "---\nid: \"X\"\nedges: [{\"rel\": \"about\", \"to\": \"Y\"}]\nvalid_to: null\ntitle: \"Ünïcode: yes\"\n---\nhello\nworld\n"
+        );
         let (m2, body) = loads(&text).unwrap();
         assert_eq!(m2, meta);
         assert_eq!(body, "hello\nworld\n");

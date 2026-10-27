@@ -1,5 +1,5 @@
-//! Optional semantic search: offline static embeddings (WordLlama l2_supercat, 256 dims), the same
-//! model the Python reference uses. A vector is the mean of the token embeddings, L2-normalised.
+//! Optional semantic search: offline static embeddings (WordLlama l2_supercat, 256 dims). A vector is the
+//! mean of the token embeddings, L2-normalised.
 //!
 //! The model files are not part of the binary: `rewire semantic install` copies them from a local
 //! `wordllama` Python package (or a directory given with --from) into the model directory. Without
@@ -114,7 +114,9 @@ mod imp {
     pub fn available() -> bool {
         static A: OnceLock<bool> = OnceLock::new();
         *A.get_or_init(|| {
-            std::env::var("REWIRE_SEMANTIC").as_deref() != Ok("0") && model_dir().join(WEIGHTS).is_file() && model_dir().join(TOKENIZER).is_file()
+            std::env::var("REWIRE_SEMANTIC").as_deref() != Ok("0")
+                && model_dir().join(WEIGHTS).is_file()
+                && model_dir().join(TOKENIZER).is_file()
         })
     }
 
@@ -167,7 +169,8 @@ pub fn install(from: Option<&str>) -> crate::Result<String> {
             PathBuf::from(dir)
         }
     };
-    let find = |name: &str| [src.join(name), src.join("weights").join(name), src.join("tokenizers").join(name)].into_iter().find(|p| p.is_file());
+    let find =
+        |name: &str| [src.join(name), src.join("weights").join(name), src.join("tokenizers").join(name)].into_iter().find(|p| p.is_file());
     let (Some(w), Some(t)) = (find(WEIGHTS), find(TOKENIZER)) else {
         return Err(crate::Error::Op(format!("{WEIGHTS} and {TOKENIZER} not found under {}", src.display())));
     };
