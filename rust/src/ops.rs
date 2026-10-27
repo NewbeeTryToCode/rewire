@@ -1,6 +1,6 @@
 //! High-level operations shared by the CLI, the MCP server and consolidation.
 
-use crate::brain::{err_str, is_set, out_str, Brain, Node};
+use crate::brain::{is_set, out_str, Brain, Node};
 use crate::index::{Hit, Index, SearchOpts};
 use crate::util::{now_iso, relpath, short_of, take};
 use crate::{project, schema, security, skills, text, Error, Meta, Result};
@@ -10,6 +10,25 @@ use std::path::Path;
 
 fn op<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error::Op(msg.into()))
+}
+
+/// Scope of a note proposed without one: the project of the working directory, else global. A rule stated
+/// while working in a repository is most often about that repository.
+pub fn default_scope(brain: &Brain, cwd: Option<&str>) -> String {
+    project::detect(cwd, &brain.config.projects).map(|p| format!("project:{p}")).unwrap_or_else(|| "global".into())
+}
+
+/// No recalled note or excerpt shares two of the query's content words (one for a one-word query): what came
+/// back matched only loosely (vectors, activation), and the memory may simply not hold the answer.
+pub fn weak_match(query: &str, hits: &Value) -> bool {
+    let need = text::content_words(query).len().min(2);
+    if need == 0 {
+        return false;
+    }
+    let texts = hits.as_array().map(|a| a.as_slice()).unwrap_or_default().iter().map(|h| {
+        ["title", "snippet", "body", "text"].iter().filter_map(|k| h.get(*k).and_then(Value::as_str)).collect::<Vec<_>>().join(" ")
+    });
+    !texts.into_iter().any(|t| text::overlap(query, &t) >= need)
 }
 
 pub fn resolve_id(brain: &Brain, reference: &str) -> Option<Node> {
@@ -29,11 +48,15 @@ pub fn resolve_id(brain: &Brain, reference: &str) -> Option<Node> {
         return if hits.len() == 1 { hits.into_iter().next() } else { None };
     }
     let matches: Vec<Node> = brain.iter_nodes().into_iter().filter(|n| n.id().to_lowercase().ends_with(&r)).collect();
-    if matches.len() == 1 { matches.into_iter().next() } else { None }
+    if matches.len() == 1 {
+        matches.into_iter().next()
+    } else {
+        None
+    }
 }
 
 /// Rank fusion of extra queries (standard reciprocal-rank-fusion constant).
-const RRF_K: f64 = 60.0;
+use crate::index::RRF_K;
 pub const MAX_ALSO: usize = 4;
 /// Excerpt budget multiplier for counting / total / ordering questions (text::aggregate).
 pub const AGGREGATE_EPISODES: usize = 2;
@@ -98,6 +121,11 @@ pub fn recall(
         fused.iter().filter_map(|(id, _)| firsts.iter().find(|f| f.id == *id).cloned()).collect()
     };
     let mut hits = top(fused_hits, k);
+    // rules and preferences from another device not yet reviewed here are not handed to the agent
+    let unreviewed = brain.untrusted_ids();
+    if !unreviewed.is_empty() {
+        hits.retain(|h| !unreviewed.contains(&h.id));
+    }
     let mut eps = top(fused_eps, episodes);
     for hit in hits.iter_mut() {
         // re-scanned when shown: files can be edited by hand or arrive by sync
@@ -156,9 +184,16 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
                 out.push(json!({"ref": r, "error": "not found"}));
                 continue;
             };
+            if brain.is_untrusted(&skill.path) {
+                out.push(json!({"ref": r, "error": "from another device, not reviewed on this device yet (`rewire review`)"}));
+                continue;
+            }
             let why = skills::blocked(&skill);
-            let (description, body) =
-                if why.is_empty() { (skill.description.clone(), skill.body.clone()) } else { (security::blocked_label(why), String::new()) };
+            let (description, body) = if why.is_empty() {
+                (skill.description.clone(), skill.body.clone())
+            } else {
+                (security::blocked_label(why), String::new())
+            };
             out.push(json!({"id": format!("skill:{}", skill.name), "type": "skill", "name": skill.name,
                             "description": description, "updated": skill.updated, "body": body}));
             events.push(event("use", &format!("skill:{}", skill.name), 0.5, session, harness));
@@ -166,17 +201,23 @@ pub fn get(brain: &Brain, refs: &[String], session: &str, harness: &str) -> Resu
         }
         match resolve_id(brain, r) {
             None => out.push(json!({"ref": r, "error": "not found"})),
+            Some(node) if brain.is_untrusted(&node.path) => {
+                out.push(json!({"ref": r, "error": "from another device, not reviewed on this device yet (`rewire review`)"}))
+            }
             Some(node) => {
+                // the fields the format defines, nothing a file adds on its own
                 let mut m = Meta::new();
                 m.insert("id".into(), json!(node.id()));
-                for (k, v) in &node.meta {
-                    if k != "id" {
-                        m.insert(k.clone(), v.clone());
-                    }
+                for (k, v) in node.meta.iter().filter(|(k, _)| schema::FIELDS.contains(&k.as_str()) && k.as_str() != "id") {
+                    m.insert(k.clone(), v.clone());
                 }
                 m.insert("body".into(), json!(node.body));
-                let why = security::blocked(&format!("{} {}", node.title(), node.body));
+                // every returned value is scanned as the text it is (a JSON dump would turn newlines into "\n")
+                let why =
+                    string_values(&Value::Object(m.clone())).iter().map(|t| security::blocked(t)).find(|w| !w.is_empty()).unwrap_or("");
                 if !why.is_empty() {
+                    m = Meta::new();
+                    m.insert("id".into(), json!(node.id()));
                     m.insert("title".into(), json!(security::blocked_label(why)));
                     m.insert("body".into(), json!(""));
                 }
@@ -251,8 +292,19 @@ fn truthy(v: Option<&Value>) -> bool {
 pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Result<Node> {
     let s = |k: &str| change.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let action = if truthy(change.get("action")) { s("action") } else { "NEW".into() };
+    if !["NEW", "SAME", "UPDATE", "SUPERSEDE", "CONTRADICT"].contains(&action.as_str()) {
+        return op(format!("unknown action {action:?}"));
+    }
+    if action == "SAME" {
+        // already in memory: approving it confirms the existing note instead of writing a duplicate
+        return resolve_id(brain, &s("target")).ok_or_else(|| Error::Op(format!("target not found: {}", s("target"))));
+    }
     let text = s("text").trim().to_string();
     let title = take(&if truthy(change.get("title")) { s("title") } else { text.clone() }, 160);
+    // every write path, reviewed or not: a secret never becomes a note
+    if security::scan(&format!("{title} {text}")).iter().any(|p| p == "secret") {
+        return op("refused: text looks like it contains a secret");
+    }
     let scope = if truthy(change.get("scope")) { s("scope") } else { "global".into() };
     let mut fields = Meta::new();
     for k in ["importance", "confidence", "provenance", "keywords", "valid_from"] {
@@ -265,9 +317,7 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter(|e| {
-                    e.get("rel").and_then(Value::as_str).is_some_and(|r| schema::RELATIONS.contains(&r)) && truthy(e.get("to"))
-                })
+                .filter(|e| e.get("rel").and_then(Value::as_str).is_some_and(|r| schema::RELATIONS.contains(&r)) && truthy(e.get("to")))
                 .map(|e| json!({"rel": e["rel"], "to": e["to"]}))
                 .collect()
         })
@@ -311,12 +361,15 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
         if let Some(Value::Array(e)) = meta.get_mut("edges") {
             e.push(json!({"rel": rel, "to": target.id()}));
         }
+        // the new note first: a crash in between leaves both current, never neither
+        let node = brain.write_node(&meta, &text, None)?;
         let mut old = target.meta.clone();
         old.insert("retracted_at".into(), json!(now_iso()));
         if action == "SUPERSEDE" {
             old.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
         }
         brain.write_node(&old, &target.body, Some(&target.path))?;
+        return Ok(node);
     }
     brain.write_node(&meta, &text, None)
 }
@@ -336,8 +389,35 @@ pub fn pin_target(brain: &Brain, item: &mut Meta) {
 }
 
 /// Apply an inbox item. Returns what it became ("[id8] title" or "skill <name>").
+/// The file of an inbox item. Ids are ULIDs: anything else (a path such as "../nodes/x") is refused, so an id
+/// can never name a file outside the inbox.
+fn inbox_path(brain: &Brain, inbox_id: &str) -> Result<std::path::PathBuf> {
+    let id = inbox_id.to_uppercase();
+    let ok = (6..=26).contains(&id.len()) && id.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    if !ok {
+        return op(format!(
+            "not an inbox id: {inbox_id:?} (ids look like 01M5CR22VG093P636AQMVY10G3; or a unique start of 6 or more characters)"
+        ));
+    }
+    if id.len() == 26 {
+        return Ok(brain.path(&["inbox", &format!("{id}.md")]));
+    }
+    // a unique prefix, as `forget` takes a short id
+    let matches: Vec<_> = brain
+        .iter_inbox()
+        .into_iter()
+        .map(|i| i.path)
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&id)))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => op(format!("inbox item not found: {inbox_id}")),
+        _ => op(format!("{inbox_id} matches {} inbox items: give more of the id", matches.len())),
+    }
+}
+
 pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
-    let path = brain.path(&["inbox", &format!("{inbox_id}.md")]);
+    let path = inbox_path(brain, inbox_id)?;
     let Some(item) = brain.iter_inbox().into_iter().find(|i| i.path == path) else {
         return op(format!("inbox item not found: {inbox_id}"));
     };
@@ -358,16 +438,24 @@ pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
             ));
         }
     }
+    // scanned again now: the stored flags are whatever the file says, and inbox files can arrive by sync
+    let why = security::scan(&format!("{} {}", item.meta.get("title").and_then(Value::as_str).unwrap_or(""), item.body));
+    if !why.is_empty() && !force {
+        return op(format!("{inbox_id}: flagged ({}); check it, then approve with --force or reject", why.join(", ")));
+    }
     let mut change = item.meta.clone();
     change.insert("text".into(), json!(item.body));
     change.insert("confidence".into(), json!("explicit")); // a human approved it
     let node = apply_change(brain, &change, item.meta.get("source"))?;
     fs::remove_file(&path)?;
+    if let Some(key) = brain.review_key(&path) {
+        trust(brain, &key)?;
+    }
     Ok(format!("[{}] {}", crate::util::short_of(node.id()), node.title()))
 }
 
 pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
-    let path = brain.path(&["inbox", &format!("{inbox_id}.md")]);
+    let path = inbox_path(brain, inbox_id)?;
     if !path.exists() {
         return op(format!("inbox item not found: {inbox_id}"));
     }
@@ -375,17 +463,359 @@ pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Take one session back out of memory, whether its changes were applied at consolidation or approved later from
+/// the inbox: notes it created are removed, notes it updated return to their content before it, notes it
+/// superseded or contradicted become current again, and its pending proposals and session record are dropped.
+/// Works on the files (and git history for earlier versions), so later sessions' changes stay.
 pub fn undo(brain: &Brain, session: &str) -> Result<String> {
-    let log = out_str(&brain.git(&["log", "--format=%H %s", &format!("--grep=consolidate .*{session}")]));
-    let Some(sha) = log.lines().next().and_then(|l| l.split_whitespace().next()).map(String::from) else {
-        return op(format!("no consolidation commit found for session {session}"));
-    };
-    let r = brain.git(&["revert", "--no-edit", &sha]);
-    if !r.status.success() {
-        brain.git(&["revert", "--abort"]);
-        return op(format!("git revert failed: {}", err_str(&r)));
+    let of_session = |v: Option<&Value>| crate::nodefmt::parse_source(v).is_some_and(|(_, s, _)| s == session);
+    let mut dropped = 0;
+    for item in brain.iter_inbox() {
+        if of_session(item.meta.get("source")) {
+            fs::remove_file(&item.path)?;
+            dropped += 1;
+        }
     }
-    Ok(sha)
+    let nodes = brain.iter_nodes();
+    let mine: Vec<&Node> = nodes.iter().filter(|n| of_session(n.meta.get("source"))).collect();
+    let ids: std::collections::HashSet<&str> = mine.iter().map(|n| n.id()).collect();
+    let slug = crate::util::slugify(session, 40);
+    let records: Vec<std::path::PathBuf> = fs::read_dir(brain.path(&["sessions"]))
+        .map(|days| {
+            days.flatten()
+                .flat_map(|d| fs::read_dir(d.path()).map(|f| f.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default())
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&format!("-{slug}.md"))))
+                .collect()
+        })
+        .unwrap_or_default();
+    // notes this session wrote that a later session has changed since: left as they are, and reported
+    let marker = format!(" · {session} · turn");
+    let touched = out_str(&brain.git(&["log", "--format=", "--name-only", &format!("-G{}", regex::escape(&marker)), "--", "nodes"]));
+    let mut later: Vec<String> = touched
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|rel| brain.read_node(&brain.root.join(rel)))
+        .filter(|n| !of_session(n.meta.get("source")))
+        .map(|n| format!("[{}] {}", short_of(n.id()), n.title()))
+        .collect();
+    later.dedup();
+    if mine.is_empty() && dropped == 0 && records.is_empty() && later.is_empty() {
+        return op(if sessions(brain).iter().any(|(_, _, s, _)| s == session) {
+            format!("nothing in memory comes from session {session}")
+        } else {
+            format!("no session {session} (`rewire sessions` lists them)")
+        });
+    }
+    if mine.is_empty() && dropped == 0 && records.iter().all(|p| fs::read_to_string(p).is_ok_and(|t| t.contains("\n## Undone\n"))) {
+        return op(format!("session {session} was already undone"));
+    }
+    let (mut removed, mut restored, mut reopened) = (0, 0, 0);
+    for node in &mine {
+        for (rel, to) in crate::nodefmt::edges_of(&node.meta) {
+            if rel != "supersedes" && rel != "contradicts" {
+                continue;
+            }
+            let Some(target) = resolve_id(brain, &to) else { continue };
+            // still replaced by a note from another session: leave it retired
+            let replaced = nodes.iter().any(|n| {
+                !ids.contains(n.id())
+                    && n.id() != target.id()
+                    && !is_set(n.meta.get("retracted_at"))
+                    && crate::nodefmt::edges_of(&n.meta).iter().any(|(r, t)| {
+                        (r == "supersedes" || r == "contradicts") && resolve_id(brain, t).is_some_and(|x| x.id() == target.id())
+                    })
+            });
+            if ids.contains(target.id()) || replaced {
+                continue;
+            }
+            let mut meta = target.meta.clone();
+            meta.insert("retracted_at".into(), Value::Null);
+            meta.insert("valid_to".into(), Value::Null);
+            brain.write_node(&meta, &target.body, Some(&target.path))?;
+            reopened += 1;
+        }
+        match version_before(brain, &node.path, session) {
+            Some(text) => {
+                crate::util::atomic_write(&node.path, &text)?;
+                restored += 1;
+            }
+            None => {
+                fs::remove_file(&node.path)?;
+                removed += 1;
+            }
+        }
+    }
+    for path in &records {
+        // the record stays as the audit trail of what the session did and when it was undone; its transcript and
+        // questions go, so recall no longer finds the session
+        let text = fs::read_to_string(path)?;
+        let mut kept = Vec::new();
+        let mut skipping = false;
+        for line in text.lines() {
+            if line.starts_with("## ") {
+                skipping = line == crate::consolidate::TRANSCRIPT_HEADING || line == crate::consolidate::QUESTIONS_HEADING;
+            }
+            if !skipping {
+                kept.push(line);
+            }
+        }
+        let text = format!("{}\n\n## Undone\n\n{} (transcript removed)\n", kept.join("\n").trim_end(), now_iso());
+        crate::util::atomic_write(path, &text)?;
+    }
+    write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("undo session {session}"));
+    let mut summary = format!(
+        "{removed} note(s) removed, {restored} restored to their earlier version, {reopened} made current again, \
+         {dropped} proposal(s) dropped, {} transcript(s) taken out of recall",
+        records.len()
+    );
+    if !later.is_empty() {
+        summary.push_str(&format!(
+            "\nleft as they are, changed by a later session since (check them; `rewire undo` that session too if needed):\n  {}",
+            later.join("\n  ")
+        ));
+    }
+    Ok(summary)
+}
+
+/// The record file of a session, if one was written.
+pub fn session_record(brain: &Brain, harness: &str, session: &str) -> Option<std::path::PathBuf> {
+    // by the id in the record's first line: two ids can share a file name ("a.b" and "a-b")
+    let name = format!("{harness}-{}.md", crate::util::slugify(session, 40));
+    let header = crate::consolidate::record_header(harness, session);
+    fs::read_dir(brain.path(&["sessions"]))
+        .ok()?
+        .flatten()
+        .map(|d| d.path().join(&name))
+        .find(|p| fs::read_to_string(p).is_ok_and(|t| t.lines().any(|l| l == header)))
+}
+
+/// Whether a session's record is consolidated (Some(true)) or transcript only (Some(false)); None without a record.
+pub fn session_consolidated(brain: &Brain, harness: &str, session: &str) -> Option<bool> {
+    let path = session_record(brain, harness, session)?;
+    let text = fs::read_to_string(path).ok()?;
+    let header = crate::consolidate::record_header(harness, session);
+    let mine: Vec<&str> = text.split(crate::consolidate::RECORD_SEPARATOR).filter(|b| b.lines().next() == Some(header.as_str())).collect();
+    Some(mine.iter().any(|b| !b.lines().any(|l| l == crate::consolidate::TRANSCRIPT_ONLY)))
+}
+
+/// Session records, newest first: (date, harness, session id, state: "", "undone" or "transcript only").
+pub fn sessions(brain: &Brain) -> Vec<(String, String, String, String)> {
+    let mut out = Vec::new();
+    for day in fs::read_dir(brain.path(&["sessions"])).into_iter().flatten().flatten() {
+        for file in fs::read_dir(day.path()).into_iter().flatten().flatten() {
+            let Ok(text) = fs::read_to_string(file.path()) else { continue };
+            // "# <harness> session <id>"
+            let Some((harness, session)) = text.lines().next().and_then(|l| l.strip_prefix("# ")).and_then(|l| l.split_once(" session "))
+            else {
+                continue;
+            };
+            let state = if text.contains("\n## Undone\n") {
+                "undone"
+            } else if text.lines().any(|l| l == crate::consolidate::TRANSCRIPT_ONLY) {
+                "transcript only"
+            } else {
+                ""
+            };
+            out.push((day.file_name().to_string_lossy().into_owned(), harness.to_string(), session.trim().to_string(), state.to_string()));
+        }
+    }
+    out.sort_by(|a, b| b.cmp(a));
+    out
+}
+
+/// Every string inside a JSON value, as written.
+fn string_values(v: &Value) -> Vec<String> {
+    match v {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(a) => a.iter().flat_map(string_values).collect(),
+        Value::Object(o) => o.iter().flat_map(|(k, v)| std::iter::once(k.clone()).chain(string_values(v))).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Retract a note: it stays in its file and in git history, marked retracted, and no longer comes back in recall
+/// or the snapshot.
+pub fn forget(brain: &Brain, reference: &str, reason: &str) -> Result<String> {
+    let Some(node) = resolve_id(brain, reference) else { return op(format!("{reference}: no such note")) };
+    forget_node(brain, &node, reference, reason)
+}
+
+/// Retract exactly the unreviewed note under a review key (the file that was reviewed, never another note that
+/// happens to share its id).
+pub fn forget_unreviewed(brain: &Brain, key: &str, reason: &str) -> Result<String> {
+    let Some(node) = brain.untrusted_nodes().remove(key) else { return op(format!("{key}: no such unreviewed note")) };
+    forget_node(brain, &node, key, reason)
+}
+
+fn forget_node(brain: &Brain, node: &Node, reference: &str, reason: &str) -> Result<String> {
+    if is_set(node.meta.get("retracted_at")) {
+        return op(format!("{reference}: already forgotten"));
+    }
+    let mut meta = node.meta.clone();
+    meta.insert("retracted_at".into(), json!(now_iso()));
+    if !reason.is_empty() {
+        meta.insert("retracted_reason".into(), json!(reason));
+    }
+    // an unreviewed key stays: if the retraction is ever reverted, the rule comes back unreviewed (the listing skips
+    // retracted notes meanwhile)
+    brain.write_node(&meta, &node.body, Some(&node.path))?;
+    write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("forget {}", short_of(node.id())));
+    Ok(format!("forgot [{}] {}", short_of(node.id()), node.title()))
+}
+
+/// A note file's content just before `session` first wrote it (from git), or None when the session created it.
+fn version_before(brain: &Brain, path: &Path, session: &str) -> Option<String> {
+    let rel = relpath(path, &brain.root);
+    let log = out_str(&brain.git(&["log", "--reverse", "--format=%H", "--", &rel]));
+    for sha in log.lines() {
+        let text = out_str(&brain.git(&["show", &format!("{sha}:{rel}")]));
+        let Ok((meta, _)) = crate::nodefmt::parse(&text) else { continue };
+        if crate::nodefmt::parse_source(meta.get("source")).is_some_and(|(_, s, _)| s == session) {
+            let before = brain.git(&["show", &format!("{sha}^:{rel}")]);
+            return before.status.success().then(|| String::from_utf8_lossy(&before.stdout).into_owned());
+        }
+    }
+    None
+}
+
+/// Rules, preferences and skills from another device not yet reviewed on this one: (key, what it says, why the scan
+/// blocks it or "").
+pub fn unreviewed(brain: &Brain) -> Vec<(String, String, &'static str)> {
+    let mut out = Vec::new();
+    let nodes = brain.untrusted_nodes();
+    for key in brain.untrusted().keys().filter(|k| !k.starts_with("inbox/")) {
+        let (text, why) = if let Some(name) = key.strip_prefix("skills/") {
+            match skills::read(brain, name.trim_end_matches('/')) {
+                Some(s) => (format!("skill {}: {}", s.name, s.description), skills::blocked(&s)),
+                None => ("(skill removed since)".into(), ""),
+            }
+        } else {
+            match nodes.get(key) {
+                // retracted since (here or there): nothing left to show, nothing to review
+                Some(n) if is_set(n.meta.get("retracted_at")) || is_set(n.meta.get("valid_to")) => continue,
+                Some(n) => {
+                    let body = n.body.trim();
+                    let mut text =
+                        if body.is_empty() || body == n.title().trim() { n.title().to_string() } else { format!("{}\n{body}", n.title()) };
+                    // fields the format does not define are shown too: nothing in the file goes unseen
+                    for (k, v) in n.meta.iter().filter(|(k, _)| !schema::FIELDS.contains(&k.as_str())) {
+                        text.push_str(&format!("\n[{k}] {}", crate::util::value_text(v)));
+                    }
+                    let why = security::blocked(&text);
+                    (format!("{}: {}", n.meta.get("type").and_then(Value::as_str).unwrap_or(""), text), why)
+                }
+                None => ("(note removed since)".into(), ""),
+            }
+        };
+        out.push((key.clone(), text, why));
+    }
+    out
+}
+
+/// The unreviewed key an id names: the key itself, `skill:<name>`, or a note's short id.
+pub fn unreviewed_key(brain: &Brain, id: &str) -> Option<String> {
+    let id = id.trim();
+    let lower = id.to_lowercase();
+    let untrusted = brain.untrusted();
+    // exact first; a prefix only when it names one item (never "the first that matches")
+    if untrusted.contains_key(id) {
+        return Some(id.to_string());
+    }
+    let matches: Vec<&String> = untrusted
+        .keys()
+        .filter(|k| {
+            *k == id
+                || lower.strip_prefix("skill:").is_some_and(|n| **k == format!("skills/{n}/"))
+                || (lower.len() >= 4
+                    && k.starts_with("nodes/")
+                    && k.rsplit_once('-').is_some_and(|(_, tail)| tail.trim_end_matches(".md").starts_with(&crate::util::short_of(&lower))))
+        })
+        .collect();
+    match matches.as_slice() {
+        [one] => Some((*one).clone()),
+        _ => None,
+    }
+}
+
+/// Show an unreviewed rule, preference or skill to agents on this device from now on.
+pub fn trust(brain: &Brain, key: &str) -> Result<()> {
+    brain.update_state("untrusted", |u| {
+        u.remove(key);
+    })
+}
+
+/// A remote URL without its credentials (`https://user:token@host` → `https://***@host`).
+pub fn redact_url(url: &str) -> String {
+    regex::Regex::new(r"(https?://)[^/@\s]*@").unwrap().replace_all(url, "$1***@").into_owned()
+}
+
+/// Whether a hosted remote can be read with no credentials at all (a public repository): `git ls-remote` over https
+/// with credential helpers and prompts off. None when it cannot tell (a local path, no network, another scheme).
+pub fn remote_is_public(url: &str) -> Option<bool> {
+    // git@github.com:me/brain.git → https://github.com/me/brain.git
+    let https = if let Some(rest) = url.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        format!("https://{host}/{path}")
+    } else if let Some(rest) = url.strip_prefix("ssh://git@") {
+        // ssh://git@host:22/me/b → https://host/me/b (an ssh port is not an https one)
+        let (host, path) = rest.split_once('/')?;
+        format!("https://{}/{path}", host.split(':').next().unwrap_or(host))
+    } else if url.starts_with("https://") || url.starts_with("http://") {
+        url.to_string()
+    } else {
+        return None;
+    };
+    // no user name or token from the URL, and (HOME pointed at an empty folder) no ~/.netrc or global config either
+    let https = regex::Regex::new(r"^(https?://)[^/@]*@").unwrap().replace(&https, "$1").into_owned();
+    // a fresh folder of its own (never one that already exists: someone else could have put a .netrc there)
+    let empty_home = std::env::temp_dir().join(format!("rewire-public-check-{}", crate::util::ulid()));
+    fs::create_dir(&empty_home).ok()?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-c", "credential.helper=", "ls-remote", "--heads", &https])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env("HOME", &empty_home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("SSH_ASKPASS");
+    let out = crate::util::run_with_timeout(cmd, None, std::time::Duration::from_secs(5));
+    let _ = fs::remove_dir_all(&empty_home);
+    let out = out.ok()?;
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    if out.status.success() {
+        Some(true)
+    } else if err.contains("authentication")
+        || err.contains("not found")
+        || err.contains("could not read")
+        || err.contains("403")
+        || err.contains("401")
+    {
+        Some(false)
+    } else {
+        None // offline, unknown host: say nothing
+    }
+}
+
+/// Whether a `doctor` line reports a problem (the exit status of `rewire doctor`).
+pub fn is_problem(line: &str) -> bool {
+    [
+        "INVALID",
+        "BLOCKED",
+        "UNSAFE",
+        "IGNORED",
+        "nodes valid: NO",
+        "failed consolidations",
+        "consolidation:",
+        "unresolved git conflicts",
+        "settings:",
+    ]
+    .iter()
+    .any(|p| line.starts_with(p))
 }
 
 pub fn doctor(brain: &Brain) -> Vec<String> {
@@ -414,17 +844,82 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     let remotes = out_str(&brain.git(&["remote", "-v"]));
     let device = brain.device();
     if !remotes.is_empty() {
+        let shown = redact_url(remotes.lines().next().unwrap_or(""));
         report.push(format!(
-            "sync: {} · device {device} · make sure the brain repository is PRIVATE:\n  {}",
+            "sync: {} · device {device} · make sure the brain repository is PRIVATE:\n  {shown}",
             if brain.config.sync_auto { "auto" } else { "manual" },
-            remotes.lines().next().unwrap_or("")
         ));
+        if let Some(url) = remotes.lines().next().and_then(|l| l.split_whitespace().nth(1)) {
+            if remote_is_public(url) == Some(true) {
+                report.push("UNSAFE: the brain's remote can be read without credentials: make it private".into());
+            }
+        }
     } else {
         report.push(format!("sync: no remote (this brain lives only on this machine) · device {device}"));
     }
+    if !["command", "anthropic"].contains(&brain.config.provider.as_str()) {
+        report
+            .push(format!("consolidation: unknown provider {:?} in local.toml (use \"command\" or \"anthropic\")", brain.config.provider));
+    }
+    if brain.config.provider == "anthropic" && std::env::var("ANTHROPIC_API_KEY").map_or(true, |k| k.trim().is_empty()) {
+        report.push("consolidation: provider = \"anthropic\" but ANTHROPIC_API_KEY is not set".into());
+    }
+    if let Some(sync) = brain.read_state("notices").get("sync") {
+        // what the last pull changed, in full (here, for the user; the snapshot only says that something did)
+        for n in sync.get("notes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            let clean: String = n.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            report.push(format!("last sync ({}): {clean}", sync.get("at").and_then(Value::as_str).unwrap_or("")));
+        }
+    }
+    if brain.config.provider == "command" {
+        let program = shlex::split(&brain.config.command).and_then(|a| a.into_iter().next()).unwrap_or_default();
+        let found = !program.is_empty()
+            && (Path::new(&program).is_file()
+                || std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(&program).is_file())));
+        if !found {
+            report.push(format!(
+                "consolidation: `{program}` is not on PATH, so sessions are not consolidated (set the command in local.toml)"
+            ));
+        }
+    }
+    let settings =
+        crate::brain::expand_user(&std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into())).join("settings.json");
+    if !fs::read_to_string(&settings).is_ok_and(|t| t.contains(" hook session-start")) {
+        report.push("claude code: hooks not installed (`rewire install claude-code --write`)".into());
+    }
+    if !brain.config.synced_llm_settings.is_empty() {
+        report.push(format!(
+            "IGNORED brain.toml [consolidation] {}: brain.toml syncs to every device, so what runs the LLM is set per \
+             device in local.toml",
+            brain.config.synced_llm_settings.join(", ")
+        ));
+    }
+    if let Some(e) = &brain.config.error {
+        report.push(format!("settings: could not be read ({e}): the LLM step is off and other settings use defaults until it is fixed"));
+    }
+    let waiting = unreviewed(brain).len();
+    if waiting > 0 {
+        report.push(format!("from other devices: {waiting} rule(s), preference(s) or skill(s) wait for review here (`rewire review`)"));
+    }
+    let found = crate::brain::unsafe_paths(brain, None);
+    if !found.is_empty() {
+        report.push(format!(
+            "UNSAFE: git tracks {}; consolidation will not run until they are gone (git rm --cached, then check \
+             local.toml)",
+            found.join(", ")
+        ));
+    }
     let failed = brain.read_state("failed");
     if !failed.is_empty() {
-        report.push(format!("failed consolidations: {} (see .state/failed.json)", failed.len()));
+        report.push(format!(
+            "failed consolidations: {} (retry with `rewire consolidate --retry`):\n  {}",
+            failed.len(),
+            failed
+                .iter()
+                .map(|(path, f)| format!("{path}: {}", f.get("error").and_then(Value::as_str).unwrap_or("")))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
     }
     let pending = brain.read_state("pending");
     if !pending.is_empty() {
@@ -451,15 +946,16 @@ fn md_link(brain: &Brain, path: &str, title: &str) -> String {
 /// timestamps, no activation-based order) so it only changes when the memory itself changes.
 pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf> {
     index.refresh()?;
-    let active = index.rows("active = 1 ORDER BY importance DESC, recorded_at DESC, id", &[])?;
+    let mut active = index.rows("active = 1 ORDER BY importance DESC, recorded_at DESC, id", &[])?;
+    let unreviewed = brain.untrusted_ids(); // from another device and not reviewed here: not on the home page either
+    active.retain(|r| !unreviewed.contains(&r.id));
     let mut by_type: indexmap::IndexMap<String, Vec<&crate::index::NodeRow>> = indexmap::IndexMap::new();
     for r in &active {
         by_type.entry(r.type_.clone()).or_default().push(r);
     }
     let get = |t: &str| by_type.get(t).cloned().unwrap_or_default();
     let inbox = brain.iter_inbox();
-    let counts: Vec<String> =
-        schema::TYPES.iter().filter(|t| !get(t).is_empty()).map(|t| format!("{} {t}", get(t).len())).collect();
+    let counts: Vec<String> = schema::TYPES.iter().filter(|t| !get(t).is_empty()).map(|t| format!("{} {t}", get(t).len())).collect();
     let mut lines: Vec<String> = vec![
         "# Brain".into(),
         "".into(),
@@ -469,7 +965,11 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     if !inbox.is_empty() {
         lines.push(format!("\n**{} proposal(s) waiting for review** — run `rewire review` (see below).", inbox.len()));
     }
-    let section = |lines: &mut Vec<String>, title: &str, rows: &[&crate::index::NodeRow], limit: Option<usize>, describe: &dyn Fn(&crate::index::NodeRow) -> String| {
+    let section = |lines: &mut Vec<String>,
+                   title: &str,
+                   rows: &[&crate::index::NodeRow],
+                   limit: Option<usize>,
+                   describe: &dyn Fn(&crate::index::NodeRow) -> String| {
         if rows.is_empty() {
             return;
         }
@@ -485,7 +985,11 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         }
     };
     let scope_of = |r: &crate::index::NodeRow| {
-        if r.scope == "global" { String::new() } else { format!(" · {}", r.scope.split_once(':').map(|x| x.1).unwrap_or("")) }
+        if r.scope == "global" {
+            String::new()
+        } else {
+            format!(" · {}", r.scope.split_once(':').map(|x| x.1).unwrap_or(""))
+        }
     };
     section(&mut lines, "Rules (always applied)", &get("constraint"), None, &scope_of);
     section(&mut lines, "Preferences", &get("preference"), None, &scope_of);
@@ -494,8 +998,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         lines.extend(["".into(), "## Projects".into()]);
         hubs.sort_by(|a, b| a.title.cmp(&b.title));
         for hub in hubs {
-            let members: Vec<&crate::index::NodeRow> =
-                active.iter().filter(|r| r.scope == hub.scope && r.type_ != "project").collect();
+            let members: Vec<&crate::index::NodeRow> = active.iter().filter(|r| r.scope == hub.scope && r.type_ != "project").collect();
             lines.extend(["".into(), format!("### {} — {} memories", md_link(brain, &hub.path, &hub.title), members.len()), "".into()]);
             for r in members.iter().take(10) {
                 lines.push(format!("- {} · {}", md_link(brain, &r.path, &r.title), r.type_));
@@ -508,11 +1011,8 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     let mut recent: Vec<&crate::index::NodeRow> = active.iter().filter(|r| r.type_ != "project").collect();
     recent.sort_by(|a, b| (b.recorded_at.as_str(), b.id.as_str()).cmp(&(a.recorded_at.as_str(), a.id.as_str())));
     section(&mut lines, "Recently learned", &recent, Some(10), &|r| format!(" · {} · {}", r.type_, take(&r.recorded_at, 10)));
-    let globals: Vec<&crate::index::NodeRow> = ["fact", "decision", "concept", "person"]
-        .iter()
-        .flat_map(|t| get(t))
-        .filter(|r| r.scope == "global")
-        .collect();
+    let globals: Vec<&crate::index::NodeRow> =
+        ["fact", "decision", "concept", "person"].iter().flat_map(|t| get(t)).filter(|r| r.scope == "global").collect();
     section(&mut lines, "General knowledge", &globals, Some(20), &|r| format!(" · {}", r.type_));
 
     let mut sessions: Vec<std::path::PathBuf> = Vec::new();
@@ -537,7 +1037,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         lines.extend(["".into(), "## Waiting for review".into(), "".into()]);
         for item in inbox.iter().take(20) {
             let m = &item.meta;
-            let g = |k: &str| m.get(k).map(crate::cli::py_str).unwrap_or_else(|| "None".into());
+            let g = |k: &str| m.get(k).map(crate::util::value_text).filter(|t| !t.is_empty()).unwrap_or_else(|| "-".into());
             let target = match m.get("target").and_then(Value::as_str).filter(|s| !s.is_empty()) {
                 Some(t) => format!(" → `{}`", short_of(t)),
                 None => String::new(),
@@ -552,7 +1052,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         "## How this brain works".into(),
         "".into(),
         "- `nodes/<type>/` — one memory per file; relations are links you can click.".into(),
-        "- `events/` — when memories were used; how strongly each memory is recalled is computed from this.".into(),
+        "- `events/` — when memories were used (the usage log; experimental ordering by use is computed from it).".into(),
         "- `sessions/` — a summary of every consolidated agent session.".into(),
         "- Superseded memories are kept (status `superseded`) so history is never lost.".into(),
         "".into(),
@@ -560,7 +1060,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
     let text = lines.join("\n");
     let path = brain.path(&["README.md"]);
     if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
-        fs::write(&path, text)?;
+        crate::util::atomic_write(&path, &text)?;
     }
     Ok(path)
 }

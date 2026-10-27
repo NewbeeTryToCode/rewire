@@ -19,32 +19,28 @@ Diagnoses:
 """
 
 import csv
+import glob
 import json
 import os
 import re
 import sys
 from collections import Counter, defaultdict
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "src"))
-
-from rewire import nodefmt  # noqa: E402
-from rewire.brain import Brain  # noqa: E402
-
 ABSTAIN = re.compile(r"(?i)\b(not (mentioned|specified|stated|in the memories|clear)|no (information|mention|record)|"
                      r"(does|do) not (say|mention|specify|include)|cannot (be )?determin|unknown|don't have)\b")
 
 
 def fact_sources(root: str) -> set[str]:
-    """dia_ids ("D3:7") that at least one active fact in the brain was extracted from."""
+    """dia_ids ("D3:7") that at least one active fact in the brain was extracted from (read from the node files'
+    front matter: source "locomo · conv-26-session_3 · turn 7", not retracted, not superseded)."""
     out = set()
-    for node in Brain(root).iter_nodes():
-        if node.meta.get("retracted_at") or node.meta.get("valid_to"):
+    for path in glob.glob(os.path.join(root, "nodes", "*", "*.md")):
+        head = open(path, encoding="utf-8").read(4000).split("\n---", 1)[0]
+        if re.search(r'(?m)^(retracted_at|valid_to): "', head):
             continue
-        src = nodefmt.parse_source(node.meta.get("source"))
-        m = re.search(r"session_(\d+)$", src[1]) if src else None
+        m = re.search(r'(?m)^source: "[^"]*session_(\d+) · turn (\d+)"', head)
         if m:
-            out.add(f"D{m.group(1)}:{src[2]}")
+            out.add(f"D{m.group(1)}:{m.group(2)}")
     return out
 
 

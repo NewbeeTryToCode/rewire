@@ -54,11 +54,11 @@ New eval ([experiments/retrieval](../experiments/retrieval/README.md)): 70 memor
 
 ## Iteration 5 — 2026-10-11: LoCoMo, compared with Mem0 and Zep
 
-An end-to-end public benchmark ([experiments/locomo](../experiments/locomo/README.md)) with **Mem0's official answer prompt and judge**, 389 questions from 3 conversations. J: **69.7% → 91.3% → 96.7%** (Mem0 platform publishes 92.5% with the same judge). Three changes, each taken from how competitors work: claims are given an event date (temporal 38.5 → 93.8%), a `general` extraction profile for a personal second brain, and episodes (searchable transcripts, with secrets masked). Limitations: a subset, a lenient judge from the same family as the answering model, Mem0/Zep were not rerun.
+An end-to-end public benchmark ([experiments/locomo](../experiments/locomo/README.md)) with **Mem0's official answer prompt and judge**, 389 questions from 3 conversations. J: **69.7% → 91.3% → 96.7%** (Mem0 platform publishes 92.5% with the same judge prompt but GPT-5 as answerer and judge: not comparable). Three changes, each taken from how competitors work: claims are given an event date (temporal 38.5 → 93.8%), a `general` extraction profile for a personal second brain, and episodes (searchable transcripts, with secrets masked). Limitations: a subset, a lenient judge from the same family as the answering model, Mem0/Zep were not rerun.
 
 ## Iteration 6 — 2026-10-12: competitor insights + full LoCoMo
 
-Implemented from the Mem0/Zep analysis: optional semantic search (WordLlama, offline, additive fusion with BM25), a time-window bonus ("in July 2023"), and history questions return labeled `superseded` facts. **Full** LoCoMo (10 conversations, 1,540 questions, official Mem0 judge): **94.2%** hybrid, **94.9%** keywords only, vs 92.5% for the Mem0 platform. Ablation: semantics does not help on LoCoMo (17 vs 29 differing questions, not significant) because episodes + keywords already cover it, so it stays optional. Remaining weakness: open-domain 75% — mostly speculative questions that need world knowledge, not memory. Bug found by the full run: `time_window` crashed on "2022-23".
+Implemented from the Mem0/Zep analysis: optional semantic search (WordLlama, offline, additive fusion with BM25), a time-window bonus ("in July 2023"), and history questions return labeled `superseded` facts. **Full** LoCoMo (10 conversations, 1,540 questions, official Mem0 judge): **94.2%** hybrid, **94.9%** keywords only, (not comparable with the Mem0 platform's 92.5%: it used GPT-5 as answerer and judge). Ablation: semantics does not help on LoCoMo (17 vs 29 differing questions, not significant) because episodes + keywords already cover it, so it stays optional. Remaining weakness: open-domain 75% — mostly speculative questions that need world knowledge, not memory. Bug found by the full run: `time_window` crashed on "2022-23".
 
 ## Iteration 7 — 2026-10-13: LoCoMo failure analysis
 
@@ -79,7 +79,14 @@ LongMemEval_S (500 questions, official answer prompt and judge) in *episodes* mo
 All insights from the [OpenHuman/Hermes research](research/openhuman-hermes.md) except the benchmark KPI (#14), in Python and Rust:
 a date on every snapshot line, a `<rewire-memory>` fence + loop guard in the transcript parser, extraction rules (do not store temporary failures / "tool X is broken"; preferences written declaratively), an **About the user** section with its own budget, session summaries indexed and attached to the top chunks, `refers_to` (a period resolved by the model, as a boost), a **per-prompt** hook (UserPromptSubmit, at most 5 notes the session has not seen yet), **skills** (procedural memory, always via review), rescanning on display (`[BLOCKED]`), `target_hash` on inbox items, a notice when memory is unavailable, escaping of the fence tag, and a "… N more not shown" line. Semantic search is now also in Rust (the `semantic` feature, with the model from `rewire semantic install`). Conformance: recall identical 304/304 (keyword **and** hybrid), `prime` and `upgrade` identical, consolidation prompts identical; 61 Python tests, 54 Rust tests.
 
-## Next (iteration 11)
+## Later work
+
+The log stops at iteration 10. Later changes (the Rust-only engine, replicated A/B tests with intervals, sync review, the
+ECC review loop) are in the commit history and in [the evaluation results](../experiments/eval/results/); the headline
+numbers above (96.7%, R@5 100%) predate the replicated measurements and are superseded by them
+([evaluation.md](evaluation.md)).
+
+## Planned at iteration 10 (E1 and E4 still not run)
 
 0. **Token-efficient evaluation**: measure the impact of iteration 10 (fresh-first rate, captured-but-not-surfaced) without a full consolidation replay.
 

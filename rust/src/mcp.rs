@@ -12,11 +12,11 @@ pub const PROTOCOL: &str = "2025-06-18";
 
 /// Recall is keyword search over memories written in the user's language(s); the calling agent is an
 /// LLM and widens the query far better than a stemmer can.
-pub const QUERY_GUIDE: &str = "Write the query as keywords, not a sentence: the key terms plus their synonyms, and the same terms in both English and Indonesian (memories may be written in either language).";
+pub const QUERY_GUIDE: &str = "Write the query as keywords, not a sentence: the key terms plus their synonyms, in the language the user writes in and in English (memories are written in the user's language, keywords in both).";
 
-pub const REFERS_TO_GUIDE: &str = "When the question is about a time ('last week', 'in March', 'kemarin'), resolve it to ISO dates {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}; when a word is ambiguous, cover both readings. Notes and excerpts from that period rank higher (nothing is filtered out).";
+pub const REFERS_TO_GUIDE: &str = "When the question is about a time ('last week', 'in March', 'yesterday'), resolve it to ISO dates {\"from\": \"YYYY-MM-DD\", \"to\": \"YYYY-MM-DD\"}; when a word is ambiguous, cover both readings. Notes and excerpts from that period rank higher (nothing is filtered out).";
 
-pub const ALSO_GUIDE: &str = "Up to 4 extra keyword queries (3-8 words each), searched too and merged by rank. Worth adding for most questions about the past: the words of a question rarely match the messages that answer it. Write what those messages would say: specific instances of a category ('kitchen appliance' -> 'smoker grill air fryer'), synonyms and related verbs, and one query per item of a count, total or comparison ('how many doctors' -> 'dermatologist appointment', 'ENT specialist visit').";
+pub const ALSO_GUIDE: &str = "Up to 4 extra keyword queries (3-8 words each), searched too and merged by rank. Add them when the answer is spread over several memories or hinges on time: counts, totals, lists, orderings, 'when' / 'how long ago' questions. Write what those messages would say: specific instances of a category ('kitchen appliance' -> 'smoker grill air fryer') and one query per counted item ('how many doctors' -> 'dermatologist appointment', 'ENT specialist visit'). Leave them out for preference, advice or recommendation questions: broad extra queries pull in the user's older preferences. A time mentioned in passing ('on my trip last weekend, I ...') is not a time question.";
 
 pub fn tools() -> Value {
     json!([
@@ -58,7 +58,7 @@ pub fn tools() -> Value {
                 "properties": {
                     "text": {"type": "string", "description": "One self-contained claim (max 2 sentences)"},
                     "type": {"type": "string", "enum": ["constraint", "preference", "fact", "decision", "person", "concept"]},
-                    "scope": {"type": "string", "description": "'global' or 'project:<slug>'"},
+                    "scope": {"type": "string", "description": "'global' (true in every project) or 'project:<slug>'. Default: the project of the current directory, else global."},
                 },
                 "required": ["text"],
                 "additionalProperties": false,
@@ -98,7 +98,7 @@ impl<'a> Server<'a> {
     fn call(&mut self, name: &str, args: &Value) -> Result<Value> {
         match name {
             "recall" => {
-                let query = args.get("query").and_then(Value::as_str).ok_or_else(|| Error::Op("'query'".into()))?;
+                let query = args.get("query").and_then(Value::as_str).ok_or_else(|| Error::Op("missing argument: query".into()))?;
                 self.index.refresh()?;
                 let k = int_arg(args, "k", 8)?.max(1) as usize;
                 let episodes = int_arg(args, "episodes", 3)?.clamp(0, 30) as usize;
@@ -108,26 +108,41 @@ impl<'a> Server<'a> {
                     Some(Value::Array(a)) => a.iter().filter_map(|q| q.as_str().map(String::from)).collect(),
                     Some(_) => return Err(Error::Op("also must be a list of queries".into())),
                 };
-                let hits = ops::recall(self.brain, &mut self.index, query, k, Some(&self.cwd), scope, None, episodes, args.get("refers_to"), &also)?;
+                let hits = ops::recall(
+                    self.brain,
+                    &mut self.index,
+                    query,
+                    k,
+                    Some(&self.cwd),
+                    scope,
+                    None,
+                    episodes,
+                    args.get("refers_to"),
+                    &also,
+                )?;
                 Ok(Value::Array(hits.iter().map(|h| h.to_json()).collect()))
             }
             "get" => {
                 let ids: Vec<String> = args
                     .get("ids")
                     .and_then(Value::as_array)
-                    .ok_or_else(|| Error::Op("'ids'".into()))?
+                    .ok_or_else(|| Error::Op("missing argument: ids".into()))?
                     .iter()
                     .map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
                     .collect();
                 Ok(Value::Array(ops::get(self.brain, &ids, &self.session, "mcp")?))
             }
             "remember" => {
-                let text = args.get("text").and_then(Value::as_str).ok_or_else(|| Error::Op("'text'".into()))?;
+                let text = args.get("text").and_then(Value::as_str).ok_or_else(|| Error::Op("missing argument: text".into()))?;
                 let inbox_id = ops::remember(
                     self.brain,
                     text,
                     args.get("type").and_then(Value::as_str).unwrap_or("fact"),
-                    args.get("scope").and_then(Value::as_str).unwrap_or("global"),
+                    &args
+                        .get("scope")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                        .unwrap_or_else(|| ops::default_scope(self.brain, Some(&self.cwd))),
                     "assistant",
                     Some(json!({"harness": "mcp", "session": self.session})),
                 )?;
@@ -157,7 +172,21 @@ impl<'a> Server<'a> {
                         let mut text = pyjson::dumps_utf8(&data);
                         if name == "recall" || name == "get" {
                             // memory as data, dropped again from transcripts
-                            text = format!("{}\n{}\n{}", crate::snapshot::FENCE_OPEN, crate::snapshot::escape(&text), crate::snapshot::FENCE_CLOSE);
+                            text = format!(
+                                "{}\n{}\n{}",
+                                crate::snapshot::FENCE_OPEN,
+                                crate::snapshot::escape(&crate::snapshot::printable(&text)),
+                                crate::snapshot::FENCE_CLOSE
+                            );
+                        }
+                        if name == "recall" {
+                            let query = args.get("query").and_then(Value::as_str).unwrap_or("");
+                            if ops::weak_match(query, &data) {
+                                text.push_str(
+                                    "\nweak match: no result contains the question's key words. The memory may not hold \
+                                               the answer: say so, or ask the user, rather than guessing from these results.",
+                                );
+                            }
                         }
                         json!({"content": [{"type": "text", "text": text}]})
                     }

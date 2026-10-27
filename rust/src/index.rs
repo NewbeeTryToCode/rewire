@@ -2,8 +2,8 @@
 //!
 //! Kept fresh incrementally: only node files whose mtime/size changed are re-parsed, only bytes
 //! appended to event logs are read, and activation is recomputed for touched nodes (all nodes once it
-//! is older than ACT_MAX_AGE). Semantic vectors are not part of this implementation (keyword recall
-//! scored as well on LoCoMo; see experiments/locomo).
+//! is older than ACT_MAX_AGE). With the optional WordLlama model installed, nodes and excerpts also get
+//! static vectors, fused with the keyword ranking (see semantic.rs).
 
 use crate::activation::{self, FLOOR, MIN_AGE_H};
 use crate::brain::Brain;
@@ -23,7 +23,12 @@ use std::time::UNIX_EPOCH;
 pub const SCHEMA: &str = "9";
 const HOP_DECAY: f64 = 0.5;
 const ACT_MAX_AGE: f64 = 300.0;
-const SCAN_MAX_AGE: f64 = 60.0;
+/// Directory mtimes do not change on an in-place edit (an editor saving a note): the full stat scan runs at
+/// least this often, so a hand edit shows up in recall within seconds.
+const SCAN_MAX_AGE: f64 = 2.0;
+/// Rows embedded per refresh: the first build after `rewire semantic install` is spread over several refreshes
+/// instead of stalling one hook past its time limit (rows without vectors are found by keywords meanwhile).
+pub const EMBED_BATCH: usize = 256;
 const EP_WINDOW: usize = 6;
 const EP_STEP: usize = 4;
 pub const RRF_K: f64 = 60.0;
@@ -62,12 +67,16 @@ CREATE TABLE epvec(rid INTEGER PRIMARY KEY, v BLOB);
 ";
 
 /// The bundled static embeddings are much weaker than BM25 + keywords on their own (R@5 57% vs 90%),
-/// so they only add a small bonus; tuned in experiments/retrieval, validated on LoCoMo.
+/// so they only add a small bonus; tuned on the earlier Python engine (experiments/retrieval), not re-measured in Rust.
 pub const SEM_WEIGHT: f64 = 0.15;
 pub const SEM_TOP: usize = 10;
 
 fn sem_flag() -> &'static str {
-    if semantic::available() { "1" } else { "0" }
+    if semantic::available() {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 /// (ids, scopes, vectors) of every node with a vector.
@@ -228,11 +237,17 @@ pub struct Index {
     path: PathBuf,
     d: f64,
     recall_beta: f64,
+    spread: String,
     db: Option<Connection>,
     pub seed_weight: f64,
     /// cached (ids, scopes, vectors) of nodes and (rowids, vectors) of episodes for semantic search
     mat: Option<NodeVectors>,
     epmat: Option<EpisodeVectors>,
+    /// SQLite's data_version when the vectors were cached: another process (a hook, a sync) that changed the index
+    /// changes it, so a long-running MCP server does not keep searching an old set of vectors
+    data_version: Option<i64>,
+    /// rows embedded per refresh (0 = all); hooks set EMBED_BATCH to stay within their time limit
+    pub embed_limit: usize,
 }
 
 fn mtime_ns(md: &fs::Metadata) -> i64 {
@@ -266,7 +281,11 @@ fn merge_excerpts(best: &[i64], rows: &HashMap<i64, EpRow>) -> Vec<(i64, String)
         }
         // a session summary (turn 0) is never merged; neither are runs that reuse turn numbers
         let target = groups.iter_mut().find(|g| {
-            *lo > 0 && g.lo > 0 && g.path == path && *lo <= g.hi + 1 && *hi >= g.lo - 1
+            *lo > 0
+                && g.lo > 0
+                && g.path == path
+                && *lo <= g.hi + 1
+                && *hi >= g.lo - 1
                 && lines.iter().all(|(n, l)| g.lines.get(n).is_none_or(|x| x == l))
         });
         match target {
@@ -386,7 +405,8 @@ fn condense_line(query: &str, line: &str, limit: usize) -> String {
     for (i, s) in segs.iter().enumerate() {
         // a numbered item asked for by its position
         let numbered = words.iter().filter(|w| w.chars().all(|c| c.is_ascii_digit())).any(|w| {
-            s.strip_prefix(w.as_str()).is_some_and(|r| (r.starts_with('.') || r.starts_with(')')) && r[1..].starts_with(char::is_whitespace))
+            s.strip_prefix(w.as_str())
+                .is_some_and(|r| (r.starts_with('.') || r.starts_with(')')) && r[1..].starts_with(char::is_whitespace))
         });
         if numbered {
             scores[i] += 5.0;
@@ -441,12 +461,15 @@ impl Index {
             path: brain.path(&[".index", "brain.db"]),
             d: brain.config.d,
             recall_beta: brain.config.recall_beta,
+            spread: brain.config.spread.clone(),
             db: None,
             // source-excerpt bonus for the top memory hit, as a share of the best excerpt score
             // (tuned: experiments/locomo/evidence.py)
             seed_weight: 0.35,
             mat: None,
             epmat: None,
+            data_version: None,
+            embed_limit: 0,
         }
     }
 
@@ -458,24 +481,50 @@ impl Index {
             db.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
             Ok(db)
         };
-        let db = open(&self.path)?;
-        let ok: Option<String> =
-            db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get(0)).optional().unwrap_or(None);
-        if ok.as_deref() == Some(SCHEMA) {
-            let sem: Option<String> =
-                db.query_row("SELECT v FROM meta WHERE k='semantic'", [], |r| r.get(0)).optional().unwrap_or(None);
-            if sem.as_deref() == Some(sem_flag()) {
-                return Ok(db);
+        let db = match open(&self.path) {
+            Ok(db) => db,
+            Err(_) => {
+                // unreadable (not a database): nobody can be using it, start over
+                self.remove_files();
+                open(&self.path)?
+            }
+        };
+        let ok: Option<String> = db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get(0)).optional().unwrap_or(None);
+        if ok.as_deref() != Some(SCHEMA) {
+            // missing or older schema: rebuilt from the files inside the same database file (see reset)
+            Self::reset(&db)?;
+        }
+        Ok(db)
+    }
+
+    /// Empty the index in place, in one write transaction. Other processes (an MCP server, a hook) keep valid
+    /// handles and see either the old index or the new one; deleting the files under them broke both.
+    /// Whether semantic search is on is not part of the identity: vectors missing for some rows are filled in
+    /// by `embed_pending`, and a process without the model simply ignores them.
+    fn reset(db: &Connection) -> Result<()> {
+        static TABLE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let names: Vec<String> = TABLE
+            .get_or_init(|| regex::Regex::new(r"CREATE (?:VIRTUAL )?TABLE (\w+)").unwrap())
+            .captures_iter(DDL)
+            .map(|c| c[1].to_string())
+            .collect();
+        db.execute_batch("BEGIN IMMEDIATE")?;
+        let done = (|| -> Result<()> {
+            for name in &names {
+                db.execute_batch(&format!("DROP TABLE IF EXISTS {name}"))?;
+            }
+            db.execute_batch(DDL)?;
+            db.execute("INSERT INTO meta VALUES ('schema', ?)", [SCHEMA])?;
+            db.execute("INSERT INTO meta VALUES ('semantic', ?)", [sem_flag()])?;
+            Ok(())
+        })();
+        match done {
+            Ok(()) => Ok(db.execute_batch("COMMIT")?),
+            Err(e) => {
+                let _ = db.execute_batch("ROLLBACK");
+                Err(e)
             }
         }
-        // missing, older schema, or semantic model installed/removed since the build: rebuild from the files
-        drop(db);
-        self.remove_files();
-        let db = open(&self.path)?;
-        db.execute_batch(DDL)?;
-        db.execute("INSERT INTO meta VALUES ('schema', ?)", [SCHEMA])?;
-        db.execute("INSERT INTO meta VALUES ('semantic', ?)", [sem_flag()])?;
-        Ok(db)
     }
 
     fn remove_files(&self) {
@@ -497,8 +546,12 @@ impl Index {
     }
 
     pub fn rebuild(&mut self) -> Result<i64> {
-        self.close();
-        self.remove_files();
+        if self.db.is_none() {
+            self.db = Some(self.connect()?);
+        }
+        Self::reset(self.db.as_ref().unwrap())?;
+        self.mat = None;
+        self.epmat = None;
         self.refresh()?;
         Ok(self.db()?.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?)
     }
@@ -539,6 +592,12 @@ impl Index {
             }
             Ok(false) => {}
         }
+        let version: i64 = self.db.as_ref().map_or(Ok(0), |db| db.query_row("PRAGMA data_version", [], |r| r.get(0)))?;
+        if self.data_version != Some(version) {
+            self.mat = None;
+            self.epmat = None;
+            self.data_version = Some(version);
+        }
         Ok(())
     }
 
@@ -550,8 +609,8 @@ impl Index {
         };
         let ep_changed = self.sync_episodes(db)?;
         let any = !changed.is_empty() || ep_changed;
-        if any {
-            Self::embed_pending(db)?;
+        if any || Self::vectors_missing(db)? {
+            Self::embed_pending(db, self.embed_limit)?;
         }
         let row: Option<String> = db.query_row("SELECT v FROM meta WHERE k='act_at'", [], |r| r.get(0)).optional()?;
         let stale = match row.and_then(|v| v.parse::<f64>().ok()) {
@@ -571,12 +630,30 @@ impl Index {
     // ---- incremental sync ------------------------------------------------
 
     /// Vectors for nodes/episodes that have none yet (derived data, like everything here).
-    fn embed_pending(db: &Connection) -> Result<()> {
+    /// The model is installed but some rows have no vector yet (it was installed after they were indexed).
+    fn vectors_missing(db: &Connection) -> Result<bool> {
+        if !semantic::available() {
+            return Ok(false);
+        }
+        let missing: Option<i64> = db
+            .query_row(
+                "SELECT 1 WHERE EXISTS (SELECT 1 FROM nodes WHERE id NOT IN (SELECT id FROM vec)) \
+                 OR EXISTS (SELECT 1 FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec))",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(missing.is_some())
+    }
+
+    fn embed_pending(db: &Connection, limit: usize) -> Result<()> {
+        let limit = if limit == 0 { -1 } else { limit as i64 };
         if !semantic::available() {
             return Ok(());
         }
         let rows: Vec<(String, String, String, String)> = {
-            let mut st = db.prepare("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec)")?;
+            let mut st =
+                db.prepare(&format!("SELECT id, title, body, meta FROM nodes WHERE id NOT IN (SELECT id FROM vec) LIMIT {limit}"))?;
             let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             it.collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -586,7 +663,7 @@ impl Index {
                 let kw = serde_json::from_str::<Value>(meta)
                     .ok()
                     .and_then(|m| m.get("keywords").and_then(Value::as_array).cloned())
-                    .map(|a| a.iter().map(crate::cli::py_str).collect::<Vec<_>>().join(" "))
+                    .map(|a| a.iter().map(crate::util::value_text).collect::<Vec<_>>().join(" "))
                     .unwrap_or_default();
                 format!("{title}. {body} {kw}")
             })
@@ -597,7 +674,8 @@ impl Index {
             }
         }
         let eps: Vec<(i64, String)> = {
-            let mut st = db.prepare("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec)")?;
+            let mut st =
+                db.prepare(&format!("SELECT rowid, text FROM episodes WHERE rowid NOT IN (SELECT rid FROM epvec) LIMIT {limit}"))?;
             let it = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             it.collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -992,7 +1070,9 @@ impl Index {
                 for part in ids.chunks(500) {
                     let q = format!("SELECT id, recorded_at FROM nodes WHERE id IN ({})", marks(part.len()));
                     let mut st = db.prepare(&q)?;
-                    for r in st.query_map(params_from_iter(part), |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))? {
+                    for r in
+                        st.query_map(params_from_iter(part), |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?
+                    {
                         nodes.push(r?);
                     }
                     let q = format!("SELECT node, t, w FROM uses WHERE node IN ({})", marks(part.len()));
@@ -1039,17 +1119,19 @@ impl Index {
     }
 
     /// (neighbor full id, relation) in both directions.
-    pub fn neighbors(&mut self, node_id: &str) -> Result<Vec<(String, String)>> {
+    /// Linked notes: (id, relation, incoming), incoming when the other note's link points at this one (a note
+    /// that supersedes this one links to it).
+    pub fn neighbors(&mut self, node_id: &str) -> Result<Vec<(String, String, bool)>> {
         let short = short_of(node_id);
         let db = self.db()?;
         let mut st = db.prepare(
-            "SELECT n.id, e.rel FROM edges e JOIN nodes n ON n.short = e.dst WHERE e.src = ? \
-             UNION ALL SELECT e.src, e.rel FROM edges e WHERE e.dst = ?",
+            "SELECT n.id, e.rel, 0 FROM edges e JOIN nodes n ON n.short = e.dst WHERE e.src = ? \
+             UNION ALL SELECT e.src, e.rel, 1 FROM edges e WHERE e.dst = ?",
         )?;
         let out = st
-            .query_map(params![node_id, short], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map(params![node_id, short], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? == 1)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(out.into_iter().filter(|(id, _)| id != node_id).collect())
+        Ok(out.into_iter().filter(|(id, _, _)| id != node_id).collect())
     }
 
     fn fetch(&mut self, info: &mut HashMap<String, NodeRow>, ids: &[String], scopes: Option<&[String]>) -> Result<()> {
@@ -1073,8 +1155,8 @@ impl Index {
         Ok(())
     }
 
-    /// Keyword recall (BM25 over title/body/keywords + query stemming), time-window intent, then
-    /// spreading activation over the graph.
+    /// Keyword recall (BM25 over title/body/keywords + query stemming), time-window intent, then links: by default
+    /// only from outdated memories to their replacements (`spread = "full"` spreads over the whole graph).
     ///
     /// Superseded memories hand their activation to their replacement; they are returned themselves
     /// (marked "superseded") only for history questions ("used to", "first", "dulu").
@@ -1111,10 +1193,7 @@ impl Index {
         let window = opts.window.clone().or_else(|| text::time_window(query)); // an explicit window comes from the calling model
         if let Some((start, end)) = &window {
             // dated memories inside the asked window join the candidates
-            let rows = self.rows(
-                "json_extract(meta, '$.valid_from') BETWEEN ? AND ? LIMIT 200",
-                &[start as &dyn rusqlite::ToSql, end],
-            )?;
+            let rows = self.rows("json_extract(meta, '$.valid_from') BETWEEN ? AND ? LIMIT 200", &[start as &dyn rusqlite::ToSql, end])?;
             for r in rows {
                 if scopes.as_ref().is_none_or(|s| s.contains(&r.scope)) {
                     fused.insert(r.id.clone());
@@ -1163,7 +1242,9 @@ impl Index {
         let beta = opts.beta.unwrap_or(self.recall_beta);
         let mut energy: IndexMap<String, f64> = rel.clone();
         let mut via: HashMap<String, String> = HashMap::new();
-        if opts.spread {
+        // "supersedes" (default) only forwards an outdated memory to its replacement; "full" spreads over every link
+        let full = self.spread == "full";
+        if opts.spread && self.spread != "off" {
             let mut frontier: Vec<(String, f64)> = rel.iter().map(|(k, v)| (k.clone(), *v)).collect();
             frontier.sort_by(by_energy);
             frontier.truncate(10);
@@ -1176,8 +1257,14 @@ impl Index {
                     }
                     let fan = 1.0 + (1.0 + links.len() as f64).ln();
                     let src_inactive = info.get(src).is_some_and(|r| !r.active);
-                    for (dst, relation) in links {
-                        let gain = if src_inactive && relation == "supersedes" {
+                    for (dst, relation, incoming) in links {
+                        // an outdated note leads to the note that replaced it (the one whose link points at it),
+                        // never back to the note it replaced itself
+                        let forward = src_inactive && incoming && relation == "supersedes";
+                        if !full && !forward {
+                            continue;
+                        }
+                        let gain = if forward {
                             amount * 0.9 // an outdated memory points straight at its replacement
                         } else {
                             amount * rel_weight(&relation) * HOP_DECAY.powi(hop) / fan
@@ -1187,7 +1274,7 @@ impl Index {
                         }
                         *nxt.entry(dst.clone()).or_insert(0.0) += gain;
                         if !rel.contains_key(&dst) && !via.contains_key(&dst) {
-                            let label = if src_inactive {
+                            let label = if forward {
                                 format!("replaces outdated: {}", info[src].title)
                             } else {
                                 let other = info.get(src).map(|r| r.title.clone()).unwrap_or_else(|| short_of(src));
@@ -1286,12 +1373,22 @@ impl Index {
             let ids: Vec<i64> = fused.keys().cloned().collect();
             let db = self.db()?;
             for part in ids.chunks(500) {
-                let sql = format!("SELECT rowid, path, date, text, first, last FROM episodes e WHERE rowid IN ({}){cond}", marks(part.len()));
+                let sql =
+                    format!("SELECT rowid, path, date, text, first, last FROM episodes e WHERE rowid IN ({}){cond}", marks(part.len()));
                 let mut st = db.prepare(&sql)?;
                 let mut p: Vec<rusqlite::types::Value> = part.iter().map(|&i| i.into()).collect();
                 p.extend(scope_params.iter().cloned().map(Into::into));
                 for r in st.query_map(params_from_iter(p), |r| {
-                    Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get::<_, String>(3)?, r.get::<_, Option<i64>>(4)?.unwrap_or(0), r.get::<_, Option<i64>>(5)?.unwrap_or(0))))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        (
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                            r.get::<_, String>(3)?,
+                            r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                            r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        ),
+                    ))
                 })? {
                     let (rid, v) = r?;
                     rows.insert(rid, v);
@@ -1417,7 +1514,8 @@ impl Index {
                 by_name.insert(name.clone(), rows);
             }
             for &(rid, first, last) in &by_name[&name] {
-                if first.is_some_and(|f| f <= turn) && last.is_some_and(|l| l >= turn) {  // NULL never matches, as in SQL
+                if first.is_some_and(|f| f <= turn) && last.is_some_and(|l| l >= turn) {
+                    // NULL never matches, as in SQL
                     *out.entry(rid).or_insert(0.0) += bonus;
                 }
             }

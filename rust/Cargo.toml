@@ -2,7 +2,7 @@
 name = "rewire"
 version = "0.2.0"
 edition = "2021"
-description = "Own your brain, transfer it anywhere: portable synaptic memory for agent harnesses"
+description = "Own your memory, take it anywhere: reviewable, git-backed long-term memory for coding agents"
 license = "MIT"
 repository = "https://github.com/NewbeeTryToCode/rewire"
 
@@ -13,6 +13,7 @@ path = "src/main.rs"
 [lib]
 name = "rewire"
 path = "src/lib.rs"
+doctest = false # no doc examples; `cargo test --release` with lto cannot build them
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
@@ -21,6 +22,7 @@ fs4 = "0.13"
 indexmap = "2"
 rand = "0.8"
 regex = "1"
+unicode-normalization = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
@@ -29,6 +31,9 @@ toml = "0.8"
 ureq = { version = "2", features = ["json"] }
 # Optional semantic search (WordLlama static embeddings; model files installed with `rewire semantic install`).
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = ["semantic"]
