@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>rewire — logo · second wave (6 new explorations)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#07060f; font-family:'Segoe UI',system-ui,sans-serif; color:#e6e6f5; }
+  .grid { max-width:1180px; margin:0 auto; padding:70px 32px; display:grid; grid-template-columns:repeat(3,1fr); gap:22px; }
+  h1 { font:600 26px system-ui; color:#fff; padding:50px 60px 0; } h1 em { color:#b09dff; font-style:normal; }
+  .hud { font:600 11px monospace; color:#6a63a8; letter-spacing:.14em; padding:8px 60px 26px; }
+  .card { background:rgba(255,255,255,.03); border:1px solid rgba(176,157,255,.18); border-radius:18px; overflow:hidden; transition:.25s; }
+  .card:hover { border-color:rgba(176,157,255,.5); }
+  .card svg { width:100%; display:block; background:rgba(255,255,255,.02); }
+  .m { padding:16px 18px 20px; }
+  .num { font:700 11px monospace; color:#7dd3fc; letter-spacing:.12em; }
+  .nm { font:600 16px system-ui; color:#fff; margin:8px 0 6px; }
+  .ds { font-size:12.5px; color:#8a84c8; line-height:1.55; }
+  @media(max-width:900px){ .grid{grid-template-columns:1fr 1fr} }
+</style>
+</head>
+<body>
+<h1>Second wave — <em>6 new explorations</em></h1>
+<div class="hud">// ALL STILL THE SAME BASE IDEA: THE SYNAPSE THAT FILTERS</div>
+<div class="grid">
+
+<!-- S1: one-line neuron -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <path d="M62 168 Q 96 160 108 132 Q 118 108 150 108 Q 182 108 192 132 Q 204 160 238 168"
+        fill="none" stroke="#b09dff" stroke-width="5" stroke-linecap="round"/> 
+  <path d="M62 168 q 6 -14 0 -24 M62 168 q -10 8 -20 6 M238 168 q 8 -12 2 -22 M238 168 q 12 6 22 0"
+        fill="none" stroke="rgba(176,157,255,.5)" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="150" cy="108" r="6" fill="#fdf9c4" style="filter:drop-shadow(0 0 8px rgba(253,249,196,.8))"/>
+  <text x="150" y="204" text-anchor="middle" font-family="monospace" font-size="10" fill="#6a63a8" letter-spacing="3">ONE LINE ONE SIGNAL</text>
+</svg><div class="m"><div class="num">S1 · ONE-LINE</div><div class="nm">One-stroke synapse</div><div class="ds">One continuous stroke forms the neuron; both ends curl into soft dendrites.</div></div></div>
+
+<!-- S2: waveform spike -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <path d="M40 110 H 96 L 122 110 L 138 62 L 156 158 L 172 110 H 214 L 226 92 L 238 110 H 260"
+        fill="none" stroke="#b09dff" stroke-width="3.5" stroke-linejoin="round" style="filter:drop-shadow(0 0 10px rgba(176,157,255,.45))"/>
+  <circle cx="150" cy="110" r="4.5" fill="#fdf9c4"><animate attributeName="opacity" values=".4;1;.4" dur="1.4s" repeatCount="indefinite"/></circle>
+  <line x1="40" y1="110" x2="260" y2="110" stroke="rgba(176,157,255,.15)" stroke-width="1"/>
+</svg><div class="m"><div class="num">S2 · WAVEFORM</div><div class="nm">Recorded brain spike (EEG)</div><div class="ds">An EEG signal: flat first, a spike when consolidation fires, flat again. Brain-activity language.</div></div></div>
+
+<!-- S3: negative space tile -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <rect x="66" y="52" width="168" height="116" rx="26" fill="#b09dff" style="filter:drop-shadow(0 0 22px rgba(176,157,255,.45))"/>
+  <g stroke="#07060f" stroke-width="7" fill="none" stroke-linecap="round">
+    <path d="M104 138 q -18 -10 -22 -30"/><path d="M196 138 q 18 -10 22 -30"/>
+    <line x1="150" y1="138" x2="150" y2="88"/>
+    <path d="M112 118 q 14 -22 38 -22 q 24 0 38 22"/>
+  </g>
+</svg><div class="m"><div class="num">S3 · NEGATIVE</div><div class="nm">Negative-space synapse</div><div class="ds">A purple gradient tile with the synapse cut out of it (negative space). The most refined brand mark.</div></div></div>
+
+<!-- S4: Y-fork distill -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <g stroke="rgba(176,157,255,.35)" stroke-width="3" stroke-linecap="round" fill="none">
+    <line x1="52" y1="76" x2="128" y2="76"/><line x1="52" y1="112" x2="128" y2="112"/><line x1="52" y1="148" x2="128" y2="148"/>
+  </g>
+  <path d="M128 76 Q 160 76 168 100 M128 112 H 168 M128 148 Q 160 148 168 124" fill="none" stroke="#b09dff" stroke-width="3" stroke-linecap="round"/>
+  <line x1="168" y1="112" x2="240" y2="112" stroke="#fdf9c4" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="168" cy="112" r="8" fill="#140f33" stroke="#b09dff" stroke-width="2"/>
+  <circle cx="250" cy="112" r="6" fill="#fdf9c4" style="filter:drop-shadow(0 0 10px rgba(253,249,196,.8))"><animate attributeName="opacity" values=".4;1;.4" dur="1.5s" repeatCount="indefinite"/></circle>
+</svg><div class="m"><div class="num">S4 · Y-FORK</div><div class="nm">Three in, one out</div><div class="ds">Many sessions/transcripts in, one bright thread out. Distillation at its simplest.</div></div></div>
+
+<!-- S5: ultra minimal trio -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <circle cx="86" cy="104" r="9" fill="#8a84c8"/>
+  <circle cx="150" cy="104" r="15" fill="#b09dff" style="filter:drop-shadow(0 0 16px rgba(176,157,255,.55))"/>
+  <circle cx="214" cy="104" r="9" fill="#fdf9c4"/>
+  <line x1="97" y1="104" x2="133" y2="104" stroke="rgba(176,157,255,.6)" stroke-width="2.5"/>
+  <line x1="167" y1="104" x2="203" y2="104" stroke="rgba(253,249,196,.6)" stroke-width="2.5"/>
+  <circle cx="86" cy="104" r="14" fill="none" stroke="rgba(138,132,200,.3)" stroke-width="1.5"/>
+  <circle cx="214" cy="104" r="14" fill="none" stroke="rgba(253,249,196,.35)" stroke-width="1.5"/>
+</svg><div class="m"><div class="num">S5 · TRIO</div><div class="nm">Tiga dot, tiga rol</div><div class="ds">Most minimal: gray dot (agent), big purple dot (rewire), yellow dot (brain). Doubles as favicon + app icon.</div></div></div>
+
+<!-- S6: echo rings -->
+<div class="card"><svg viewBox="0 0 300 220">
+  <circle cx="150" cy="110" r="26" fill="#140f33" stroke="#b09dff" stroke-width="2"/>
+  <circle cx="150" cy="110" r="10" fill="#b09dff"/>
+  <circle cx="150" cy="110" r="42" fill="none" stroke="rgba(176,157,255,.4)" stroke-width="1.5">
+    <animate attributeName="r" values="30;74" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values=".7;0" dur="2.4s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="150" cy="110" r="58" fill="none" stroke="rgba(176,157,255,.28)" stroke-width="1.2"/>
+  <circle cx="150" cy="110" r="74" fill="none" stroke="rgba(176,157,255,.14)" stroke-width="1"/>
+</svg><div class="m"><div class="num">S6 · ECHO</div><div class="nm">Echodot</div><div class="ds">Every saved claim = one ripple out into the network. An endless loop animation.</div></div></div>
+
+</div>
+</body>
+</html>
