@@ -58,7 +58,8 @@ jobs:
       - run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package
         run: |
-          name=rewire-${GITHUB_REF_NAME}-${{ matrix.target }}
+          # no version in the name: releases/latest/download/rewire-<target>.tar.gz always names the newest one
+          name=rewire-${{ matrix.target }}
           mkdir "$name"
           cp target/${{ matrix.target }}/release/rewire "$name/"
           cp ../README.md ../LICENSE "$name/"
