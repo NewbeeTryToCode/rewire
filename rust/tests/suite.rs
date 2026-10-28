@@ -1311,6 +1311,26 @@ fn install_cloud_writes_settings_and_registers_mcp() {
     assert!(calls.trim_end().ends_with(" mcp"), "{calls}");
 }
 
+/// A brain repository the machine cannot reach says what to do, not just that it failed.
+#[test]
+fn unreachable_brain_says_how_to_attach_it() {
+    let msg = sync::fetch_failure(
+        "https://user:tok@github.com/me/brain",
+        "git clone failed: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    );
+    assert!(msg.contains("environment's repositories") && msg.contains("https://***@github.com/me/brain"), "{msg}");
+    assert!(!msg.contains("tok@"));
+    let other = sync::fetch_failure("https://example.com/b", "git clone failed: fatal: unable to access: Could not resolve host");
+    assert!(other.starts_with("could not fetch https://example.com/b: git clone failed"), "{other}");
+
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("REWIRE_REMOTE", tmp.path().join("missing.git"));
+    let out = integrations::hook(Brain::open(Some(&tmp.path().join("b"))), "session-start", &json!({}), "claude-code").unwrap();
+    std::env::remove_var("REWIRE_REMOTE");
+    assert!(out.contains("Memory unavailable this session: could not fetch"), "{out}");
+}
+
 /// `rewire mcp` on a machine without a brain fetches it from REWIRE_REMOTE instead of failing at start.
 #[test]
 fn mcp_fetches_missing_brain_from_env_remote() {

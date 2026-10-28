@@ -32,13 +32,16 @@ Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · Fi
 
 ## Installation
 
-Download a release binary (Linux x86_64, macOS arm64/x86_64) from the GitHub releases page and put `rewire` on
-your PATH, or build it:
+The release binary (Linux x86_64, macOS arm64/x86_64; one file, SQLite bundled), checked against its SHA-256, into
+`~/.local/bin`:
 
 ```bash
-cargo install --locked --git https://github.com/NewbeeTryToCode/rewire rewire   # one binary, SQLite bundled
+curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh
 rewire init                     # creates ~/brain (or set REWIRE_BRAIN)
 ```
+
+Or build it: `cargo install --locked --git https://github.com/NewbeeTryToCode/rewire rewire`. Everything at once
+(binary, brain, Claude Code and Codex connected): `bash scripts/setup-local.sh`.
 
 Recall over MCP, with the server warm, takes a few ms on a small brain and tens of ms on a ~50-session,
 ~115k-token history (measured: [`experiments/eval/latency.py`](experiments/eval/latency.py)).
@@ -94,10 +97,13 @@ Setup is one paste:
 
 1. Create a private repository for the brain (empty, or with GitHub's README and LICENSE) and let the Claude GitHub
    App reach it (or connect with `/web-setup`). The cloud's GitHub proxy authenticates git: no token goes into the VM.
-2. In the cloud environment's settings (environment menu > Edit), paste [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh)
-   as the setup script, with `BRAIN` set to that repository. It installs rewire and runs
-   `rewire install cloud --remote <url>`: the hooks, `REWIRE_REMOTE` and `REWIRE_REMOTE_TRUSTED=1` in Claude Code's
-   settings, and the MCP server. The environment caches the result.
+2. In the cloud environment's settings (environment menu > Edit), add that repository to the environment's
+   repositories: a session reaches only the private repositories attached to it, and rewire tells you in the snapshot
+   when the brain is out of its reach.
+3. Paste [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh) as the setup script, with `BRAIN` set to that
+   repository. It downloads the release binary (no Rust build, no login) and runs `rewire install cloud --remote <url>`:
+   the hooks, `REWIRE_REMOTE` and `REWIRE_REMOTE_TRUSTED=1` in Claude Code's settings, and the MCP server. The
+   environment caches the result.
 
 Each session then clones the brain into `~/brain` at start (the session-start hook or the MCP server, whichever
 starts first), shows the snapshot, and pushes what consolidation learns back. The first session turns a new

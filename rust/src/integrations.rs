@@ -174,7 +174,10 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
             Ok(b) => b,
             Err(e) => {
                 eprintln!("rewire: could not clone brain: {e}");
-                return only_at_start(snapshot::notice("could not fetch the brain from REWIRE_REMOTE"));
+                return only_at_start(snapshot::notice(&snapshot::escape(&snapshot::printable(&sync::fetch_failure(
+                    &url,
+                    &e.to_string(),
+                )))));
             }
         }
     };

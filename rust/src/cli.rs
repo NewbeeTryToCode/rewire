@@ -1028,7 +1028,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                     if !brain.exists() {
-                        fail(format!("could not fetch the brain from REWIRE_REMOTE: {e}"));
+                        fail(format!("rewire: {}", sync::fetch_failure(&url, &e.to_string())));
                     }
                 }
             }
