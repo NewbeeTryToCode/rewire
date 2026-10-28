@@ -79,13 +79,42 @@ out of the snapshot, recall and the per-prompt hook on this device until you app
 `approve all`. Facts, decisions and session transcripts flow between devices without a review, and the sender
 chooses a note's type, so this protects against unreviewed rules, not against someone who controls your remote:
 keep the remote private. The review is per device (each device approves a rule once, and a new or ephemeral clone
-starts with all of them waiting); a signed approval ledger shared across devices is not built. A pull that contains
+starts with all of them waiting, unless `REWIRE_REMOTE_TRUSTED` says otherwise: see Cloud sessions); a signed approval ledger shared across devices is not built. A pull that contains
 symlinks, submodules or device-local files, or a `.gitignore` that un-ignores them, is refused, and a brain.toml change
 to what this device keeps (`transcripts`, `profile`) is not taken until you set it in this device's `local.toml`.
 Other brain.toml settings from the remote apply as they come (budgets and chunk size have floors; recall weights,
 link following and the project map are not checked), so keep the remote private.
 
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
+
+### Cloud sessions (Claude Code on the web)
+
+A cloud session starts in a fresh VM, so the brain lives in a private git repository and each session fetches it.
+Set this up once, in the cloud environment's settings (environment menu > Edit):
+
+1. **Environment variables:** `REWIRE_REMOTE=https://github.com/<you>/brain`, and optionally
+   `REWIRE_REMOTE_TRUSTED=1` (below).
+2. **Setup script:** the contents of [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh). It installs rewire, the hooks
+   and the MCP server once; the environment caches the result.
+3. **GitHub access:** install the Claude GitHub App on the brain repository (or connect with `/web-setup`). The cloud's
+   GitHub proxy authenticates git, so no token goes into the VM or the environment.
+
+The brain repository must already hold a brain: create it on your own machine with `rewire init`,
+`rewire remote set <url>` and `rewire sync`.
+
+Each session then clones the brain into `~/brain` at start (the session-start hook or the MCP server, whichever
+starts first), shows the snapshot, and pushes what consolidation learns back to the repository. `REWIRE_REMOTE` turns
+auto sync on for the brain it names, even if `brain.toml` has it off. Each VM syncs as its own device
+(`cloud-<session id>`), so parallel sessions never write one event log.
+
+`REWIRE_REMOTE_TRUSTED=1` makes what comes from `REWIRE_REMOTE` count as reviewed in the VM. Without it, every rule,
+preference and skill waits for a review that a VM never gets: its review state ends with the session. With it, the
+review gate does not apply in cloud sessions, so approve rules on a device where you review them and keep the repository private. An agent in the VM can set the variable
+for its own commands, like everything else it can do as you there.
+
+Limit: a transcript is consolidated once it has been idle for `REWIRE_IDLE_SECS` (300 s), when a later hook runs in
+the same VM. A VM is reclaimed after a while idle, so the last part of a cloud session is captured only if you send
+another message in it after that pause and before the VM goes; otherwise it is lost.
 
 ## Day-to-day usage
 

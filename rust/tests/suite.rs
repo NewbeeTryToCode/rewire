@@ -1153,6 +1153,110 @@ fn session_start_pulls_and_clones_missing_brain() {
     assert!(out.contains("Shared fact from the laptop"));
 }
 
+/// A cloud VM starts empty every session: REWIRE_REMOTE names the brain to fetch, REWIRE_REMOTE_TRUSTED=1 says its
+/// notes count as reviewed there (a review on the VM could not outlive the session).
+#[test]
+fn cloud_session_fetches_brain_trusted_and_syncs() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    integrations::SPAWN_BACKGROUND.store(false, std::sync::atomic::Ordering::Relaxed);
+    let tmp = tempfile::tempdir().unwrap();
+    let remote = tmp.path().join("remote.git").to_string_lossy().into_owned();
+    assert!(Command::new("git").args(["init", "-q", "--bare", &remote]).status().unwrap().success());
+    // a brain pushed by hand: brain.toml leaves auto sync off
+    let laptop = Brain::init(Some(&tmp.path().join("laptop")), Some("laptop")).unwrap();
+    add_commit(&laptop, "preference", "Prefers tabs over spaces");
+    laptop.git(&["remote", "add", "origin", &remote]);
+    let branch = sync::branch(&laptop);
+    assert!(laptop.git(&["push", "-q", "-u", "origin", &branch]).status.success());
+    assert!(!laptop.config.sync_auto);
+
+    let vars = [
+        ("CLAUDE_CODE_REMOTE", "true"),
+        ("CLAUDE_CODE_REMOTE_SESSION_ID", "session_01AbCdEfGh12345678"),
+        ("REWIRE_REMOTE", remote.as_str()),
+    ];
+    for (k, v) in vars {
+        std::env::set_var(k, v);
+    }
+    // not trusted: the preference waits for a review that a fresh VM never gets
+    let untrusted = tmp.path().join("untrusted");
+    let out = integrations::hook(Brain::open(Some(&untrusted)), "session-start", &json!({"cwd": tmp.path()}), "claude-code").unwrap();
+    assert!(!out.contains("Prefers tabs"), "{out}");
+
+    std::env::set_var("REWIRE_REMOTE_TRUSTED", "1");
+    let vm = tmp.path().join("vm").join("brain");
+    let out = integrations::hook(Brain::open(Some(&vm)), "session-start", &json!({"cwd": tmp.path()}), "claude-code").unwrap();
+    let cloud = Brain::open(Some(&vm));
+    let result = || {
+        assert!(out.contains("Prefers tabs"), "{out}");
+        assert!(cloud.untrusted_ids().is_empty());
+        assert_eq!(cloud.device(), "cloud-12345678");
+        assert!(cloud.config.sync_auto, "REWIRE_REMOTE turns auto sync on for the brain it names");
+        // a second fetch (the MCP server starting with the hook) uses the brain already there
+        assert!(Brain::fetch(&remote, &vm).unwrap().exists());
+        assert!(std::fs::read_dir(vm.parent().unwrap()).unwrap().count() == 1, "no fetch folder left behind");
+
+        // what the laptop pushes during the session is trusted on the VM too, and the VM's own notes reach the laptop
+        add_commit(&laptop, "preference", "Prefers dark mode");
+        assert!(laptop.git(&["push", "-q", "origin", &branch]).status.success());
+        let learned = add_commit(&cloud, "fact", "Learned in a cloud session");
+        ops::get(&cloud, &[learned.id().to_string()], "cloud-session", "mcp").unwrap(); // writes this VM's event log
+        sync::sync(&cloud).unwrap();
+        assert!(cloud.untrusted_ids().is_empty());
+        assert!(cloud.iter_nodes().iter().any(|n| n.title() == "Prefers dark mode"));
+        assert!(laptop.git(&["pull", "-q", "origin", &branch]).status.success());
+        assert!(laptop.iter_nodes().iter().any(|n| n.title() == "Learned in a cloud session"));
+        assert!(laptop.path(&["events", "cloud-12345678"]).is_dir(), "the VM syncs as its own device");
+
+        // another origin than REWIRE_REMOTE is neither trusted nor synced automatically
+        let other = Brain::init(Some(&tmp.path().join("other")), Some("other")).unwrap();
+        other.git(&["remote", "add", "origin", &tmp.path().join("elsewhere.git").to_string_lossy()]);
+        let other = Brain::open(Some(&other.root));
+        assert!(!other.config.sync_auto && !sync::remote_trusted(&other));
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(result));
+    for k in ["CLAUDE_CODE_REMOTE", "CLAUDE_CODE_REMOTE_SESSION_ID", "REWIRE_REMOTE", "REWIRE_REMOTE_TRUSTED"] {
+        std::env::remove_var(k);
+    }
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// `rewire mcp` on a machine without a brain fetches it from REWIRE_REMOTE instead of failing at start.
+#[test]
+fn mcp_fetches_missing_brain_from_env_remote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let remote = tmp.path().join("remote.git").to_string_lossy().into_owned();
+    assert!(Command::new("git").args(["init", "-q", "--bare", &remote]).status().unwrap().success());
+    let mut a = Brain::init(Some(&tmp.path().join("a")), Some("laptop")).unwrap();
+    sync::set_remote(&mut a, &remote).unwrap();
+    add_commit(&a, "fact", "Fetched by the MCP server");
+    sync::sync(&a).unwrap();
+    let target = tmp.path().join("fresh");
+    let mut child = as_user(Command::new(env!("CARGO_BIN_EXE_rewire")).arg("--brain").arg(&target).arg("mcp"))
+        .env("REWIRE_REMOTE", &remote)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"t","version":"1"}}}}}}"#).unwrap();
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"recall","arguments":{{"query":"fetched mcp server"}}}}}}"#
+        )
+        .unwrap();
+    }
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Fetched by the MCP server"), "{text}");
+    assert!(Brain::open(Some(&target)).exists());
+}
+
 #[test]
 fn legacy_device_in_toml_is_not_shared() {
     let t = two();

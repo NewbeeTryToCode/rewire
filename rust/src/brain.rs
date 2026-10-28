@@ -225,7 +225,11 @@ impl Brain {
     pub fn open(root: Option<&Path>) -> Brain {
         let root = absolute(&root.map(|r| expand_user(&r.to_string_lossy())).unwrap_or_else(default_path));
         let config = config::load(&root.join("brain.toml"));
-        Brain { root, config }
+        let mut brain = Brain { root, config };
+        if !brain.config.sync_auto && crate::sync::origin_is_env_remote(&brain) {
+            brain.config.sync_auto = true;
+        }
+        brain
     }
 
     pub fn path(&self, parts: &[&str]) -> PathBuf {
@@ -383,6 +387,31 @@ impl Brain {
         Ok(brain)
     }
 
+    /// Clone the brain at `url` into `root` for a machine that starts empty (REWIRE_REMOTE): into a folder of its
+    /// own first, then moved into place, so a session-start hook and an MCP server starting together never see half a
+    /// clone, and whichever finishes second uses the first one's.
+    pub fn fetch(url: &str, root: &Path) -> Result<Brain> {
+        let root = absolute(root);
+        let parent = root.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        fs::create_dir_all(&parent)?;
+        let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "brain".into());
+        let tmp = parent.join(format!(".{name}.fetch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let cloned = Brain::clone_from(url, Some(&tmp), None).and_then(|_| {
+            if root.is_dir() && fs::read_dir(&root)?.next().is_none() {
+                fs::remove_dir(&root)?;
+            }
+            Ok(fs::rename(&tmp, &root)?)
+        });
+        let _ = fs::remove_dir_all(&tmp);
+        let brain = Brain::open(Some(&root));
+        match cloned {
+            Ok(()) => Ok(brain),
+            Err(_) if brain.exists() => Ok(brain), // another process got there first
+            Err(e) => Err(e),
+        }
+    }
+
     /// Attach this machine to an existing brain repository.
     pub fn clone_from(url: &str, root: Option<&Path>, device: Option<&str>) -> Result<Brain> {
         let root = absolute(&root.map(|r| expand_user(&r.to_string_lossy())).unwrap_or_else(default_path));
@@ -423,7 +452,8 @@ impl Brain {
         let paths = list(&[":(icase)nodes", ":(icase)skills"]);
         let inbox: Vec<String> = list(&[":(icase)inbox"]).iter().filter_map(|p| brain.review_key(&root.join(p))).collect();
         brain.mark_keys(&inbox)?;
-        let waiting = brain.mark_untrusted(&paths)?;
+        // REWIRE_REMOTE_TRUSTED: the user said this remote's notes count as reviewed on this machine
+        let waiting = if crate::sync::remote_trusted(&brain) { 0 } else { brain.mark_untrusted(&paths)? };
         if waiting > 0 {
             eprintln!(
                 "rewire: {waiting} rule(s), preference(s) or skill(s) came with this brain; agents on this device see them \

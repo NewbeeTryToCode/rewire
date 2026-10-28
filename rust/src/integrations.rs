@@ -164,13 +164,13 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
         brain
     } else {
         // Ephemeral machines (cloud sessions, fresh Codespaces): fetch the brain from REWIRE_REMOTE.
-        let url = std::env::var("REWIRE_REMOTE").unwrap_or_default();
+        let url = sync::env_remote();
         if url.is_empty() {
             // The hook is installed but there is no brain: say so, instead of a silent empty memory.
             let root = brain.root.display();
             return only_at_start(snapshot::notice(&format!("no brain at {root} (run `rewire init`, or set REWIRE_REMOTE)")));
         }
-        match Brain::clone_from(&url, Some(&brain.root), None) {
+        match Brain::fetch(&url, &brain.root) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("rewire: could not clone brain: {e}");
@@ -232,7 +232,7 @@ pub fn claude_code_settings(command: &str, brain: Option<&Path>) -> Value {
     let entry =
         |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
     json!({
-        "hooks": {"SessionStart": entry("session-start", 15), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)},
+        "hooks": {"SessionStart": entry("session-start", 60), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)},
         "permissions": {"deny": deny_rules(command, brain)},
     })
 }
