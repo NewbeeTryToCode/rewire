@@ -28,6 +28,9 @@ profile = "coding"
 #              "auto" = user turns for coding, everything for general; or "user" / "all" / "none".
 transcripts = "auto"
 max_chunk_chars = 60000
+# assistant_chars: an agent reply longer than this reaches the extraction model condensed (its opening and its
+#                  end, where the outcome usually is); the stored transcript always keeps it whole
+assistant_chars = 1500
 
 [sync]
 # Set by `rewire remote set <url>`: pull at session start, push after consolidation.
@@ -74,6 +77,8 @@ pub struct Config {
     pub model: String,
     pub effort: String,
     pub max_chunk_chars: usize,
+    /// agent replies longer than this are condensed in the extraction prompt (never in the stored transcript)
+    pub assistant_chars: usize,
     /// brain.toml could not be parsed: defaults are used, and `doctor` and the snapshot say so
     pub error: Option<String>,
     /// brain.toml (synced) tried to set provider/command/model/effort: ignored, reported by `doctor`
@@ -103,6 +108,7 @@ impl Default for Config {
             model: "claude-sonnet-5-5".into(),
             effort: "medium".into(),
             max_chunk_chars: 60000,
+            assistant_chars: 1500,
             error: None,
             synced_llm_settings: Vec::new(),
             projects: IndexMap::new(),
@@ -266,6 +272,10 @@ pub fn load(path: &Path) -> Config {
         string(local.get("profile")).filter(|v| ["coding", "general"].contains(&v.as_str())).unwrap_or_else(|| cfg.synced_profile.clone());
     if let Some(v) = num(con.get("max_chunk_chars")) {
         cfg.max_chunk_chars = (v.max(0.0) as usize).max(8000); // a synced tiny value would multiply LLM calls
+    }
+    if let Some(v) = num(con.get("assistant_chars")) {
+        // a reply never takes more than a quarter of a chunk, nor shrinks to a few words
+        cfg.assistant_chars = (v.max(0.0) as usize).clamp(300, cfg.max_chunk_chars / 4);
     }
     // settings that do not parse: keep no transcripts unless a readable local.toml says otherwise
     if (broken && !cfg.local_transcripts) || cfg.error.as_deref().is_some_and(|e| e.starts_with("local.toml")) {

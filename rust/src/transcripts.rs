@@ -239,11 +239,12 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, keep: &dyn Fn(&Path) -> bool, recurs
     }
 }
 
-/// Seconds a transcript must have been left untouched before lazy discovery consolidates it: a session still
-/// running in another window is picked up after it goes quiet (or at once through its SessionEnd hook), not one
-/// fragment at a time. REWIRE_IDLE_SECS overrides it.
+/// Seconds a transcript must have been left untouched before it is consolidated without a SessionEnd: by the idle
+/// watcher while the session pauses, or by lazy discovery from a later hook. A session that is still going is
+/// picked up when it goes quiet (or at once through its SessionEnd hook), not one fragment at a time.
+/// REWIRE_IDLE_SECS overrides it.
 pub fn idle_secs() -> f64 {
-    std::env::var("REWIRE_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(300.0)
+    std::env::var("REWIRE_IDLE_SECS").ok().and_then(|v| v.parse().ok()).filter(|v: &f64| *v >= 0.0).unwrap_or(600.0)
 }
 
 /// Transcripts changed since `since_ts` and idle for `idle_secs()`, and the oldest change time among the ones still

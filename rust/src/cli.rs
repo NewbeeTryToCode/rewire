@@ -115,6 +115,10 @@ pub enum Cmd {
         /// consolidate again the transcripts that failed before (listed by `doctor`)
         #[arg(long)]
         retry: bool,
+        /// wait while sessions are active and consolidate each one once it has been idle for REWIRE_IDLE_SECS
+        /// (default 600); the hooks start it, one per brain
+        #[arg(long, conflicts_with_all = ["files", "pending", "retry"])]
+        watch: bool,
         #[arg(long, value_parser = ["claude-code", "codex"])]
         harness: Option<String>,
         #[arg(long)]
@@ -316,6 +320,22 @@ fn writing(brain: &Brain) -> crate::brain::LockGuard {
     match brain.lock(Duration::from_secs(120)) {
         Ok(g) => g,
         Err(e) => fail(format!("{e}; try again in a moment")),
+    }
+}
+
+/// With auto sync on, what a background consolidation learned is pushed at once.
+fn push_after_consolidation(brain: &Brain, quiet: bool) {
+    if !brain.config.sync_auto {
+        return;
+    }
+    match brain.lock(Duration::from_secs(120)) {
+        Ok(_g) => match sync::push(brain, sync::GIT_TIMEOUT) {
+            Ok(notes) if !quiet => eprintln!("sync: {}", notes.join("; ")),
+            Err(e) if !quiet => eprintln!("sync: push skipped: {e}"),
+            _ => {}
+        },
+        Err(e) if !quiet => eprintln!("sync: push skipped: {e}"),
+        _ => {}
     }
 }
 
@@ -662,8 +682,16 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             result?;
         }
-        Cmd::Consolidate { mut files, pending, retry, harness, quiet, json: as_json } => {
+        Cmd::Consolidate { mut files, pending, retry, watch, harness, quiet, json: as_json } => {
             let brain = open_brain(bp);
+            if watch {
+                return integrations::watch(&brain, || {
+                    let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
+                    Consolidator::new(&brain, None, log)?.run_pending(&[])?;
+                    push_after_consolidation(&brain, quiet);
+                    Ok(())
+                });
+            }
             let mut failures = 0;
             if retry {
                 // transcripts that are gone cannot be retried: forget their failures
@@ -707,16 +735,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
                 other => other?,
             };
-            if brain.config.sync_auto && (pending || retry) {
-                match brain.lock(Duration::from_secs(120)) {
-                    Ok(_g) => match sync::push(&brain, sync::GIT_TIMEOUT) {
-                        Ok(notes) if !quiet => eprintln!("sync: {}", notes.join("; ")),
-                        Err(e) if !quiet => eprintln!("sync: push skipped: {e}"),
-                        _ => {}
-                    },
-                    Err(e) if !quiet => eprintln!("sync: push skipped: {e}"),
-                    _ => {}
-                }
+            if pending || retry {
+                push_after_consolidation(&brain, quiet);
             }
             if as_json {
                 print_json(&Value::Array(results.into_iter().map(Value::Object).collect()));

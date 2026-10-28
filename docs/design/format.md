@@ -128,8 +128,10 @@ Node creation (`recorded_at`) counts as the first use. Activation: `B = ln Σ w�
 [<n> <role>] <text on one line>
 ```
 
-A file may hold several consolidation runs of the same session, separated by `\n\n---\n\n`. Transcript
-lines are secret-redacted; assistant turns longer than 1,500 characters are cut and end with ` …[condensed]`.
+A file may hold several consolidation runs of the same session, separated by `\n\n---\n\n`; each later run
+is given the earlier runs' summaries. Transcript lines are secret-redacted and kept whole. The extraction
+prompt condenses agent replies longer than `assistant_chars` (default 1,500) to their opening and their end,
+joined by ` …[condensed]… `.
 For search, transcript lines are cut into excerpts of 6 lines with a stride of 4, and each run's summary
 is one more searchable excerpt (`Summary: <text>`, whitespace collapsed, at most 600 characters).
 Questions (secret-redacted, one line, at most 200 characters) are written by the extraction call. Each
@@ -162,7 +164,8 @@ steps. An approved `append` adds `\n\n## Update <YYYY-MM-DD>\n\n<steps>` to the 
 
 Sections `[activation]` (`d`, `recall_beta`), `[budgets]` (`profile`, `constraints`, `preferences`,
 `skills`, `working`; characters),
-`[consolidation]` (`profile`, `transcripts`, `provider`, `command`, `model`, `effort`, `max_chunk_chars`),
+`[consolidation]` (`profile`, `transcripts`, `provider`, `command`, `model`, `effort`, `max_chunk_chars`,
+`assistant_chars`),
 `[sync]` (`auto`), `[projects.<slug>]` (`match = [...]`). Unknown keys are ignored.
 
 ## Device-local state (`.state/`, never synced)
@@ -170,7 +173,8 @@ Sections `[activation]` (`d`, `recall_beta`), `[budgets]` (`profile`, `constrain
 JSON files (indent 1, keys sorted): `device.json` (`name`), `scan.json` (`since`, `since_ts`),
 `pending.json` (transcript path → harness), `watermarks.json` (path → last consolidated line),
 `processed.json`, `failed.json`, `prompt_shown.json` (session id → `{t, ids}`: short ids the session has
-seen, for the per-prompt hook; latest 50 sessions); plus `brain.lock` and `consolidate.log`.
+seen, for the per-prompt hook; latest 50 sessions); plus `brain.lock`, `watch.lock` (held by the running
+idle watcher) and `consolidate.log`.
 
 ## Injected text
 
