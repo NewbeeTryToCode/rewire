@@ -68,7 +68,7 @@ codex mcp add rewire -- rewire mcp
 
 The agent proposes memories and you approve them. `install claude-code --write` adds Claude Code permission
 rules that deny the agent `rewire review approve`, `rewire remember --apply` and direct edits of the brain, and rewire
-itself refuses approving, `--apply`, `forget`, `undo` and `remote set` inside an agent session (detected by the agent's environment
+itself refuses approving, `--apply`, `forget`, `undo`, `remote set` and `install cloud` inside an agent session (detected by the agent's environment
 variables or its process among the command's ancestors; test suites and benchmark harnesses started from an agent
 session set `REWIRE_NOT_AN_AGENT=1`). These raise the bar, they are not a sandbox: an agent that may run arbitrary
 shell commands acts as you, and could do the same.
@@ -79,13 +79,41 @@ out of the snapshot, recall and the per-prompt hook on this device until you app
 `approve all`. Facts, decisions and session transcripts flow between devices without a review, and the sender
 chooses a note's type, so this protects against unreviewed rules, not against someone who controls your remote:
 keep the remote private. The review is per device (each device approves a rule once, and a new or ephemeral clone
-starts with all of them waiting); a signed approval ledger shared across devices is not built. A pull that contains
+starts with all of them waiting, unless `REWIRE_REMOTE_TRUSTED` says otherwise: see Cloud sessions); a signed approval ledger shared across devices is not built. A pull that contains
 symlinks, submodules or device-local files, or a `.gitignore` that un-ignores them, is refused, and a brain.toml change
 to what this device keeps (`transcripts`, `profile`) is not taken until you set it in this device's `local.toml`.
 Other brain.toml settings from the remote apply as they come (budgets and chunk size have floors; recall weights,
 link following and the project map are not checked), so keep the remote private.
 
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
+
+### Cloud sessions (Claude Code on the web)
+
+A cloud session starts in a fresh VM, so the brain lives in a private git repository and each session fetches it.
+Setup is one paste:
+
+1. Create a private repository for the brain (empty, or with GitHub's README and LICENSE) and let the Claude GitHub
+   App reach it (or connect with `/web-setup`). The cloud's GitHub proxy authenticates git: no token goes into the VM.
+2. In the cloud environment's settings (environment menu > Edit), paste [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh)
+   as the setup script, with `BRAIN` set to that repository. It installs rewire and runs
+   `rewire install cloud --remote <url>`: the hooks, `REWIRE_REMOTE` and `REWIRE_REMOTE_TRUSTED=1` in Claude Code's
+   settings, and the MCP server. The environment caches the result.
+
+Each session then clones the brain into `~/brain` at start (the session-start hook or the MCP server, whichever
+starts first), shows the snapshot, and pushes what consolidation learns back. The first session turns a new
+repository into a brain (`rewire init --from <url>` does the same on your own machine; a repository with anything
+else in it is refused). `REWIRE_REMOTE` turns auto sync on for the brain it names. Each VM syncs as its own device
+(`cloud-<session id>`), so parallel sessions never write one event log.
+
+`REWIRE_REMOTE_TRUSTED=1` makes what comes from the repository count as reviewed in the VM: a VM's review state ends
+with the session, so without it every rule, preference and skill would wait for a review that never comes. The review
+gate therefore does not apply in cloud sessions: review rules on your own machine and keep the repository private.
+`rewire install cloud --review` leaves it off. An agent in the VM can change these settings for its own commands,
+like everything else it can do as you there.
+
+Limit: a transcript is consolidated once it has been idle for `REWIRE_IDLE_SECS` (300 s), when a later hook runs in
+the same VM. A VM is reclaimed after a while idle, so the last part of a cloud session is captured only if you send
+another message in it after that pause and before the VM goes; otherwise it is lost.
 
 ## Day-to-day usage
 

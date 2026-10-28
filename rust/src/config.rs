@@ -153,6 +153,15 @@ pub fn slug(text: &str) -> String {
 }
 
 pub fn default_device() -> String {
+    // every Claude Code cloud VM is called "vm": one event log per session keeps parallel sessions apart
+    if std::env::var("CLAUDE_CODE_REMOTE").as_deref() == Ok("true") {
+        let id: Vec<char> =
+            std::env::var("CLAUDE_CODE_REMOTE_SESSION_ID").unwrap_or_default().chars().filter(char::is_ascii_alphanumeric).collect();
+        let id: String = id[id.len().saturating_sub(8)..].iter().collect();
+        if !id.is_empty() {
+            return format!("cloud-{}", id.to_lowercase());
+        }
+    }
     let host = std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|s| s.trim().to_string())

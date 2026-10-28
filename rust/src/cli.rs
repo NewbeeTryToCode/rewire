@@ -188,11 +188,18 @@ pub enum Cmd {
     },
     /// connect a harness
     Install {
-        #[arg(value_parser = ["claude-code", "codex"])]
+        /// cloud: Claude Code in a cloud VM that starts empty every session (hooks, MCP server, the brain's remote)
+        #[arg(value_parser = ["claude-code", "codex", "cloud"])]
         harness: String,
         /// write Claude Code settings (backs up first)
         #[arg(long)]
         write: bool,
+        /// cloud: the brain's git repository, fetched at every session start (an empty new repository becomes one)
+        #[arg(long)]
+        remote: Option<String>,
+        /// cloud: rules, preferences and skills from the remote wait for a review in the VM (which ends with it)
+        #[arg(long)]
+        review: bool,
         /// Agent Skills directory for codex (default ~/.agents/skills)
         #[arg(long)]
         skills_dir: Option<String>,
@@ -1009,7 +1016,24 @@ pub fn run(cli: Cli) -> Result<()> {
                 fail(format!("sync failed: {e}"));
             }
         }
-        Cmd::Mcp => crate::mcp::serve(&open_brain(bp))?,
+        Cmd::Mcp => {
+            let brain = Brain::open(bp.as_deref());
+            let url = sync::env_remote();
+            if !brain.exists() && !url.is_empty() {
+                // a cloud session starts the MCP server and the session-start hook together: either may clone first.
+                // Only the hook turns an empty repository into a brain (two would push two); here, wait for it.
+                if let Err(e) = Brain::fetch(&url, &brain.root, false) {
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(45);
+                    while !brain.exists() && std::time::Instant::now() < until {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    if !brain.exists() {
+                        fail(format!("could not fetch the brain from REWIRE_REMOTE: {e}"));
+                    }
+                }
+            }
+            crate::mcp::serve(&open_brain(bp))?
+        }
         Cmd::Hook { event, harness } => {
             let brain = Brain::open(bp.as_deref());
             let mut raw = String::new();
@@ -1026,8 +1050,15 @@ pub fn run(cli: Cli) -> Result<()> {
                 Err(e) => eprintln!("rewire hook error: {e}"),
             }
         }
-        Cmd::Install { harness, write, skills_dir } => {
-            if harness == "claude-code" {
+        Cmd::Install { harness, write, skills_dir, remote, review } => {
+            if harness == "cloud" {
+                // which repository the whole brain syncs with: the user's call, as with `remote set`
+                if let Some(marker) = agent_shell() {
+                    fail(format!("install cloud is refused inside an agent session ({marker}): run it in the environment's setup script"));
+                }
+                let Some(url) = remote.filter(|u| !u.trim().is_empty()) else { fail("usage: rewire install cloud --remote <git-url>") };
+                println!("{}", integrations::install_cloud(url.trim(), !review, &Brain::open(bp.as_deref()).root)?);
+            } else if harness == "claude-code" {
                 println!("{}", integrations::install_claude_code(write, None, Some(&Brain::open(bp.as_deref()).root))?);
             } else {
                 println!("{}", integrations::install_codex(skills_dir.as_deref())?);
