@@ -200,6 +200,9 @@ pub enum Cmd {
         /// cloud: rules, preferences and skills from the remote wait for a review in the VM (which ends with it)
         #[arg(long)]
         review: bool,
+        /// cloud: "Name <email>" the brain's commits are by (a cloud VM's own git identity is the agent's)
+        #[arg(long)]
+        author: Option<String>,
         /// Agent Skills directory for codex (default ~/.agents/skills)
         #[arg(long)]
         skills_dir: Option<String>,
@@ -1043,14 +1046,17 @@ pub fn run(cli: Cli) -> Result<()> {
                 Err(e) => eprintln!("rewire hook error: {e}"),
             }
         }
-        Cmd::Install { harness, write, skills_dir, remote, review } => {
+        Cmd::Install { harness, write, skills_dir, remote, review, author } => {
             if harness == "cloud" {
                 // which repository the whole brain syncs with: the user's call, as with `remote set`
                 if let Some(marker) = agent_shell() {
                     fail(format!("install cloud is refused inside an agent session ({marker}): run it in the environment's setup script"));
                 }
                 let Some(url) = remote.filter(|u| !u.trim().is_empty()) else { fail("usage: rewire install cloud --remote <git-url>") };
-                println!("{}", integrations::install_cloud(url.trim(), !review, &Brain::open(bp.as_deref()).root)?);
+                if author.as_deref().is_some_and(|a| crate::brain::parse_identity(a).is_none()) {
+                    fail("--author takes \"Name <email>\", e.g. \"Ana <123+ana@users.noreply.github.com>\"");
+                }
+                println!("{}", integrations::install_cloud(url.trim(), !review, author.as_deref(), &Brain::open(bp.as_deref()).root)?);
             } else if harness == "claude-code" {
                 println!("{}", integrations::install_claude_code(write, None, Some(&Brain::open(bp.as_deref()).root))?);
             } else {

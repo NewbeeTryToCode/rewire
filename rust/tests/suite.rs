@@ -1332,6 +1332,26 @@ fn concurrent_first_fetches_create_one_brain() {
     assert_eq!(std::fs::read_dir(tmp.path().join("vm1")).unwrap().filter(|e| e.as_ref().unwrap().file_name() == "brain").count(), 1);
 }
 
+/// A cloud VM's own git identity is the agent's: REWIRE_GIT_AUTHOR makes every commit rewire writes the user's.
+#[test]
+fn brain_commits_use_the_configured_author() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("REWIRE_GIT_AUTHOR", "Ana <1+ana@users.noreply.github.com>");
+    let brain = Brain::init(Some(&tmp.path().join("b")), Some("vm"));
+    let author = brain.as_ref().map(|b| {
+        add_commit(b, "fact", "Written in a cloud session");
+        rewire::brain::out_str(&b.git(&["log", "--format=%an <%ae>|%cn <%ce>"]))
+    });
+    std::env::remove_var("REWIRE_GIT_AUTHOR");
+    for line in author.unwrap().lines() {
+        assert_eq!(line, "Ana <1+ana@users.noreply.github.com>|Ana <1+ana@users.noreply.github.com>");
+    }
+    assert_eq!(rewire::brain::parse_identity("Ana <a@b.c>"), Some(("Ana".into(), "a@b.c".into())));
+    assert_eq!(rewire::brain::parse_identity("<a@b.c>"), None);
+    assert_eq!(rewire::brain::parse_identity("Ana a@b.c"), None);
+}
+
 /// The whole cloud setup in one command for a setup script: hooks, REWIRE_REMOTE in Claude Code's settings, the MCP
 /// server; refused inside an agent session (which repository the brain syncs with is the user's call).
 #[test]
@@ -1350,7 +1370,7 @@ fn install_cloud_writes_settings_and_registers_mcp() {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let run = |user: bool| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
-        cmd.args(["install", "cloud", "--remote", "https://github.com/me/brain"])
+        cmd.args(["install", "cloud", "--remote", "https://github.com/me/brain", "--author", "Ana <1+ana@users.noreply.github.com>"])
             .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude"))
             .env("REWIRE_BRAIN", tmp.path().join("brain"))
             .env("PATH", &path);
@@ -1368,13 +1388,28 @@ fn install_cloud_writes_settings_and_registers_mcp() {
     let settings: Value = serde_json::from_str(&read(&tmp.path().join("claude").join("settings.json"))).unwrap();
     assert_eq!(settings["env"]["REWIRE_REMOTE"], "https://github.com/me/brain");
     assert_eq!(settings["env"]["REWIRE_REMOTE_TRUSTED"], "1");
+    assert_eq!(settings["env"]["REWIRE_GIT_AUTHOR"], "Ana <1+ana@users.noreply.github.com>");
     assert!(settings["hooks"]["SessionStart"].to_string().contains("hook session-start"));
     let calls = read(&log);
     assert!(calls.contains("mcp remove --scope user rewire"), "{calls}");
     assert!(
-        calls.contains("mcp add --scope user rewire -e REWIRE_REMOTE=https://github.com/me/brain -e REWIRE_REMOTE_TRUSTED=1 -- "),
+        calls.contains(
+            "mcp add --scope user rewire -e REWIRE_REMOTE=https://github.com/me/brain -e REWIRE_REMOTE_TRUSTED=1 -e REWIRE_GIT_AUTHOR=Ana <1+ana@users.noreply.github.com> -- "
+        ),
         "{calls}"
     );
+    let bad = as_user(Command::new(env!("CARGO_BIN_EXE_rewire")).args([
+        "install",
+        "cloud",
+        "--remote",
+        "https://github.com/me/brain",
+        "--author",
+        "just a name",
+    ]))
+    .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude2"))
+    .output()
+    .unwrap();
+    assert!(!bad.status.success() && String::from_utf8_lossy(&bad.stderr).contains("Name <email>"));
     assert!(calls.trim_end().ends_with(" mcp"), "{calls}");
 }
 

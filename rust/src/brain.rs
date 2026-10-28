@@ -854,6 +854,19 @@ pub fn run_git(root: &Path, args: &[&str], timeout: Duration) -> std::io::Result
     run_git_with_input(root, args, None, timeout)
 }
 
+/// REWIRE_GIT_AUTHOR="Name <email>": who the brain's commits are by, whatever this machine's git identity is. A cloud
+/// VM's own identity is the agent's, so `rewire install cloud --author` sets it there.
+pub fn commit_identity() -> Option<(String, String)> {
+    parse_identity(&std::env::var("REWIRE_GIT_AUTHOR").ok()?)
+}
+
+/// "Name <email>" → (name, email); None for anything else.
+pub fn parse_identity(text: &str) -> Option<(String, String)> {
+    let caps = regex::Regex::new(r"^\s*([^<>]*?)\s*<([^<>\s]+@[^<>\s]+)>\s*$").unwrap().captures(text)?;
+    let name = caps[1].trim().to_string();
+    (!name.is_empty()).then(|| (name, caps[2].to_string()))
+}
+
 /// `run_git` with text on stdin (`git cat-file --batch`).
 pub fn run_git_with_input(root: &Path, args: &[&str], input: Option<String>, timeout: Duration) -> std::io::Result<Output> {
     let timeout = GIT_DEADLINE.with(|d| d.get()).map_or(timeout, |end| timeout.min(end.saturating_duration_since(Instant::now())));
@@ -862,6 +875,12 @@ pub fn run_git_with_input(root: &Path, args: &[&str], input: Option<String>, tim
     let started = std::time::SystemTime::now();
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(root).args(GIT_CONFIG).args(args).env("GIT_TERMINAL_PROMPT", "0"); // never hang on a credential prompt
+    if let Some((name, email)) = commit_identity() {
+        cmd.env("GIT_AUTHOR_NAME", &name)
+            .env("GIT_AUTHOR_EMAIL", &email)
+            .env("GIT_COMMITTER_NAME", &name)
+            .env("GIT_COMMITTER_EMAIL", &email);
+    }
     let out = crate::util::run_with_timeout(cmd, input, timeout);
     // the killed git's lock: it did not exist before and was made during this call (writers on a brain take the brain
     // lock, so another rewire's git is not running here; a git the user runs by hand in the brain could be)

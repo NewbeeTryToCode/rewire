@@ -377,7 +377,7 @@ pub fn install_codex(skills_dir: Option<&str>) -> Result<String> {
 /// Claude Code in a VM that starts empty every session (a cloud environment's setup script runs this once): the
 /// hooks, REWIRE_REMOTE (and REWIRE_REMOTE_TRUSTED) in Claude Code's settings so every hook and command sees them,
 /// and the MCP server. The brain itself is fetched at each session start.
-pub fn install_cloud(url: &str, trusted: bool, brain: &Path) -> Result<String> {
+pub fn install_cloud(url: &str, trusted: bool, author: Option<&str>, brain: &Path) -> Result<String> {
     let mut lines = vec![install_claude_code(true, None, Some(brain))?];
     let path = claude_settings_path();
     let mut current: Value =
@@ -392,6 +392,14 @@ pub fn install_cloud(url: &str, trusted: bool, brain: &Path) -> Result<String> {
     } else {
         env.remove("REWIRE_REMOTE_TRUSTED");
     }
+    match author {
+        Some(a) => {
+            env.insert("REWIRE_GIT_AUTHOR".into(), json!(a.trim()));
+        }
+        None => {
+            env.remove("REWIRE_GIT_AUTHOR");
+        }
+    }
     crate::util::atomic_write(&path, &serde_json::to_string_pretty(&current)?)?;
     lines.push(format!(
         "REWIRE_REMOTE={}{} set in {}",
@@ -400,10 +408,28 @@ pub fn install_cloud(url: &str, trusted: bool, brain: &Path) -> Result<String> {
         path.display()
     ));
 
+    match author {
+        Some(a) => lines.push(format!("the brain's commits are by {}", a.trim())),
+        None => {
+            let mut cmd = Command::new("git");
+            cmd.args(["config", "--get", "user.email"]);
+            let own = crate::util::run_with_timeout(cmd, None, Duration::from_secs(5))
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            lines.push(format!(
+                "the brain's commits carry this machine's git identity{}; pass --author \"Name <email>\" to make them yours",
+                if own.is_empty() { String::new() } else { format!(" ({own})") }
+            ));
+        }
+    }
     let remote_env = format!("REWIRE_REMOTE={url}");
+    let author_env = author.map(|a| format!("REWIRE_GIT_AUTHOR={}", a.trim()));
     let mut add = vec!["mcp", "add", "--scope", "user", "rewire", "-e", &remote_env];
     if trusted {
         add.extend(["-e", "REWIRE_REMOTE_TRUSTED=1"]);
+    }
+    if let Some(a) = &author_env {
+        add.extend(["-e", a.as_str()]);
     }
     let exe = exe_command();
     add.extend(["--", &exe, "mcp"]);
