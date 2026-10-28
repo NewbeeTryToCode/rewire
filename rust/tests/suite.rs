@@ -1936,7 +1936,9 @@ fn approval_is_refused_under_an_agent_process_even_without_its_variables() {
     let tmp = tempfile::tempdir().unwrap();
     // a shell that looks like the agent's process: `env -u CLAUDECODE` does not hide the ancestor
     let fake_agent = tmp.path().join("claude");
-    std::os::unix::fs::symlink("/bin/sh", &fake_agent).unwrap();
+    // bash itself: macOS's /bin/sh is a launcher that starts another shell in its place
+    let shell = if Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" };
+    std::os::unix::fs::symlink(shell, &fake_agent).unwrap();
     let bin = env!("CARGO_BIN_EXE_rewire");
     let brain = tmp.path().join("b");
     let mut init = Command::new(bin);
@@ -1946,7 +1948,8 @@ fn approval_is_refused_under_an_agent_process_even_without_its_variables() {
         .status()
         .unwrap()
         .success());
-    let script = format!("{bin} --brain {} review approve all", brain.display());
+    // a second command keeps the shell alive as rewire's parent (a shell runs a lone command in its own place)
+    let script = format!("{bin} --brain {} review approve all; exit $?", brain.display());
     let mut cmd = Command::new(&fake_agent);
     as_user(cmd.args(["-c", &script])).env_remove("REWIRE_NOT_AN_AGENT");
     let out = cmd.output().unwrap();
@@ -1998,19 +2001,23 @@ fn anything_tag_like_in_a_note_is_escaped() {
     assert_eq!(rewire::snapshot::escape("Vec<String> and a < b"), "Vec&lt;String> and a < b");
 }
 
+/// Commit files and symlinks with plain git, as an attacker would. Written into the index directly: on a
+/// case-insensitive file system (macOS) `Rule.md` next to `rule.md`, or `Local.toml` next to an ignored `local.toml`,
+/// would be one file on disk, and the commit would not hold what the remote is meant to send.
 fn push_from(t: &Two, files: &[(&str, &str)], symlinks: &[(&str, &str)]) {
-    for (path, text) in files {
-        let p = t.a.root.join(path);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, text).unwrap();
+    let blob = |content: &str| {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), content).unwrap();
+        let out = t.a.git(&["hash-object", "-w", "--no-filters", &tmp.path().to_string_lossy()]);
+        assert!(out.status.success());
+        rewire::brain::out_str(&out)
+    };
+    let entries =
+        files.iter().map(|(p, text)| ("100644", *p, blob(text))).chain(symlinks.iter().map(|(p, target)| ("120000", *p, blob(target))));
+    for (mode, path, sha) in entries.collect::<Vec<_>>() {
+        assert!(t.a.git(&["update-index", "--add", "--cacheinfo", &format!("{mode},{sha},{path}")]).status.success(), "{path}");
     }
-    for (path, target) in symlinks {
-        let p = t.a.root.join(path);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(target, p).unwrap();
-    }
-    assert!(t.a.git(&["add", "-A"]).status.success());
-    assert!(t.a.git(&["commit", "-q", "-m", "from the other device"]).status.success()); // plain git, as an attacker would
+    assert!(t.a.git(&["commit", "-q", "-m", "from the other device"]).status.success());
     assert!(t.a.git(&["push", "-q", "origin", "HEAD"]).status.success());
 }
 
