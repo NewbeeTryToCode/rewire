@@ -166,6 +166,17 @@ pub fn session_summary(part: &str) -> String {
     format!("Summary: {}", body.chars().take(SUMMARY_CHARS).collect::<String>())
 }
 
+/// "Outputs: …" row text of one consolidation run: what it published, with links ("" if none).
+pub fn session_outputs(part: &str) -> String {
+    static R: OnceLock<Regex> = OnceLock::new();
+    let re = R.get_or_init(|| Regex::new(r"(?s)\n## Outputs\n(.*?)(?:\n## |\z)").unwrap());
+    let body = re.captures(part).map(|c| c[1].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("Outputs: {body}")
+}
+
 /// A recall hit: a memory node or (type "episode") a transcript excerpt.
 #[derive(Debug, Clone)]
 pub struct Hit {
@@ -927,12 +938,13 @@ impl Index {
             for part in content.split("\n---\n") {
                 let date = date_re.captures(part).map(|c| c[1].to_string()).unwrap_or_else(|| folder.clone().unwrap_or_default());
                 scope = session_scope(part, &scope);
-                let summary = session_summary(part);
-                if !summary.is_empty() {
-                    // the session's goal and outcome, searchable like an excerpt (first = last = 0)
-                    db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)", params![path, date, summary, 0, 0, scope])?;
-                    let rid = db.last_insert_rowid();
-                    db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, summary])?;
+                // the session's goal and outcome, and what it published, each searchable like an excerpt (first = last = 0)
+                for row in [session_summary(part), session_outputs(part)] {
+                    if !row.is_empty() {
+                        db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)", params![path, date, row, 0, 0, scope])?;
+                        let rid = db.last_insert_rowid();
+                        db.execute("INSERT INTO fts_ep(rowid, text) VALUES (?,?)", params![rid, row])?;
+                    }
                 }
                 let Some((_, transcript)) = part.split_once("\n## Transcript\n") else { continue };
                 let lines: Vec<&str> = transcript.lines().filter(|l| l.starts_with('[')).collect();
