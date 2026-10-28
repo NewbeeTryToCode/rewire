@@ -1020,19 +1020,12 @@ pub fn run(cli: Cli) -> Result<()> {
             let brain = Brain::open(bp.as_deref());
             let url = sync::env_remote();
             if !brain.exists() && !url.is_empty() {
-                // a cloud session starts the MCP server and the session-start hook together: either may clone first.
-                // Only the hook turns an empty repository into a brain (two would push two); here, wait for it.
-                if let Err(e) = Brain::fetch(&url, &brain.root, false) {
-                    let until = std::time::Instant::now() + std::time::Duration::from_secs(45);
-                    while !brain.exists() && std::time::Instant::now() < until {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
-                    if !brain.exists() {
-                        fail(format!("rewire: {}", sync::fetch_failure(&url, &e.to_string())));
-                    }
-                }
+                // a cloud session starts the MCP server and the session-start hook together: answer the client at
+                // once and fetch in the background (only the hook turns an empty repository into a brain)
+                crate::mcp::serve_fetching(brain.root.clone(), url)?
+            } else {
+                crate::mcp::serve(&open_brain(bp))?
             }
-            crate::mcp::serve(&open_brain(bp))?
         }
         Cmd::Hook { event, harness } => {
             let brain = Brain::open(bp.as_deref());

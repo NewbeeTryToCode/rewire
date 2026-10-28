@@ -1331,6 +1331,38 @@ fn unreachable_brain_says_how_to_attach_it() {
     assert!(out.contains("Memory unavailable this session: could not fetch"), "{out}");
 }
 
+/// A brain the machine cannot fetch never keeps the MCP client waiting: the handshake is answered at once, and a tool
+/// call says why there is no memory instead of the server timing out for the whole session.
+#[test]
+fn mcp_answers_at_once_when_the_brain_cannot_be_fetched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut child = as_user(Command::new(env!("CARGO_BIN_EXE_rewire")).arg("--brain").arg(tmp.path().join("b")).arg("mcp"))
+        .env("REWIRE_REMOTE", tmp.path().join("missing.git"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list"}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"recall","arguments":{{"query":"x"}}}}}}"#)
+            .unwrap();
+    }
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+    let replies: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    assert_eq!(replies[0]["result"]["serverInfo"]["name"], "rewire");
+    assert!(replies[1]["result"]["tools"].as_array().unwrap().len() == 3);
+    assert_eq!(replies[2]["result"]["isError"], true);
+    let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("memory unavailable this session: could not fetch"), "{text}");
+}
+
 /// `rewire mcp` on a machine without a brain fetches it from REWIRE_REMOTE instead of failing at start.
 #[test]
 fn mcp_fetches_missing_brain_from_env_remote() {

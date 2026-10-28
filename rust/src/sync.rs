@@ -59,10 +59,8 @@ pub fn remote_trusted(brain: &Brain) -> bool {
 /// Why fetching `url` failed, in words the user can act on. A Claude Code cloud session reaches only the private
 /// repositories attached to it: without the brain's repository attached, git asks for a user name it cannot get.
 pub fn fetch_failure(url: &str, err: &str) -> String {
-    let e = err.to_lowercase();
     let url = crate::ops::redact_url(url);
-    let denied = ["could not read username", "authentication failed", "terminal prompts disabled", "repository not found", "403"];
-    if denied.iter().any(|d| e.contains(d)) {
+    if fetch_denied(err) {
         format!(
             "no access to {url} from this machine (in a Claude Code cloud session, add the repository to the \
              environment's repositories: a session reaches only the private repositories attached to it)"
@@ -71,6 +69,14 @@ pub fn fetch_failure(url: &str, err: &str) -> String {
         let first: String = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(200).collect();
         format!("could not fetch {url}: {first}")
     }
+}
+
+/// The fetch failed for want of access (not because the repository holds no brain yet, or the network is down).
+pub fn fetch_denied(err: &str) -> bool {
+    let e = err.to_lowercase();
+    ["could not read username", "authentication failed", "terminal prompts disabled", "repository not found", "403"]
+        .iter()
+        .any(|d| e.contains(d))
 }
 
 pub fn branch(brain: &Brain) -> String {
