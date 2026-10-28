@@ -79,6 +79,11 @@ fn titles(hits: &[Hit]) -> Vec<String> {
     hits.iter().map(|h| h.title.clone()).collect()
 }
 
+/// Markdown files in a folder (not the .gitkeep that keeps it in git).
+fn md_count(dir: &Path) -> usize {
+    std::fs::read_dir(dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".md")).count()
+}
+
 fn read(p: &Path) -> String {
     std::fs::read_to_string(p).unwrap()
 }
@@ -567,7 +572,7 @@ fn approve_all_skips_flagged_items() {
     assert!(rewire(&["remember", "--type", "preference", "Prefers short commit messages"]).status.success());
     let out = rewire(&["review", "approve", "all"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("skipped"));
-    assert_eq!(std::fs::read_dir(tmp.path().join("b").join("inbox")).unwrap().count(), 1);
+    assert_eq!(md_count(&tmp.path().join("b").join("inbox")), 1);
 }
 
 #[test]
@@ -1193,8 +1198,14 @@ fn cloud_session_fetches_brain_trusted_and_syncs() {
         assert_eq!(cloud.device(), "cloud-12345678");
         assert!(cloud.config.sync_auto, "REWIRE_REMOTE turns auto sync on for the brain it names");
         // a second fetch (the MCP server starting with the hook) uses the brain already there
-        assert!(Brain::fetch(&remote, &vm, false).unwrap().exists());
-        assert!(std::fs::read_dir(vm.parent().unwrap()).unwrap().count() == 1, "no fetch folder left behind");
+        assert!(Brain::fetch(&remote, &vm).unwrap().exists());
+        let leftovers: Vec<_> = std::fs::read_dir(vm.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".fetch-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no fetch folder left behind: {leftovers:?}");
 
         // what the laptop pushes during the session is trusted on the VM too, and the VM's own notes reach the laptop
         add_commit(&laptop, "preference", "Prefers dark mode");
@@ -1246,16 +1257,32 @@ fn new_repository_becomes_a_brain_on_first_clone() {
     };
 
     let github = seeded("github", &["README.md", "LICENSE", ".gitignore"]);
-    // the MCP server never creates one (the session-start hook does, so only one is pushed)
-    assert!(Brain::fetch(&github, &tmp.path().join("by-mcp"), false).is_err());
     let brain = Brain::clone_from(&github, Some(&tmp.path().join("a")), Some("laptop")).unwrap();
     assert!(brain.exists() && brain.config.sync_auto);
     assert!(brain.path(&["LICENSE"]).exists());
+    // the repository shows the brain's layout from the first push (git keeps no empty folder)
+    let pushed = rewire::brain::out_str(&brain.git(&["ls-tree", "-r", "--name-only", "origin/HEAD"]));
+    let pushed: Vec<&str> = pushed.lines().collect();
+    for f in [
+        "brain.toml",
+        "README.md",
+        ".gitignore",
+        ".gitattributes",
+        "LICENSE",
+        "nodes/.gitkeep",
+        "events/.gitkeep",
+        "sessions/.gitkeep",
+        "skills/.gitkeep",
+        "inbox/.gitkeep",
+    ] {
+        assert!(pushed.contains(&f), "{f} not in {pushed:?}");
+    }
+    assert!(!pushed.iter().any(|f| f.starts_with(".state") || f.starts_with(".index") || *f == "local.toml"), "{pushed:?}");
     let other = Brain::clone_from(&github, Some(&tmp.path().join("b")), Some("desk")).unwrap();
     assert!(other.exists() && other.path(&["brain.toml"]).exists(), "the brain was pushed");
 
     let empty = seeded("empty", &[]);
-    let brain = Brain::fetch(&empty, &tmp.path().join("vm").join("brain"), true).unwrap();
+    let brain = Brain::fetch(&empty, &tmp.path().join("vm").join("brain")).unwrap();
     assert!(brain.exists());
     assert!(Brain::clone_from(&empty, Some(&tmp.path().join("c")), None).unwrap().exists(), "the brain was pushed");
 
@@ -1263,6 +1290,66 @@ fn new_repository_becomes_a_brain_on_first_clone() {
     let err = Brain::clone_from(&code, Some(&tmp.path().join("d")), None).err().unwrap().to_string();
     assert!(err.contains("not a rewire brain"), "{err}");
     assert!(!tmp.path().join("d").exists());
+}
+
+/// The session-start hook and the MCP server fetch a new repository at the same moment (one machine), and two
+/// machines do (two VMs): one brain is created and pushed, everyone ends up on it, no second history.
+#[test]
+fn concurrent_first_fetches_create_one_brain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let remote = tmp.path().join("new.git").to_string_lossy().into_owned();
+    assert!(Command::new("git").args(["init", "-q", "--bare", &remote]).status().unwrap().success());
+    // pushes held for a moment, so both machines' first pushes are in flight together and one is rejected
+    let hook = Path::new(&remote).join("hooks").join("pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\ncat >/dev/null\nsleep 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let roots = [tmp.path().join("vm1").join("brain"), tmp.path().join("vm1").join("brain"), tmp.path().join("vm2").join("brain")];
+    let handles: Vec<_> = roots
+        .iter()
+        .cloned()
+        .map(|root| {
+            let remote = remote.clone();
+            std::thread::spawn(move || Brain::fetch(&remote, &root).map(|b| b.root))
+        })
+        .collect();
+    for h in handles {
+        assert!(h.join().unwrap().is_ok());
+    }
+    let out = |dir: &Path, args: &[&str]| {
+        String::from_utf8_lossy(&Command::new("git").current_dir(dir).args(args).output().unwrap().stdout).trim().to_string()
+    };
+    let remote_head = out(Path::new(&remote), &["rev-parse", "HEAD"]);
+    assert_eq!(out(Path::new(&remote), &["rev-list", "--max-parents=0", "HEAD"]).lines().count(), 1, "one brain, one history");
+    for vm in ["vm1", "vm2"] {
+        let root = tmp.path().join(vm).join("brain");
+        assert!(Brain::open(Some(&root)).exists());
+        assert_eq!(out(&root, &["rev-parse", "HEAD"]), remote_head, "{vm} is on the pushed brain");
+    }
+    assert_eq!(std::fs::read_dir(tmp.path().join("vm1")).unwrap().filter(|e| e.as_ref().unwrap().file_name() == "brain").count(), 1);
+}
+
+/// A cloud VM's own git identity is the agent's: REWIRE_GIT_AUTHOR makes every commit rewire writes the user's.
+#[test]
+fn brain_commits_use_the_configured_author() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("REWIRE_GIT_AUTHOR", "Ana <1+ana@users.noreply.github.com>");
+    let brain = Brain::init(Some(&tmp.path().join("b")), Some("vm"));
+    let author = brain.as_ref().map(|b| {
+        add_commit(b, "fact", "Written in a cloud session");
+        rewire::brain::out_str(&b.git(&["log", "--format=%an <%ae>|%cn <%ce>"]))
+    });
+    std::env::remove_var("REWIRE_GIT_AUTHOR");
+    for line in author.unwrap().lines() {
+        assert_eq!(line, "Ana <1+ana@users.noreply.github.com>|Ana <1+ana@users.noreply.github.com>");
+    }
+    assert_eq!(rewire::brain::parse_identity("Ana <a@b.c>"), Some(("Ana".into(), "a@b.c".into())));
+    assert_eq!(rewire::brain::parse_identity("<a@b.c>"), None);
+    assert_eq!(rewire::brain::parse_identity("Ana a@b.c"), None);
 }
 
 /// The whole cloud setup in one command for a setup script: hooks, REWIRE_REMOTE in Claude Code's settings, the MCP
@@ -1283,7 +1370,7 @@ fn install_cloud_writes_settings_and_registers_mcp() {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let run = |user: bool| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
-        cmd.args(["install", "cloud", "--remote", "https://github.com/me/brain"])
+        cmd.args(["install", "cloud", "--remote", "https://github.com/me/brain", "--author", "Ana <1+ana@users.noreply.github.com>"])
             .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude"))
             .env("REWIRE_BRAIN", tmp.path().join("brain"))
             .env("PATH", &path);
@@ -1301,13 +1388,28 @@ fn install_cloud_writes_settings_and_registers_mcp() {
     let settings: Value = serde_json::from_str(&read(&tmp.path().join("claude").join("settings.json"))).unwrap();
     assert_eq!(settings["env"]["REWIRE_REMOTE"], "https://github.com/me/brain");
     assert_eq!(settings["env"]["REWIRE_REMOTE_TRUSTED"], "1");
+    assert_eq!(settings["env"]["REWIRE_GIT_AUTHOR"], "Ana <1+ana@users.noreply.github.com>");
     assert!(settings["hooks"]["SessionStart"].to_string().contains("hook session-start"));
     let calls = read(&log);
     assert!(calls.contains("mcp remove --scope user rewire"), "{calls}");
     assert!(
-        calls.contains("mcp add --scope user rewire -e REWIRE_REMOTE=https://github.com/me/brain -e REWIRE_REMOTE_TRUSTED=1 -- "),
+        calls.contains(
+            "mcp add --scope user rewire -e REWIRE_REMOTE=https://github.com/me/brain -e REWIRE_REMOTE_TRUSTED=1 -e REWIRE_GIT_AUTHOR=Ana <1+ana@users.noreply.github.com> -- "
+        ),
         "{calls}"
     );
+    let bad = as_user(Command::new(env!("CARGO_BIN_EXE_rewire")).args([
+        "install",
+        "cloud",
+        "--remote",
+        "https://github.com/me/brain",
+        "--author",
+        "just a name",
+    ]))
+    .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude2"))
+    .output()
+    .unwrap();
+    assert!(!bad.status.success() && String::from_utf8_lossy(&bad.stderr).contains("Name <email>"));
     assert!(calls.trim_end().ends_with(" mcp"), "{calls}");
 }
 
@@ -1329,6 +1431,38 @@ fn unreachable_brain_says_how_to_attach_it() {
     let out = integrations::hook(Brain::open(Some(&tmp.path().join("b"))), "session-start", &json!({}), "claude-code").unwrap();
     std::env::remove_var("REWIRE_REMOTE");
     assert!(out.contains("Memory unavailable this session: could not fetch"), "{out}");
+}
+
+/// A brain the machine cannot fetch never keeps the MCP client waiting: the handshake is answered at once, and a tool
+/// call says why there is no memory instead of the server timing out for the whole session.
+#[test]
+fn mcp_answers_at_once_when_the_brain_cannot_be_fetched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut child = as_user(Command::new(env!("CARGO_BIN_EXE_rewire")).arg("--brain").arg(tmp.path().join("b")).arg("mcp"))
+        .env("REWIRE_REMOTE", tmp.path().join("missing.git"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list"}}"#).unwrap();
+        writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"recall","arguments":{{"query":"x"}}}}}}"#)
+            .unwrap();
+    }
+    drop(child.stdin.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+    let replies: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    assert_eq!(replies[0]["result"]["serverInfo"]["name"], "rewire");
+    assert!(replies[1]["result"]["tools"].as_array().unwrap().len() == 3);
+    assert_eq!(replies[2]["result"]["isError"], true);
+    let text = replies[2]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("memory unavailable this session: could not fetch"), "{text}");
 }
 
 /// `rewire mcp` on a machine without a brain fetches it from REWIRE_REMOTE instead of failing at start.
@@ -1815,7 +1949,7 @@ fn review_approve_is_refused_inside_an_agent_shell() {
     let out = rewire(&["review", "approve", "all"], true);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("agent session"));
-    assert_eq!(std::fs::read_dir(tmp.path().join("b").join("inbox")).unwrap().count(), 1);
+    assert_eq!(md_count(&tmp.path().join("b").join("inbox")), 1);
     assert!(rewire(&["review", "approve", "all"], false).status.success());
 }
 
@@ -2122,7 +2256,7 @@ fn import_checks_every_line_before_writing() {
     let out = rewire(&["import", file.to_str().unwrap()]);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("line 2"), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(std::fs::read_dir(brain.join("sessions")).unwrap().next().is_none());
+    assert!(std::fs::read_dir(brain.join("sessions")).unwrap().all(|e| e.unwrap().file_name() == ".gitkeep"));
 }
 
 #[test]

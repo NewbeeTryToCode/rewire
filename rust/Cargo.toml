@@ -1,6 +1,6 @@
 [package]
 name = "rewire"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Own your memory, take it anywhere: reviewable, git-backed long-term memory for coding agents"
 license = "MIT"

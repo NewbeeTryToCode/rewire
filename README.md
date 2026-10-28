@@ -101,7 +101,8 @@ Setup is one paste:
    repositories: a session reaches only the private repositories attached to it, and rewire tells you in the snapshot
    when the brain is out of its reach.
 3. Paste [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh) as the setup script, with `BRAIN` set to that
-   repository. It downloads the release binary (no Rust build, no login) and runs `rewire install cloud --remote <url>`:
+   repository and `AUTHOR` to your git identity (a cloud VM commits as the agent otherwise; rewire's commits to the
+   brain use `REWIRE_GIT_AUTHOR`, which `--author` sets). It downloads the release binary (no Rust build, no login) and runs `rewire install cloud --remote <url>`:
    the hooks, `REWIRE_REMOTE` and `REWIRE_REMOTE_TRUSTED=1` in Claude Code's settings, and the MCP server. The
    environment caches the result.
 

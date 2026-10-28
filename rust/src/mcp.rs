@@ -152,7 +152,8 @@ impl<'a> Server<'a> {
         }
     }
 
-    pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+    /// Everything but a tool call: answered without a brain.
+    pub fn handshake(msg: &Value) -> Option<Value> {
         let mid = msg.get("id").filter(|v| !v.is_null())?.clone(); // notifications get no reply
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -164,7 +165,22 @@ impl<'a> Server<'a> {
             }
             "ping" => json!({}),
             "tools/list" => json!({"tools": tools()}),
-            "tools/call" => {
+            other => {
+                return Some(json!({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": format!("unknown method {other}")}}))
+            }
+        };
+        Some(json!({"jsonrpc": "2.0", "id": mid, "result": result}))
+    }
+
+    pub fn handle(&mut self, msg: &Value) -> Option<Value> {
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        if method != "tools/call" {
+            return Server::handshake(msg);
+        }
+        let mid = msg.get("id").filter(|v| !v.is_null())?.clone();
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        let result = {
+            {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().filter(|a| a.is_object()).unwrap_or_else(|| json!({}));
                 match self.call(name, &args) {
@@ -196,12 +212,83 @@ impl<'a> Server<'a> {
                     Err(e) => return Some(json!({"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": e.to_string()}})),
                 }
             }
-            other => {
-                return Some(json!({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": format!("unknown method {other}")}}))
-            }
         };
         Some(json!({"jsonrpc": "2.0", "id": mid, "result": result}))
     }
+}
+
+fn tool_error(msg: &Value, text: &str) -> Option<Value> {
+    let mid = msg.get("id").filter(|v| !v.is_null())?.clone();
+    Some(json!({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": text}], "isError": true}}))
+}
+
+/// The server for a machine that starts without a brain (REWIRE_REMOTE, a cloud session): the client gets its
+/// handshake at once while the brain is fetched (or, from a new repository, created) in the background, and a tool
+/// call waits for that, then answers from the brain or says why there is none. Blocking the start instead would make
+/// the client give up on the server for the whole session.
+pub fn serve_fetching(root: std::path::PathBuf, url: String) -> Result<()> {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
+    let exists = |root: &std::path::Path| Brain::open(Some(root)).exists();
+    let state: Arc<(Mutex<Option<String>>, Condvar)> = Arc::new((Mutex::new(None), Condvar::new()));
+    {
+        let (state, root) = (state.clone(), root.clone());
+        std::thread::spawn(move || {
+            let reason = match Brain::fetch(&url, &root) {
+                Ok(_) => String::new(),
+                Err(e) => crate::sync::fetch_failure(&url, &e.to_string()),
+            };
+            let (lock, ready) = &*state;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+            ready.notify_all();
+        });
+    }
+    let mut server: Option<Server<'static>> = None;
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let reply = match serde_json::from_str::<Value>(line) {
+            Err(_) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "parse error"}})),
+            Ok(msg) => {
+                let call = msg.get("method").and_then(Value::as_str) == Some("tools/call");
+                if server.is_none() && call {
+                    let (lock, ready) = &*state;
+                    let deadline = Instant::now() + Duration::from_secs(90);
+                    let mut reason = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    while reason.is_none() && Instant::now() < deadline {
+                        reason = ready.wait_timeout(reason, deadline - Instant::now()).unwrap_or_else(|e| e.into_inner()).0;
+                    }
+                    let reason = reason.clone();
+                    if exists(&root) {
+                        // opened once the brain is there (its config with it), for the rest of the process
+                        server = Some(Server::new(Box::leak(Box::new(Brain::open(Some(&root))))));
+                    } else {
+                        let why = reason.filter(|r| !r.is_empty()).unwrap_or_else(|| "the brain is still being fetched".into());
+                        let text = format!("error: memory unavailable this session: {}", crate::snapshot::printable(&why));
+                        if let Some(r) = tool_error(&msg, &text) {
+                            writeln!(stdout, "{}", pyjson::dumps_utf8(&r))?;
+                            stdout.flush()?;
+                        }
+                        continue;
+                    }
+                }
+                match server.as_mut() {
+                    Some(s) => s.handle(&msg),
+                    None => Server::handshake(&msg),
+                }
+            }
+        };
+        if let Some(r) = reply {
+            writeln!(stdout, "{}", pyjson::dumps_utf8(&r))?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
 }
 
 pub fn serve(brain: &Brain) -> Result<()> {
