@@ -12,7 +12,8 @@
 # through the cloud's GitHub proxy: no token is needed when the Claude GitHub App can reach the repository.
 set -euo pipefail
 
-REF="${REWIRE_REF:-main}"
+# the rewire branch to install (a setup script does not see the environment's variables: edit it here)
+REF="zcode"
 
 say() { printf '\n==> %s\n' "$*"; }
 
