@@ -33,6 +33,29 @@ pub fn remote_url(brain: &Brain) -> String {
     }
 }
 
+/// REWIRE_REMOTE, set on an ephemeral machine (a cloud session) to fetch the brain at session start.
+pub fn env_remote() -> String {
+    std::env::var("REWIRE_REMOTE").map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
+fn same_remote(a: &str, b: &str) -> bool {
+    let norm = |u: &str| u.trim().trim_end_matches('/').trim_end_matches(".git").to_lowercase();
+    !a.trim().is_empty() && norm(a) == norm(b)
+}
+
+/// The brain's origin is the one REWIRE_REMOTE names: the user chose it for this machine, so it syncs automatically.
+pub fn origin_is_env_remote(brain: &Brain) -> bool {
+    let env = env_remote();
+    !env.is_empty() && brain.root.join(".git").exists() && same_remote(&env, &remote_url(brain))
+}
+
+/// REWIRE_REMOTE_TRUSTED=1: what comes from REWIRE_REMOTE counts as reviewed on this machine. For machines that
+/// start empty every session (a cloud VM): their review state cannot outlive the session, so without this every rule
+/// would wait for a review that never comes. Set by the user in the environment's settings, like REWIRE_REMOTE.
+pub fn remote_trusted(brain: &Brain) -> bool {
+    std::env::var("REWIRE_REMOTE_TRUSTED").as_deref() == Ok("1") && origin_is_env_remote(brain)
+}
+
 pub fn branch(brain: &Brain) -> String {
     let b = g(brain, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|o| out_str(&o)).unwrap_or_default();
     if b.is_empty() {
@@ -213,7 +236,8 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     let before = crate::config::load(&brain.path(&["brain.toml"]));
     // marked before the merge: a merge interrupted after it can never leave the other side's rules trusted
     let prior: std::collections::HashSet<String> = brain.untrusted().keys().cloned().collect();
-    let incoming = mark_incoming(brain, &reference)?;
+    let trusted = remote_trusted(brain);
+    let incoming = mark_incoming(brain, &reference, trusted)?;
     let head = out_str(&g(brain, &["rev-parse", "HEAD"])?);
     // the merge gets the caller's budget too (a hook has seconds); on a timeout or a failed resolve the merge is
     // aborted, so no conflict markers are left for the next commit to sweep in
@@ -236,6 +260,9 @@ fn pull_now(brain: &Brain, timeout: u64) -> Result<Vec<String>> {
     }
     notes.extend(crate::brain::ensure_ignores(brain)?);
     mark_merged(brain, &head, &prior)?;
+    if trusted {
+        brain.update_state("untrusted", |u| u.retain(|k, _| prior.contains(k)))?;
+    }
     notes.extend(incoming);
     notes.extend(privacy_changes(brain, &before, &crate::config::load(&brain.path(&["brain.toml"])))?);
     if notes.len() > 1 {
@@ -393,13 +420,13 @@ fn refuse_shared_ids(brain: &Brain, theirs: &str, paths: &[String]) -> Result<()
 /// Before a merge: what the other side added or changed since the common ancestor is marked unreviewed, so a merge
 /// interrupted afterwards never leaves it trusted (Brain::untrusted). After the merge `mark_merged` marks what
 /// actually landed (a rename can carry their change into another file).
-fn mark_incoming(brain: &Brain, theirs: &str) -> Result<Vec<String>> {
+fn mark_incoming(brain: &Brain, theirs: &str, trusted: bool) -> Result<Vec<String>> {
     let range = format!("HEAD...{theirs}");
     let incoming = diff_names(brain, "--diff-filter=AMR", &[&range])?;
     refuse_shared_ids(brain, theirs, &incoming)?;
     let (rules, proposals, retracted) = mark_changed(brain, "HEAD", theirs, &incoming)?;
     let mut notes = Vec::new();
-    if rules > 0 {
+    if rules > 0 && !trusted {
         notes.push(format!(
             "{rules} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this \
              device after you review them: `rewire review`"

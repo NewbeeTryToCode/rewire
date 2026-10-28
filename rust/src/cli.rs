@@ -1009,7 +1009,17 @@ pub fn run(cli: Cli) -> Result<()> {
                 fail(format!("sync failed: {e}"));
             }
         }
-        Cmd::Mcp => crate::mcp::serve(&open_brain(bp))?,
+        Cmd::Mcp => {
+            let brain = Brain::open(bp.as_deref());
+            let url = sync::env_remote();
+            if !brain.exists() && !url.is_empty() {
+                // a cloud session starts the MCP server and the session-start hook together: either may clone first
+                if let Err(e) = Brain::fetch(&url, &brain.root) {
+                    fail(format!("could not fetch the brain from REWIRE_REMOTE: {e}"));
+                }
+            }
+            crate::mcp::serve(&open_brain(bp))?
+        }
         Cmd::Hook { event, harness } => {
             let brain = Brain::open(bp.as_deref());
             let mut raw = String::new();
