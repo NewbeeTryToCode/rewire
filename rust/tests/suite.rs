@@ -675,7 +675,8 @@ fn idle_watcher_consolidates_a_quiet_session_and_exits() {
     let claude = c.dir.join("claude");
     std::fs::create_dir_all(claude.join("projects").join("p")).unwrap();
     let transcript = claude.join("projects").join("p").join("t.jsonl");
-    std::fs::copy(fix("claude_code.jsonl"), &transcript).unwrap();
+    // written, not copied: a copy keeps the fixture's mtime on macOS, older than the brain, so it would be skipped
+    std::fs::write(&transcript, read(&fix("claude_code.jsonl"))).unwrap();
     std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
     std::env::set_var("CODEX_HOME", c.dir.join("codex"));
     std::env::set_var("REWIRE_IDLE_SECS", "0"); // the transcript counts as idle at once
