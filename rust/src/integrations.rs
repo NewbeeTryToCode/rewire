@@ -33,6 +33,60 @@ pub static SPAWN_BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::
 
 /// Start `rewire consolidate --pending` in the background; it outlives the hook.
 pub fn spawn_consolidation(brain: &Brain) {
+    spawn_background(brain, "--pending");
+}
+
+/// Start the idle watcher (`rewire consolidate --watch`) unless one is already running for this brain.
+pub fn spawn_watcher(brain: &Brain) {
+    if !SPAWN_BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    // checked here too, so a prompt does not start a process only to see it exit; the watcher checks again
+    let free = watch_lock(brain).ok().flatten().is_some(); // released at the end of this statement
+    if free {
+        spawn_background(brain, "--watch");
+    }
+}
+
+/// How long a watcher lives at most; the next hook starts a new one.
+const WATCH_LIMIT: Duration = Duration::from_secs(12 * 3600);
+
+/// Held by the running watcher: one per brain.
+fn watch_lock(brain: &Brain) -> Result<Option<fs::File>> {
+    fs::create_dir_all(brain.path(&[".state"]))?;
+    let fh = fs::OpenOptions::new().create(true).truncate(false).write(true).open(brain.path(&[".state", "watch.lock"]))?;
+    Ok(fs4::fs_std::FileExt::try_lock_exclusive(&fh).unwrap_or(false).then_some(fh))
+}
+
+/// The idle watcher, started by the hooks: a session that pauses for `idle_secs()` is consolidated then, without
+/// waiting for SessionEnd, which a closed browser tab or a reclaimed cloud VM never sends. It sleeps while transcripts
+/// are being written, runs `run` (a pending consolidation) once one has gone quiet, and exits when there is nothing
+/// left to wait for. A session that goes on after a pause is consolidated again from its watermark, as a later part.
+pub fn watch(brain: &Brain, mut run: impl FnMut() -> Result<()>) -> Result<()> {
+    let Some(_lock) = watch_lock(brain)? else { return Ok(()) }; // another watcher is running
+    let started = std::time::Instant::now();
+    while started.elapsed() < WATCH_LIMIT {
+        brain.present()?;
+        let since = brain.read_state("scan").get("since_ts").and_then(Value::as_f64).unwrap_or(crate::util::now_ts() - 3600.0);
+        let (quiet, active) = crate::transcripts::discover(since);
+        if !quiet.is_empty() || !brain.read_state("pending").is_empty() {
+            match run() {
+                Ok(()) => std::thread::sleep(Duration::from_secs(1)),
+                // another consolidation is running: it may not have seen this transcript yet
+                Err(Error::Locked(_)) => std::thread::sleep(Duration::from_secs(15)),
+                Err(e) => return Err(e),
+            }
+            continue;
+        }
+        let Some(oldest) = active else { return Ok(()) }; // nothing is being written
+        let idle = crate::transcripts::idle_secs();
+        let wait = (oldest + idle - crate::util::now_ts()).clamp(1.0, idle.max(1.0)) + 1.0;
+        std::thread::sleep(Duration::from_secs_f64(wait));
+    }
+    Ok(())
+}
+
+fn spawn_background(brain: &Brain, mode: &str) {
     if !SPAWN_BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -44,7 +98,7 @@ pub fn spawn_consolidation(brain: &Brain) {
         Err(_) => (Stdio::null(), Stdio::null()),
     };
     let mut cmd = Command::new(exe);
-    cmd.arg("--brain").arg(&brain.root).args(["consolidate", "--pending"]);
+    cmd.arg("--brain").arg(&brain.root).args(["consolidate", mode]);
     cmd.env("REWIRE_INTERNAL", "1").stdin(Stdio::null()).stdout(out).stderr(err);
     #[cfg(unix)]
     {
@@ -155,8 +209,12 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
         return Ok(String::new());
     }
     if event == "user-prompt" {
-        // runs on every prompt: no clone, no sync, no consolidation
-        return if brain.exists() { prompt_context(&brain, payload) } else { Ok(String::new()) };
+        // runs on every prompt: no clone, no sync, no consolidation; only the idle watcher is (re)started
+        if !brain.exists() {
+            return Ok(String::new());
+        }
+        spawn_watcher(&brain);
+        return prompt_context(&brain, payload);
     }
     let start = event == "session-start";
     let only_at_start = |text: String| Ok(if start { text } else { String::new() });
@@ -226,8 +284,11 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
         }
     }
     // Lazy consolidation: every hook nudges a background run; the lock and the watermarks make extra
-    // runs cheap and safe.
+    // runs cheap and safe. While the session goes on, the watcher consolidates it when it pauses.
     spawn_consolidation(&brain);
+    if event != "session-end" {
+        spawn_watcher(&brain);
+    }
     Ok(out)
 }
 

@@ -30,7 +30,10 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
 
 - **L0 → L1**: the SessionEnd and PreCompact hooks queue the transcript; nothing is lost when the harness
   compacts its context.
-- **L1 → L2**: consolidation runs in the background after a session (lazily, resumable by watermarks).
+- **L1 → L2**: consolidation runs in the background after a session, or when a running session has been idle
+  for `REWIRE_IDLE_SECS` (600 s; an idle watcher started by the hooks, one per brain), lazily and resumable by
+  watermarks. A session consolidated in parts (idle pauses, compaction, transcript chunks) gives each part the
+  summaries and claims of the parts before it, and a part can mark an earlier claim of the same run outdated.
   An LLM extracts atomic claims with dates and keywords, a second call judges each against similar existing
   claims, and a gate decides what is applied automatically (explicit + user-stated + not a constraint + not
   a supersede) and what goes to the review inbox. Provenance is the role of the turn the model cites,
@@ -56,7 +59,7 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
 | Operation | LLM calls | Notes |
 |---|---|---|
 | `prime`, per-prompt hook, `recall`, `get`, index refresh | **0** | SQLite FTS5 (+ optional local WordLlama vectors; experimental activation re-weighting and link spreading are off by default, both unproven) |
-| consolidation | ~2 per session (extract per transcript chunk + one judge) | background, after the session |
+| consolidation | ~2 per session part (extract per transcript chunk + one judge) | background, after the session or an idle pause |
 | `remember` (agent proposal) | 0 | queued for human review |
 
 Benchmarks are expensive only because they replay hundreds of sessions through consolidation and then use
