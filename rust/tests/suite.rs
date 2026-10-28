@@ -1193,7 +1193,7 @@ fn cloud_session_fetches_brain_trusted_and_syncs() {
         assert_eq!(cloud.device(), "cloud-12345678");
         assert!(cloud.config.sync_auto, "REWIRE_REMOTE turns auto sync on for the brain it names");
         // a second fetch (the MCP server starting with the hook) uses the brain already there
-        assert!(Brain::fetch(&remote, &vm).unwrap().exists());
+        assert!(Brain::fetch(&remote, &vm, false).unwrap().exists());
         assert!(std::fs::read_dir(vm.parent().unwrap()).unwrap().count() == 1, "no fetch folder left behind");
 
         // what the laptop pushes during the session is trusted on the VM too, and the VM's own notes reach the laptop
@@ -1221,6 +1221,94 @@ fn cloud_session_fetches_brain_trusted_and_syncs() {
     if let Err(e) = outcome {
         std::panic::resume_unwind(e);
     }
+}
+
+/// A new GitHub repository (README, LICENSE) or an empty one becomes a brain on first use: plug and play.
+#[test]
+fn new_repository_becomes_a_brain_on_first_clone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |dir: &Path, args: &[&str]| assert!(Command::new("git").current_dir(dir).args(args).status().unwrap().success());
+    let seeded = |name: &str, files: &[&str]| {
+        let remote = tmp.path().join(format!("{name}.git"));
+        git(tmp.path(), &["init", "-q", "--bare", &remote.to_string_lossy()]);
+        if !files.is_empty() {
+            let work = tmp.path().join(format!("{name}-work"));
+            git(tmp.path(), &["clone", "-q", &remote.to_string_lossy(), &work.to_string_lossy()]);
+            for f in files {
+                std::fs::create_dir_all(work.join(f).parent().unwrap()).unwrap();
+                std::fs::write(work.join(f), "x\n").unwrap();
+            }
+            git(&work, &["add", "-A"]);
+            git(&work, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "Initial commit"]);
+            git(&work, &["push", "-q", "origin", "HEAD"]);
+        }
+        remote.to_string_lossy().into_owned()
+    };
+
+    let github = seeded("github", &["README.md", "LICENSE", ".gitignore"]);
+    // the MCP server never creates one (the session-start hook does, so only one is pushed)
+    assert!(Brain::fetch(&github, &tmp.path().join("by-mcp"), false).is_err());
+    let brain = Brain::clone_from(&github, Some(&tmp.path().join("a")), Some("laptop")).unwrap();
+    assert!(brain.exists() && brain.config.sync_auto);
+    assert!(brain.path(&["LICENSE"]).exists());
+    let other = Brain::clone_from(&github, Some(&tmp.path().join("b")), Some("desk")).unwrap();
+    assert!(other.exists() && other.path(&["brain.toml"]).exists(), "the brain was pushed");
+
+    let empty = seeded("empty", &[]);
+    let brain = Brain::fetch(&empty, &tmp.path().join("vm").join("brain"), true).unwrap();
+    assert!(brain.exists());
+    assert!(Brain::clone_from(&empty, Some(&tmp.path().join("c")), None).unwrap().exists(), "the brain was pushed");
+
+    let code = seeded("code", &["README.md", "src/main.rs"]);
+    let err = Brain::clone_from(&code, Some(&tmp.path().join("d")), None).err().unwrap().to_string();
+    assert!(err.contains("not a rewire brain"), "{err}");
+    assert!(!tmp.path().join("d").exists());
+}
+
+/// The whole cloud setup in one command for a setup script: hooks, REWIRE_REMOTE in Claude Code's settings, the MCP
+/// server; refused inside an agent session (which repository the brain syncs with is the user's call).
+#[test]
+fn install_cloud_writes_settings_and_registers_mcp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = tmp.path().join("claude.log");
+    let fake = bin.join("claude");
+    std::fs::write(&fake, format!("#!/bin/sh\necho \"$@\" >> '{}'\n", log.display())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let run = |user: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+        cmd.args(["install", "cloud", "--remote", "https://github.com/me/brain"])
+            .env("CLAUDE_CONFIG_DIR", tmp.path().join("claude"))
+            .env("REWIRE_BRAIN", tmp.path().join("brain"))
+            .env("PATH", &path);
+        if user {
+            as_user(&mut cmd);
+        } else {
+            cmd.env("CLAUDECODE", "1");
+        }
+        cmd.output().unwrap()
+    };
+    let out = run(false);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("refused"));
+    let out = run(true);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let settings: Value = serde_json::from_str(&read(&tmp.path().join("claude").join("settings.json"))).unwrap();
+    assert_eq!(settings["env"]["REWIRE_REMOTE"], "https://github.com/me/brain");
+    assert_eq!(settings["env"]["REWIRE_REMOTE_TRUSTED"], "1");
+    assert!(settings["hooks"]["SessionStart"].to_string().contains("hook session-start"));
+    let calls = read(&log);
+    assert!(calls.contains("mcp remove --scope user rewire"), "{calls}");
+    assert!(
+        calls.contains("mcp add --scope user rewire -e REWIRE_REMOTE=https://github.com/me/brain -e REWIRE_REMOTE_TRUSTED=1 -- "),
+        "{calls}"
+    );
+    assert!(calls.trim_end().ends_with(" mcp"), "{calls}");
 }
 
 /// `rewire mcp` on a machine without a brain fetches it from REWIRE_REMOTE instead of failing at start.

@@ -170,7 +170,7 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
             let root = brain.root.display();
             return only_at_start(snapshot::notice(&format!("no brain at {root} (run `rewire init`, or set REWIRE_REMOTE)")));
         }
-        match Brain::fetch(&url, &brain.root) {
+        match Brain::fetch(&url, &brain.root, true) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("rewire: could not clone brain: {e}");
@@ -249,6 +249,7 @@ pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
         rules.push(format!("Bash({exe} forget:*)"));
         rules.push(format!("Bash({exe} undo:*)"));
         rules.push(format!("Bash({exe} remote set:*)"));
+        rules.push(format!("Bash({exe} install cloud:*)"));
     }
     if let Some(root) = brain {
         // "//" starts an absolute path in a Claude Code permission rule
@@ -271,12 +272,14 @@ fn exe_command() -> String {
     exe.filter(|p| !p.contains(char::is_whitespace)).unwrap_or_else(|| "rewire".into())
 }
 
+/// Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does).
+fn claude_settings_path() -> std::path::PathBuf {
+    let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
+    crate::brain::expand_user(&dir).join("settings.json")
+}
+
 pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Option<&Path>) -> Result<String> {
-    let settings_path = settings_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
-        // Claude Code reads its settings from CLAUDE_CONFIG_DIR when set (as transcript discovery does)
-        let dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into());
-        crate::brain::expand_user(&dir).join("settings.json")
-    });
+    let settings_path = settings_path.map(|p| p.to_path_buf()).unwrap_or_else(claude_settings_path);
     let command = exe_command();
     let wanted = claude_code_settings(&command, brain);
     let mut lines = Vec::new();
@@ -366,4 +369,57 @@ pub fn install_codex(skills_dir: Option<&str>) -> Result<String> {
         ),
     ]
     .join("\n\n"))
+}
+
+/// Claude Code in a VM that starts empty every session (a cloud environment's setup script runs this once): the
+/// hooks, REWIRE_REMOTE (and REWIRE_REMOTE_TRUSTED) in Claude Code's settings so every hook and command sees them,
+/// and the MCP server. The brain itself is fetched at each session start.
+pub fn install_cloud(url: &str, trusted: bool, brain: &Path) -> Result<String> {
+    let mut lines = vec![install_claude_code(true, None, Some(brain))?];
+    let path = claude_settings_path();
+    let mut current: Value =
+        serde_json::from_str(&fs::read_to_string(&path)?).map_err(|e| Error::Op(format!("{}: not valid JSON ({e})", path.display())))?;
+    let env = current
+        .as_object_mut()
+        .and_then(|o| o.entry("env").or_insert_with(|| json!({})).as_object_mut())
+        .ok_or_else(|| Error::Op(format!("{}: \"env\" is not an object; fix it by hand", path.display())))?;
+    env.insert("REWIRE_REMOTE".into(), json!(url));
+    if trusted {
+        env.insert("REWIRE_REMOTE_TRUSTED".into(), json!("1"));
+    } else {
+        env.remove("REWIRE_REMOTE_TRUSTED");
+    }
+    crate::util::atomic_write(&path, &serde_json::to_string_pretty(&current)?)?;
+    lines.push(format!(
+        "REWIRE_REMOTE={}{} set in {}",
+        crate::ops::redact_url(url),
+        if trusted { " and REWIRE_REMOTE_TRUSTED=1 (its notes count as reviewed here)" } else { "" },
+        path.display()
+    ));
+
+    let remote_env = format!("REWIRE_REMOTE={url}");
+    let mut add = vec!["mcp", "add", "--scope", "user", "rewire", "-e", &remote_env];
+    if trusted {
+        add.extend(["-e", "REWIRE_REMOTE_TRUSTED=1"]);
+    }
+    let exe = exe_command();
+    add.extend(["--", &exe, "mcp"]);
+    let claude = |args: &[&str]| {
+        let mut cmd = Command::new("claude");
+        cmd.args(args).stdin(Stdio::null());
+        crate::util::run_with_timeout(cmd, None, Duration::from_secs(60))
+    };
+    let _ = claude(&["mcp", "remove", "--scope", "user", "rewire"]); // an earlier registration, with other settings
+    match claude(&add) {
+        Ok(o) if o.status.success() => lines.push("MCP server \"rewire\" registered for Claude Code (user scope)".into()),
+        Ok(o) => {
+            return Err(Error::Op(format!("claude mcp add failed: {}", String::from_utf8_lossy(&o.stderr).trim())));
+        }
+        Err(_) => lines.push(format!(
+            "Claude Code CLI not found: register the MCP server with `claude {}`",
+            add.iter().map(|a| if a.contains(' ') { format!("'{a}'") } else { a.to_string() }).collect::<Vec<_>>().join(" ")
+        )),
+    }
+    lines.push("Keep the brain repository private: it holds your memory.".into());
+    Ok(lines.join("\n"))
 }

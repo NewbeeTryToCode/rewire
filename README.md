@@ -68,7 +68,7 @@ codex mcp add rewire -- rewire mcp
 
 The agent proposes memories and you approve them. `install claude-code --write` adds Claude Code permission
 rules that deny the agent `rewire review approve`, `rewire remember --apply` and direct edits of the brain, and rewire
-itself refuses approving, `--apply`, `forget`, `undo` and `remote set` inside an agent session (detected by the agent's environment
+itself refuses approving, `--apply`, `forget`, `undo`, `remote set` and `install cloud` inside an agent session (detected by the agent's environment
 variables or its process among the command's ancestors; test suites and benchmark harnesses started from an agent
 session set `REWIRE_NOT_AN_AGENT=1`). These raise the bar, they are not a sandbox: an agent that may run arbitrary
 shell commands acts as you, and could do the same.
@@ -90,27 +90,26 @@ Harnesses without hooks can still be used: the agent runs `rewire prime` via ins
 ### Cloud sessions (Claude Code on the web)
 
 A cloud session starts in a fresh VM, so the brain lives in a private git repository and each session fetches it.
-Set this up once, in the cloud environment's settings (environment menu > Edit):
+Setup is one paste:
 
-1. **Environment variables:** `REWIRE_REMOTE=https://github.com/<you>/brain`, and optionally
-   `REWIRE_REMOTE_TRUSTED=1` (below).
-2. **Setup script:** the contents of [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh). It installs rewire, the hooks
-   and the MCP server once; the environment caches the result.
-3. **GitHub access:** install the Claude GitHub App on the brain repository (or connect with `/web-setup`). The cloud's
-   GitHub proxy authenticates git, so no token goes into the VM or the environment.
-
-The brain repository must already hold a brain: create it on your own machine with `rewire init`,
-`rewire remote set <url>` and `rewire sync`.
+1. Create a private repository for the brain (empty, or with GitHub's README and LICENSE) and let the Claude GitHub
+   App reach it (or connect with `/web-setup`). The cloud's GitHub proxy authenticates git: no token goes into the VM.
+2. In the cloud environment's settings (environment menu > Edit), paste [`scripts/setup-cloud.sh`](scripts/setup-cloud.sh)
+   as the setup script, with `BRAIN` set to that repository. It installs rewire and runs
+   `rewire install cloud --remote <url>`: the hooks, `REWIRE_REMOTE` and `REWIRE_REMOTE_TRUSTED=1` in Claude Code's
+   settings, and the MCP server. The environment caches the result.
 
 Each session then clones the brain into `~/brain` at start (the session-start hook or the MCP server, whichever
-starts first), shows the snapshot, and pushes what consolidation learns back to the repository. `REWIRE_REMOTE` turns
-auto sync on for the brain it names, even if `brain.toml` has it off. Each VM syncs as its own device
+starts first), shows the snapshot, and pushes what consolidation learns back. The first session turns a new
+repository into a brain (`rewire init --from <url>` does the same on your own machine; a repository with anything
+else in it is refused). `REWIRE_REMOTE` turns auto sync on for the brain it names. Each VM syncs as its own device
 (`cloud-<session id>`), so parallel sessions never write one event log.
 
-`REWIRE_REMOTE_TRUSTED=1` makes what comes from `REWIRE_REMOTE` count as reviewed in the VM. Without it, every rule,
-preference and skill waits for a review that a VM never gets: its review state ends with the session. With it, the
-review gate does not apply in cloud sessions, so approve rules on a device where you review them and keep the repository private. An agent in the VM can set the variable
-for its own commands, like everything else it can do as you there.
+`REWIRE_REMOTE_TRUSTED=1` makes what comes from the repository count as reviewed in the VM: a VM's review state ends
+with the session, so without it every rule, preference and skill would wait for a review that never comes. The review
+gate therefore does not apply in cloud sessions: review rules on your own machine and keep the repository private.
+`rewire install cloud --review` leaves it off. An agent in the VM can change these settings for its own commands,
+like everything else it can do as you there.
 
 Limit: a transcript is consolidated once it has been idle for `REWIRE_IDLE_SECS` (300 s), when a later hook runs in
 the same VM. A VM is reclaimed after a while idle, so the last part of a cloud session is captured only if you send

@@ -390,14 +390,14 @@ impl Brain {
     /// Clone the brain at `url` into `root` for a machine that starts empty (REWIRE_REMOTE): into a folder of its
     /// own first, then moved into place, so a session-start hook and an MCP server starting together never see half a
     /// clone, and whichever finishes second uses the first one's.
-    pub fn fetch(url: &str, root: &Path) -> Result<Brain> {
+    pub fn fetch(url: &str, root: &Path, adopt: bool) -> Result<Brain> {
         let root = absolute(root);
         let parent = root.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
         fs::create_dir_all(&parent)?;
         let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "brain".into());
         let tmp = parent.join(format!(".{name}.fetch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        let cloned = Brain::clone_from(url, Some(&tmp), None).and_then(|_| {
+        let cloned = Brain::clone_with(url, Some(&tmp), None, adopt).and_then(|_| {
             if root.is_dir() && fs::read_dir(&root)?.next().is_none() {
                 fs::remove_dir(&root)?;
             }
@@ -412,8 +412,13 @@ impl Brain {
         }
     }
 
-    /// Attach this machine to an existing brain repository.
+    /// Attach this machine to an existing brain repository. A repository that holds no brain yet, only what GitHub
+    /// creates with a new repository (README, LICENSE, .gitignore) or nothing, becomes one: created here and pushed.
     pub fn clone_from(url: &str, root: Option<&Path>, device: Option<&str>) -> Result<Brain> {
+        Brain::clone_with(url, root, device, true)
+    }
+
+    fn clone_with(url: &str, root: Option<&Path>, device: Option<&str>, adopt: bool) -> Result<Brain> {
         let root = absolute(&root.map(|r| expand_user(&r.to_string_lossy())).unwrap_or_else(default_path));
         if root.exists() && fs::read_dir(&root)?.next().is_some() {
             return Err(Error::Op(format!("{} is not empty", root.display())));
@@ -427,8 +432,13 @@ impl Brain {
         }
         let brain = Brain::open(Some(&root));
         if !brain.exists() {
+            if adopt && starter_repo(&root) {
+                return Brain::adopt(url, &root, device);
+            }
             let _ = fs::remove_dir_all(&root);
-            return Err(Error::Op(format!("{url} is not a rewire brain (no brain.toml)")));
+            return Err(Error::Op(format!(
+                "{url} is not a rewire brain (no brain.toml), and holds more than a new repository's README and LICENSE"
+            )));
         }
         let found = unsafe_paths(&brain, None);
         if !found.is_empty() {
@@ -471,6 +481,20 @@ impl Brain {
             );
         }
         brain.init_local_state(Some(&dev))?;
+        Ok(brain)
+    }
+
+    /// A brain created in a fresh clone of an empty repository, with auto sync on and pushed back.
+    fn adopt(url: &str, root: &Path, device: Option<&str>) -> Result<Brain> {
+        let named = device.map(String::from).or_else(|| std::env::var("REWIRE_DEVICE").ok().filter(|d| !d.trim().is_empty()));
+        Brain::init(Some(root), Some(&named.unwrap_or_else(config::default_device)))?;
+        let mut brain = Brain::open(Some(root));
+        crate::sync::set_remote(&mut brain, url)?;
+        match crate::sync::push(&brain, crate::sync::GIT_TIMEOUT) {
+            Ok(_) => eprintln!("rewire: {url} held no brain yet: created one and pushed it"),
+            // kept: auto sync pushes it after the next consolidation
+            Err(e) => eprintln!("rewire: {url} held no brain yet: created one here, but the push failed: {e}"),
+        }
         Ok(brain)
     }
 
@@ -853,4 +877,14 @@ pub fn out_str(o: &Output) -> String {
 
 pub fn err_str(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).trim().to_string()
+}
+
+/// Only what GitHub puts in a new repository (README, LICENSE, .gitignore), or nothing: safe to turn into a brain.
+fn starter_repo(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else { return false };
+    entries.flatten().all(|e| {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        let starter = ["readme", "license", "licence", "copying"].iter().any(|p| name.starts_with(p)) && e.path().is_file();
+        name == ".git" || name == ".gitignore" || name == ".gitattributes" || starter
+    })
 }
