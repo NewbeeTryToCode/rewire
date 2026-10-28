@@ -46,7 +46,9 @@ Or build it: `cargo install --locked --git https://github.com/NewbeeTryToCode/re
 Recall over MCP, with the server warm, takes a few ms on a small brain and tens of ms on a ~50-session,
 ~115k-token history (measured: [`experiments/eval/latency.py`](experiments/eval/latency.py)).
 
-**Consolidation (the only LLM use)** runs after a session, in the background, about two calls per session. It is
+**Consolidation (the only LLM use)** runs in the background after a session, or once a session has been idle for 10
+minutes, about two calls each time. A long session is read in parts, and each part is given the summaries (and the
+claims) of the parts before it, so a later part can correct an earlier one. It is
 configured per device in `~/brain/local.toml` (not synced): by default Claude Code's `claude -p` with Sonnet and
 your existing login, with no tools, no MCP servers and no settings or hooks. To use the API directly, set
 `provider = "anthropic"` there and export `ANTHROPIC_API_KEY`. Failed consolidations are reported by `rewire doctor`
@@ -118,9 +120,10 @@ gate therefore does not apply in cloud sessions: review rules on your own machin
 `rewire install cloud --review` leaves it off. An agent in the VM can change these settings for its own commands,
 like everything else it can do as you there.
 
-Limit: a transcript is consolidated once it has been idle for `REWIRE_IDLE_SECS` (300 s), when a later hook runs in
-the same VM. A VM is reclaimed after a while idle, so the last part of a cloud session is captured only if you send
-another message in it after that pause and before the VM goes; otherwise it is lost.
+While a session runs, an idle watcher (started by the hooks, one per brain) consolidates its transcript once it has
+been quiet for `REWIRE_IDLE_SECS` (600 s), without waiting for SessionEnd, which a closed tab or a reclaimed VM never
+sends. When the session goes on, the rest is consolidated the same way, as a later part. Limit: whatever was said
+after the last such pause is lost if the VM is reclaimed sooner; `rewire consolidate` before you leave captures it.
 
 ## Day-to-day usage
 

@@ -588,6 +588,116 @@ fn install_writes_settings_under_claude_config_dir() {
     assert!(read(&tmp.path().join("settings.json")).contains("rewire hook session-start"));
 }
 
+/// Answers extraction calls in order (an empty extraction once the script runs out) and keeps every prompt.
+struct Script {
+    replies: RefCell<VecDeque<Value>>,
+    prompts: RefCell<Vec<String>>,
+}
+
+impl Script {
+    fn new(replies: Vec<Value>) -> Script {
+        Script { replies: RefCell::new(replies.into()), prompts: RefCell::new(Vec::new()) }
+    }
+}
+
+impl Provider for &Script {
+    fn complete_json(&self, _system: &str, prompt: &str, _schema: &Value) -> Result<Meta> {
+        self.prompts.borrow_mut().push(prompt.to_string());
+        let empty = json!({"summary": "", "claims": [], "used_memory_ids": [], "outdated": []});
+        Ok(m(self.replies.borrow_mut().pop_front().unwrap_or(empty)))
+    }
+}
+
+#[test]
+fn long_session_chunks_see_what_came_before_and_correct_it() {
+    let c = Case::new();
+    let mut brain = c.reopen();
+    brain.config.max_chunk_chars = 40; // one turn per chunk
+    let script = Script::new(vec![
+        json!({"summary": "The user asked for concise answers.", "claims": [claim("Prefers concise answers", 2, "preference")],
+               "used_memory_ids": [], "outdated": []}),
+        json!({"summary": "The user refined it.", "claims": [claim("Prefers very concise answers", 2, "preference")],
+               "used_memory_ids": [], "outdated": ["E0"]}),
+    ]);
+    let mut con = Consolidator::new(&brain, Some(Box::new(&script)), Box::new(|_| {})).unwrap();
+    let r = con.run_file(&fix("claude_code.jsonl"), None).unwrap();
+    let prompts = script.prompts.borrow();
+    assert!(prompts.len() >= 3, "{}", prompts.len());
+    assert!(!prompts[0].contains("SESSION SO FAR"));
+    assert!(
+        prompts[1].contains("SESSION SO FAR:\nThe user asked for concise answers.")
+            && prompts[1].contains("E0 [preference] Prefers concise answers")
+    );
+    assert!(prompts[2].contains("The user asked for concise answers.\n\nThe user refined it."));
+    // the claim a later chunk marked outdated is dropped; its correction stands
+    assert_eq!(list_titles(&r["applied"]), vec!["Prefers very concise answers"]);
+}
+
+#[test]
+fn a_later_part_of_a_session_sees_the_earlier_summary_and_open_proposals() {
+    let c = Case::new();
+    let all: Vec<String> = read(&fix("claude_code.jsonl")).lines().map(String::from).collect();
+    let path = c.dir.join("t.jsonl");
+    std::fs::write(&path, format!("{}\n", all[..3].join("\n"))).unwrap();
+    let first = Script::new(vec![json!({"summary": "Part one: answer style was discussed.",
+        "claims": [{"text": "The user may like YAML", "title": "The user may like YAML", "type": "preference", "scope": "global",
+                    "importance": 2, "confidence": "inferred", "evidence_turn": 2}],
+        "used_memory_ids": [], "outdated": []})]);
+    let mut con = Consolidator::new(&c.brain, Some(Box::new(&first)), Box::new(|_| {})).unwrap();
+    assert_eq!(list_titles(&con.run_file(&path, None).unwrap()["queued"]), vec!["The user may like YAML"]);
+    assert!(!first.prompts.borrow()[0].contains("SESSION SO FAR"));
+    // the session goes on after a pause: the rest of the transcript is a second part
+    std::fs::write(&path, format!("{}\n", all.join("\n"))).unwrap();
+    let second = Script::new(vec![]);
+    let mut con = Consolidator::new(&c.brain, Some(Box::new(&second)), Box::new(|_| {})).unwrap();
+    assert_eq!(con.run_file(&path, None).unwrap()["status"], "consolidated");
+    let prompt = second.prompts.borrow()[0].clone();
+    assert!(prompt.contains("SESSION SO FAR:\nPart one: answer style was discussed."), "{prompt}");
+    assert!(prompt.contains("AWAITING REVIEW:\n- The user may like YAML"), "{prompt}");
+    assert!(prompt.contains("[7 user] thanks") && !prompt.contains("[2 user]"));
+}
+
+#[test]
+fn long_replies_reach_extraction_with_their_end() {
+    let reply = format!("Plan: {} Result: all 42 tests pass.", "step ".repeat(1000));
+    let turns = vec![tx::Turn { n: 3, role: "assistant".into(), text: reply.clone(), ts: String::new() }];
+    let line = &rewire::consolidate::format_turns(&turns, Some(1500))[0];
+    assert!(line.starts_with("[3 assistant] Plan: step") && line.ends_with("Result: all 42 tests pass."), "{line}");
+    assert!(line.contains(" …[condensed]… ") && line.chars().count() < 1600);
+    // the stored transcript keeps the reply whole
+    assert_eq!(rewire::consolidate::format_turns(&turns, None)[0], format!("[3 assistant] {reply}"));
+}
+
+#[test]
+fn idle_watcher_consolidates_a_quiet_session_and_exits() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let c = Case::new();
+    let claude = c.dir.join("claude");
+    std::fs::create_dir_all(claude.join("projects").join("p")).unwrap();
+    let transcript = claude.join("projects").join("p").join("t.jsonl");
+    // written, not copied: a copy keeps the fixture's mtime on macOS, older than the brain, so it would be skipped
+    std::fs::write(&transcript, read(&fix("claude_code.jsonl"))).unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
+    std::env::set_var("CODEX_HOME", c.dir.join("codex"));
+    std::env::set_var("REWIRE_IDLE_SECS", "0"); // the transcript counts as idle at once
+    let mut runs = 0;
+    let result = integrations::watch(&c.brain, || {
+        runs += 1;
+        // one watcher per brain: a second one leaves at once
+        integrations::watch(&c.brain, || panic!("a second watcher ran"))?;
+        let script = Script::new(vec![extraction(vec![claim("Prefers concise answers", 2, "preference")], vec![])]);
+        Consolidator::new(&c.brain, Some(Box::new(&script)), Box::new(|_| {}))?.run_pending(&[])?;
+        Ok(())
+    });
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    std::env::remove_var("CODEX_HOME");
+    std::env::remove_var("REWIRE_IDLE_SECS");
+    result.unwrap();
+    assert_eq!(runs, 1); // then nothing was left to wait for
+    assert!(c.brain.read_state("watermarks").contains_key(transcript.to_string_lossy().as_ref()));
+    assert_eq!(c.brain.iter_nodes().iter().filter(|n| n.title() == "Prefers concise answers").count(), 1);
+}
+
 #[test]
 fn pending_added_during_run_is_processed() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
