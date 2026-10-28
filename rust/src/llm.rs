@@ -9,9 +9,9 @@ use crate::config::Config;
 use crate::transcripts::INTERNAL_MARKER;
 use crate::{Error, Meta, Result};
 use serde_json::{json, Value};
-use std::io::Write;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 pub trait Provider {
@@ -49,6 +49,59 @@ pub fn extract_json(text: &str) -> Result<Meta> {
     }
 }
 
+/// LLM work done by consolidation, for cost reports (`rewire import --llm`).
+#[derive(Debug, Default)]
+pub struct Usage {
+    pub calls: std::cell::Cell<u64>,
+    pub failed: std::cell::Cell<u64>,
+    pub prompt_chars: std::cell::Cell<u64>,
+    pub completion_chars: std::cell::Cell<u64>,
+    pub seconds: std::cell::Cell<f64>,
+}
+
+/// Wraps a provider and adds each call to `usage`.
+pub struct Counting<'a> {
+    pub inner: Box<dyn Provider + 'a>,
+    pub usage: &'a Usage,
+}
+
+impl Provider for Counting<'_> {
+    fn complete_json(&self, system: &str, prompt: &str, schema: &Value) -> Result<Meta> {
+        let start = Instant::now();
+        let out = self.inner.complete_json(system, prompt, schema);
+        let u = self.usage;
+        u.calls.set(u.calls.get() + 1);
+        u.seconds.set(u.seconds.get() + start.elapsed().as_secs_f64());
+        u.prompt_chars.set(u.prompt_chars.get() + (system.chars().count() + prompt.chars().count()) as u64);
+        match &out {
+            Ok(m) => u
+                .completion_chars
+                .set(u.completion_chars.get() + crate::pyjson::dumps_utf8(&Value::Object(m.clone())).chars().count() as u64),
+            Err(_) => u.failed.set(u.failed.get() + 1),
+        }
+        out
+    }
+}
+
+/// For work that must not call a model (writing transcripts only).
+pub struct NoProvider;
+
+impl Provider for NoProvider {
+    fn complete_json(&self, _: &str, _: &str, _: &Value) -> Result<Meta> {
+        llm("no LLM provider in this command")
+    }
+}
+
+/// The provider that could not be set up (no API key, an unknown provider, an unsafe brain): every call fails with
+/// the reason, so transcripts are still kept and the failure is recorded and reported.
+pub struct Unavailable(pub String);
+
+impl Provider for Unavailable {
+    fn complete_json(&self, _: &str, _: &str, _: &Value) -> Result<Meta> {
+        llm(self.0.clone())
+    }
+}
+
 pub struct CommandProvider {
     pub argv: Vec<String>,
     pub workdir: PathBuf,
@@ -73,35 +126,27 @@ impl Provider for CommandProvider {
             crate::pyjson::dumps(schema, crate::pyjson::Opts { ensure_ascii: true, sort_keys: false })
         );
         let Some((prog, args)) = self.argv.split_first() else { return llm("empty command") };
-        let mut child = Command::new(prog)
-            .args(args)
-            .current_dir(&self.workdir)
-            .env("REWIRE_INTERNAL", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::Llm(format!("command provider failed: {e}")))?;
-        let mut stdin = child.stdin.take().unwrap();
-        let writer = std::thread::spawn(move || {
-            let _ = stdin.write_all(full.as_bytes());
-        });
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            if child.try_wait()?.is_some() {
-                break;
+        let mut cmd = Command::new(prog);
+        cmd.args(args).current_dir(&self.workdir).env("REWIRE_INTERNAL", "1");
+        let out = match crate::util::run_with_timeout(cmd, Some(full), self.timeout) {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return llm(format!("command provider failed: timed out after {}s", self.timeout.as_secs()))
             }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                return llm(format!("command provider failed: timed out after {}s", self.timeout.as_secs()));
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return llm(format!(
+                    "command provider failed: `{prog}` not found; install it or set the command (or provider = \"anthropic\") in local.toml"
+                ))
             }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let _ = writer.join();
-        let out = child.wait_with_output()?;
+            Err(e) => return llm(format!("command provider failed: `{prog}`: {e}")),
+        };
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect::<String>();
-            return llm(format!("command exited {}: {err}", out.status.code().unwrap_or(-1)));
+            let said = if err.trim().is_empty() { "no output on stderr".to_string() } else { err.trim().to_string() };
+            return llm(format!(
+                "`{prog}` exited with status {} ({said}); check the [consolidation] command in local.toml",
+                out.status.code().unwrap_or(-1)
+            ));
         }
         extract_json(&String::from_utf8_lossy(&out.stdout))
     }
@@ -115,7 +160,8 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(model: &str, effort: &str) -> Result<AnthropicProvider> {
-        let key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| Error::Llm("set ANTHROPIC_API_KEY to use the anthropic provider".into()))?;
+        let key =
+            std::env::var("ANTHROPIC_API_KEY").map_err(|_| Error::Llm("set ANTHROPIC_API_KEY to use the anthropic provider".into()))?;
         Ok(AnthropicProvider { model: model.into(), effort: effort.into(), key })
     }
 }
@@ -162,8 +208,24 @@ impl Provider for AnthropicProvider {
 }
 
 pub fn make(config: &Config, brain_root: &Path) -> Result<Box<dyn Provider>> {
+    // settings that do not parse fall back to defaults: never run the default command in place of the user's own
+    if let Some(e) = &config.error {
+        return llm(format!("settings could not be read ({e}): not running an LLM until they are fixed (`rewire doctor`)"));
+    }
     match config.provider.as_str() {
-        "command" => Ok(Box::new(CommandProvider::new(&config.command, &brain_root.join(".state").join("llm")))),
+        "command" => {
+            // local.toml is never synced; one that git tracks may have come from another device or the remote
+            let brain = crate::brain::Brain::open(Some(brain_root));
+            let found = crate::brain::unsafe_paths(&brain, None);
+            if !found.is_empty() {
+                return llm(format!(
+                    "git tracks {} in the brain, so what runs may come from another device: not running the LLM command \
+                     (see `rewire doctor`)",
+                    found.join(", ")
+                ));
+            }
+            Ok(Box::new(CommandProvider::new(&config.command, &brain_root.join(".state").join("llm"))))
+        }
         "anthropic" => Ok(Box::new(AnthropicProvider::new(&config.model, &config.effort)?)),
         other => llm(format!("unknown provider {other}")),
     }

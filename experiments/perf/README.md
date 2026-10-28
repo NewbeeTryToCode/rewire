@@ -1,6 +1,8 @@
 # Critical path performance
 
-Script: [`bench.py`](bench.py) · Run: `python experiments/perf/bench.py [size...]`
+> **Historical.** This experiment ran on rewire's earlier Python implementation, which has been removed; its script is in git history (before the commit that removed `src/`). Current benchmarks run through [`experiments/eval`](../eval) on the Rust binary.
+
+Recall latency of the Rust binary over MCP on benchmark brains: [`../eval/latency.py`](../eval/latency.py).
 
 A synthetic brain with N nodes and ~10 usage events per node (10,000 nodes = 100,000 events). Medians in milliseconds, measured in a cloud container (Python 3.13). CLI numbers include ~70 ms of Python startup.
 

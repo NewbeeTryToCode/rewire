@@ -24,7 +24,11 @@ pub struct Skill {
 }
 
 pub fn normalize_name(name: &str) -> String {
-    if name.trim().is_empty() { String::new() } else { slugify(name, 40) }
+    if name.trim().is_empty() {
+        String::new()
+    } else {
+        slugify(name, 40)
+    }
 }
 
 pub fn path(brain: &Brain, name: &str) -> PathBuf {
@@ -35,7 +39,7 @@ fn text(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
-        Some(other) => crate::cli::py_str(other),
+        Some(other) => crate::util::value_text(other),
     }
 }
 
@@ -57,10 +61,7 @@ pub fn read(brain: &Brain, name: &str) -> Option<Skill> {
 pub fn all_skills(brain: &Brain) -> Vec<Skill> {
     let mut names: Vec<String> = fs::read_dir(brain.path(&["skills"]))
         .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.path().join("SKILL.md").is_file())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
+            rd.flatten().filter(|e| e.path().join("SKILL.md").is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()
         })
         .unwrap_or_default();
     names.sort();

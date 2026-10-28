@@ -7,6 +7,10 @@
 
 Scale of 1–10. The weight shows how important each dimension is for the *decision to start building*.
 
+> **Pre-build self-assessment.** These scores were given to the design before it was built and measured. The
+> evaluations they lean on (E1, E4) were not run (see [iterations](../iterations.md)); later independent reviews
+> scored the built system lower. Read them as the design's intent, not its result.
+
 | # | Dimension | Weight | Score | Short rationale |
 |---|---|---|---|---|
 | 1 | Goals & principles | 10% | **9** | P1–P5 are clear, mutually consistent, and have already been tested against criticism (the Link finding). |
@@ -127,7 +131,7 @@ Changes: [mvp-spec.md](mvp-spec.md) and the [Phase 0](../../experiments/phase0/R
 |---|---|---|---|---|---|---|
 | 1 | Goals & principles | 10% | 9 | **9** | — | — |
 | 2 | Storage model | 15% | 8 | **9** | Node conflict rule, `merge=union` for events, single-device in v0.1 | — |
-| 3 | Activation model | 10% | 7 | **8.5** | Phase 0: exposure=0 & decay exceptions proven mandatory; project scope + separate budgets discovered and adopted; `d=0.7` tuned; Hebbian deferred | Evidence is still synthetic (closed by E4) |
+| 3 | Activation model | 10% | 7 | **8.5** | Phase 0: exposure=0 & decay exceptions mandatory in the synthetic simulation; project scope + separate budgets discovered and adopted; `d=0.7` tuned; Hebbian deferred | Evidence is still synthetic (closed by E4) |
 | 4 | Ontology & granularity | 10% | 5 | **9** | 7 types / 5 relations; atomic claims vs hub pages, supported by Dense X Retrieval | — |
 | 5 | Consolidation | 10% | 6 | **8** | 8-step contract, idempotency, watermark, gate rules | Extraction prompt quality not yet tested (closed by E1) |
 | 6 | Harness integration | 15% | 4 | **8.5** | Hooks & transcripts per harness verified; lazy consolidation workaround; Agent Skill as a universal adapter | Codex hook/rollout details come from third-party sources and are still experimental |

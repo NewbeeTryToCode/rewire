@@ -5,6 +5,31 @@ use serde_json::Value;
 
 pub const CLAIM_TYPES: [&str; 4] = ["constraint", "preference", "fact", "decision"];
 pub const HUB_TYPES: [&str; 3] = ["project", "person", "concept"];
+/// The frontmatter fields a note may carry (docs/design/format.md); anything else a file adds is not passed on.
+pub const FIELDS: [&str; 22] = [
+    "id",
+    "type",
+    "title",
+    "scope",
+    "importance",
+    "confidence",
+    "provenance",
+    "status",
+    "recorded_at",
+    "valid_from",
+    "valid_to",
+    "retracted_at",
+    "retracted_reason",
+    "source",
+    "edges",
+    "keywords",
+    "aliases",
+    "tags",
+    "created",
+    "about",
+    "project",
+    "person",
+];
 pub const TYPES: [&str; 7] = ["constraint", "preference", "fact", "decision", "project", "person", "concept"];
 pub const RELATIONS: [&str; 6] = ["about", "part_of", "depends_on", "related_to", "supersedes", "contradicts"];
 pub const CONFIDENCE: [&str; 2] = ["explicit", "inferred"];
