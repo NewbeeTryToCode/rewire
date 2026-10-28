@@ -223,9 +223,9 @@ fn tool_error(msg: &Value, text: &str) -> Option<Value> {
 }
 
 /// The server for a machine that starts without a brain (REWIRE_REMOTE, a cloud session): the client gets its
-/// handshake at once while the brain is fetched in the background, and a tool call waits for the fetch, then
-/// answers from the brain or says why there is none. Blocking the start instead would make the client give up on
-/// the server for the whole session.
+/// handshake at once while the brain is fetched (or, from a new repository, created) in the background, and a tool
+/// call waits for that, then answers from the brain or says why there is none. Blocking the start instead would make
+/// the client give up on the server for the whole session.
 pub fn serve_fetching(root: std::path::PathBuf, url: String) -> Result<()> {
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
@@ -234,23 +234,9 @@ pub fn serve_fetching(root: std::path::PathBuf, url: String) -> Result<()> {
     {
         let (state, root) = (state.clone(), root.clone());
         std::thread::spawn(move || {
-            let reason = match Brain::fetch(&url, &root, false) {
+            let reason = match Brain::fetch(&url, &root) {
                 Ok(_) => String::new(),
-                Err(e) => {
-                    let e = e.to_string();
-                    // reachable but no brain yet: the session-start hook turns a new repository into one
-                    if e.contains("is not a rewire brain") {
-                        let until = Instant::now() + Duration::from_secs(60);
-                        while !exists(&root) && Instant::now() < until {
-                            std::thread::sleep(Duration::from_millis(500));
-                        }
-                    }
-                    if exists(&root) {
-                        String::new()
-                    } else {
-                        crate::sync::fetch_failure(&url, &e)
-                    }
-                }
+                Err(e) => crate::sync::fetch_failure(&url, &e.to_string()),
             };
             let (lock, ready) = &*state;
             *lock.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);

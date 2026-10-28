@@ -170,7 +170,7 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
             let root = brain.root.display();
             return only_at_start(snapshot::notice(&format!("no brain at {root} (run `rewire init`, or set REWIRE_REMOTE)")));
         }
-        match Brain::fetch(&url, &brain.root, true) {
+        match Brain::fetch(&url, &brain.root) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("rewire: could not clone brain: {e}");

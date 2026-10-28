@@ -1021,7 +1021,7 @@ pub fn run(cli: Cli) -> Result<()> {
             let url = sync::env_remote();
             if !brain.exists() && !url.is_empty() {
                 // a cloud session starts the MCP server and the session-start hook together: answer the client at
-                // once and fetch in the background (only the hook turns an empty repository into a brain)
+                // once and fetch in the background
                 crate::mcp::serve_fetching(brain.root.clone(), url)?
             } else {
                 crate::mcp::serve(&open_brain(bp))?

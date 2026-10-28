@@ -139,7 +139,10 @@ pub const GIT_CONFIG: [&str; 10] = [
 ];
 
 pub const GITIGNORE: &str = ".index/\n.state/\nlocal.toml\n.obsidian/workspace*.json\n";
-const DIRS: [&str; 6] = ["nodes", "events", "sessions", "inbox", ".index", ".state"];
+const DIRS: [&str; 7] = ["nodes", "events", "sessions", "skills", "inbox", ".index", ".state"];
+/// The synced folders of the layout (docs/design/format.md). Each holds a `.gitkeep` from `init` on: git keeps no
+/// empty folder, and a new brain's repository should show its layout from the first push.
+pub const SYNCED_DIRS: [&str; 5] = ["nodes", "events", "sessions", "skills", "inbox"];
 
 pub fn default_path() -> PathBuf {
     let raw = std::env::var("REWIRE_BRAIN").unwrap_or_else(|_| "~/brain".into());
@@ -249,6 +252,10 @@ impl Brain {
     pub fn review_key(&self, path: &Path) -> Option<String> {
         // lower case: a case-insensitive file system checks out nodes/Constraint/ as nodes/constraint/
         let rel = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().replace('\\', "/").to_lowercase();
+        // the empty file that keeps a synced folder in git (only that file: a folder named so is still reviewed)
+        if SYNCED_DIRS.iter().any(|d| rel == format!("{d}/.gitkeep")) {
+            return None;
+        }
         if rel.starts_with("nodes/") || rel.starts_with("inbox/") {
             Some(rel) // by path, whatever folder: what decides is the type the file declares
         } else {
@@ -371,6 +378,9 @@ impl Brain {
         for sub in DIRS {
             fs::create_dir_all(root.join(sub))?;
         }
+        for dir in SYNCED_DIRS {
+            atomic_write(&root.join(dir).join(".gitkeep"), "")?;
+        }
         atomic_write(&root.join("brain.toml"), config::DEFAULT_TOML)?;
         atomic_write(&root.join(".gitattributes"), GITATTRIBUTES)?;
         atomic_write(&root.join(".gitignore"), GITIGNORE)?;
@@ -387,29 +397,30 @@ impl Brain {
         Ok(brain)
     }
 
-    /// Clone the brain at `url` into `root` for a machine that starts empty (REWIRE_REMOTE): into a folder of its
-    /// own first, then moved into place, so a session-start hook and an MCP server starting together never see half a
-    /// clone, and whichever finishes second uses the first one's.
-    pub fn fetch(url: &str, root: &Path, adopt: bool) -> Result<Brain> {
+    /// Clone the brain at `url` into `root` for a machine that starts empty (REWIRE_REMOTE). The session-start hook and
+    /// the MCP server start together and either may get here first: one at a time (a lock next to `root`), into a
+    /// folder of its own and then moved into place, so the second finds the first one's brain, never half a clone or
+    /// a second new brain.
+    pub fn fetch(url: &str, root: &Path) -> Result<Brain> {
         let root = absolute(root);
         let parent = root.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
         fs::create_dir_all(&parent)?;
         let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "brain".into());
+        let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(parent.join(format!(".{name}.fetch.lock")))?;
+        FileExt::lock_exclusive(&lock)?; // released when `lock` is dropped; every git call below has a timeout
+        if Brain::open(Some(&root)).exists() {
+            return Ok(Brain::open(Some(&root)));
+        }
         let tmp = parent.join(format!(".{name}.fetch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        let cloned = Brain::clone_with(url, Some(&tmp), None, adopt).and_then(|_| {
+        let cloned = Brain::clone_from(url, Some(&tmp), None).and_then(|_| {
             if root.is_dir() && fs::read_dir(&root)?.next().is_none() {
                 fs::remove_dir(&root)?;
             }
             Ok(fs::rename(&tmp, &root)?)
         });
         let _ = fs::remove_dir_all(&tmp);
-        let brain = Brain::open(Some(&root));
-        match cloned {
-            Ok(()) => Ok(brain),
-            Err(_) if brain.exists() => Ok(brain), // another process got there first
-            Err(e) => Err(e),
-        }
+        cloned.map(|_| Brain::open(Some(&root)))
     }
 
     /// Attach this machine to an existing brain repository. A repository that holds no brain yet, only what GitHub
@@ -433,7 +444,14 @@ impl Brain {
         let brain = Brain::open(Some(&root));
         if !brain.exists() {
             if adopt && starter_repo(&root) {
-                return Brain::adopt(url, &root, device);
+                return match Brain::adopt(url, &root, device) {
+                    // another machine pushed a brain first: use that one, not a second history
+                    Err(Error::Sync(_)) => {
+                        fs::remove_dir_all(&root)?;
+                        Brain::clone_with(url, Some(&root), device, false)
+                    }
+                    other => other,
+                };
             }
             let _ = fs::remove_dir_all(&root);
             return Err(Error::Op(format!(
@@ -490,10 +508,16 @@ impl Brain {
         Brain::init(Some(root), Some(&named.unwrap_or_else(config::default_device)))?;
         let mut brain = Brain::open(Some(root));
         crate::sync::set_remote(&mut brain, url)?;
-        match crate::sync::push(&brain, crate::sync::GIT_TIMEOUT) {
-            Ok(_) => eprintln!("rewire: {url} held no brain yet: created one and pushed it"),
+        // a plain push, not sync's pull-and-retry: a rejection means the repository has a brain now
+        let pushed = brain.git(&["push", "-u", "origin", "HEAD"]);
+        let err = String::from_utf8_lossy(&pushed.stderr).to_string();
+        if pushed.status.success() {
+            eprintln!("rewire: {url} held no brain yet: created one and pushed it");
+        } else if err.contains("rejected") || err.contains("fetch first") {
+            return Err(Error::Sync(format!("{url} got a brain from another machine meanwhile")));
+        } else {
             // kept: auto sync pushes it after the next consolidation
-            Err(e) => eprintln!("rewire: {url} held no brain yet: created one here, but the push failed: {e}"),
+            eprintln!("rewire: {url} held no brain yet: created one here, but the push failed: {}", err.trim());
         }
         Ok(brain)
     }
