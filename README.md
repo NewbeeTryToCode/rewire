@@ -85,6 +85,10 @@ to what this device keeps (`transcripts`, `profile`) is not taken until you set 
 Other brain.toml settings from the remote apply as they come (budgets and chunk size have floors; recall weights,
 link following and the project map are not checked), so keep the remote private.
 
+Claude Code cloud sessions (claude.ai/code, the Claude app, `claude --cloud`) start on a fresh VM each time:
+[`docs/cloud-sessions.md`](docs/cloud-sessions.md) sets up the binary, hooks, MCP server and brain sync once, with
+the files in [`integrations/claude-code-cloud`](integrations/claude-code-cloud).
+
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
 
 ## Day-to-day usage
