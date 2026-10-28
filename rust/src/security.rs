@@ -333,8 +333,32 @@ fn high_entropy(tok: &str) -> bool {
     entropy > 4.3 && tok.chars().any(|c| c.is_ascii_digit()) && tok.chars().any(|c| c.is_alphabetic())
 }
 
+/// A claude.ai artifact link (base62 id or the uuid of a code artifact).
+pub fn artifact_url() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(
+            r"https://claude\.ai/(?:code/)?artifact/(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9]{20,24})\b",
+        )
+        .unwrap()
+    })
+}
+
+/// A GitHub pull request link.
+pub fn pull_url() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+").unwrap())
+}
+
+/// The text with artifact and pull request links blanked: their random-looking ids are links, not secrets, and
+/// must not trip the entropy check (known secret formats are still matched on the whole text).
+fn without_links(text: &str) -> String {
+    let text = artifact_url().replace_all(text, " ");
+    pull_url().replace_all(&text, " ").into_owned()
+}
+
 fn high_entropy_token(text: &str) -> bool {
-    token_re().find_iter(text).any(|m| high_entropy(m.as_str()))
+    token_re().find_iter(&without_links(text)).any(|m| high_entropy(m.as_str()))
 }
 
 /// Mask secrets in text that is kept verbatim (session transcripts).
@@ -356,7 +380,7 @@ pub fn redact(text: &str) -> String {
             text = p.regex().replace_all(&text, "[redacted]").into_owned();
         }
     }
-    let toks: Vec<String> = token_re().find_iter(&text).map(|m| m.as_str().to_string()).collect();
+    let toks: Vec<String> = token_re().find_iter(&without_links(&text)).map(|m| m.as_str().to_string()).collect();
     for tok in toks {
         if high_entropy(&tok) {
             text = text.replace(&tok, "[redacted]");

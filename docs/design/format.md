@@ -110,6 +110,10 @@ Node creation (`recorded_at`) counts as the first use. Activation: `B = ln Î£ wá
 
 <summary paragraphs or ->
 
+## Outputs                                 (only if the session published something)
+
+- [<n>] <artifact | pull request>: [<title>](<url>)
+
 ## Applied
 - <ACTION> [<title>](<relative path>)      (or "-")
 
@@ -127,6 +131,10 @@ Node creation (`recorded_at`) counts as the first use. Activation: `B = ln Î£ wá
 
 [<n> <role>] <text on one line>
 ```
+
+Outputs are read from the tool calls themselves (an Artifact publish, a pull request opened through the
+GitHub tools or `gh pr create`), so their links are kept whatever `transcripts` keeps; turn `n` is the tool
+result that reported the link. Each run's outputs are indexed as one more searchable row, like its summary.
 
 A file may hold several consolidation runs of the same session, separated by `\n\n---\n\n`; each later run
 is given the earlier runs' summaries. Transcript lines are secret-redacted and kept whole. The extraction

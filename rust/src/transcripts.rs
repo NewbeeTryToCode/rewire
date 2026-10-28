@@ -21,6 +21,58 @@ pub struct SessionMeta {
     pub session: Option<String>,
     pub cwd: Option<String>,
     pub date: Option<String>,
+    pub outputs: Vec<Output>,
+}
+
+/// Something the session published outside the transcript (an artifact, a pull request). Its link is kept
+/// whatever `transcripts` keeps: the turn that holds it is a tool result, which is cut or dropped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Output {
+    pub n: usize,
+    pub kind: String,
+    pub title: String,
+    pub url: String,
+}
+
+/// (kind, title) of a tool call that publishes something: an artifact publish (not a read, list or asset
+/// upload), a pull request opened through the GitHub MCP tools or `gh pr create`.
+fn publishing_call(block: &Value) -> Option<(&'static str, String)> {
+    let name = block.get("name").and_then(Value::as_str)?;
+    let input = block.get("input").cloned().unwrap_or(Value::Null);
+    let text = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if name == "Artifact" {
+        let action = text("action");
+        if !(action.is_empty() || action == "publish") || input.get("asset").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        let stem = Path::new(&text("file_path")).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let title = [text("title"), text("description"), stem].into_iter().find(|t| !t.is_empty()).unwrap_or_default();
+        return Some(("artifact", title));
+    }
+    if name.ends_with("create_pull_request") {
+        return Some(("pull request", text("title")));
+    }
+    if name == "Bash" && text("command").contains("gh pr create") {
+        static T: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = T.get_or_init(|| regex::Regex::new(r#"--title[= ]+(?:"([^"]*)"|'([^']*)')"#).unwrap());
+        let command = text("command");
+        let title = re.captures(&command).and_then(|c| c.get(1).or(c.get(2))).map(|m| m.as_str().to_string());
+        return Some(("pull request", title.unwrap_or_default()));
+    }
+    None
+}
+
+/// The link a publishing call's result reports, if it succeeded.
+fn published_url(kind: &str, result: &Value) -> Option<String> {
+    if result.get("is_error").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let text = match result.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        other => blocks_text(other, &["text"]),
+    };
+    let re = if kind == "artifact" { crate::security::artifact_url() } else { crate::security::pull_url() };
+    re.find(&text).map(|m| m.as_str().to_string())
 }
 
 /// Drop memory rewire itself injected (snapshot, recall results), wherever it shows up in a transcript:
@@ -103,6 +155,8 @@ fn s(v: Option<&Value>) -> Option<String> {
 pub fn parse_claude_code(lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) {
     let mut meta = SessionMeta::default();
     let mut turns = Vec::new();
+    // tool_use id -> (kind, title) of calls that publish something, until their result arrives
+    let mut publishing: std::collections::HashMap<String, (&'static str, String)> = Default::default();
     for (n, line) in lines {
         let Ok(d) = serde_json::from_str::<Value>(line) else { continue };
         if meta.session.is_none() {
@@ -116,6 +170,22 @@ pub fn parse_claude_code(lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) 
         }
         let msg = d.get("message");
         let content = msg.and_then(|m| m.get("content"));
+        for b in content.and_then(Value::as_array).into_iter().flatten() {
+            match b.get("type").and_then(Value::as_str) {
+                Some("tool_use") => {
+                    if let (Some(id), Some(call)) = (s(b.get("id")), publishing_call(b)) {
+                        publishing.insert(id, call);
+                    }
+                }
+                Some("tool_result") => {
+                    let Some((kind, title)) = s(b.get("tool_use_id")).and_then(|id| publishing.remove(&id)) else { continue };
+                    if let Some(url) = published_url(kind, b).filter(|u| !meta.outputs.iter().any(|o| &o.url == u)) {
+                        meta.outputs.push(Output { n: *n, kind: kind.into(), title, url });
+                    }
+                }
+                _ => {}
+            }
+        }
         let (text, role) = match d.get("type").and_then(Value::as_str) {
             Some("user") => {
                 let is_tool = content
