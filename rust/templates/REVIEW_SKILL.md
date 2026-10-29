@@ -23,7 +23,7 @@ Write in the user's language. Group the items and keep each item's text as the i
 2. **Duplicates.** Items that say the same thing as another item or an existing memory: suggest rejecting all but one.
 3. **Everything else**, by type (preference, decision, fact, skill).
 
-For each item give its id (the first 8 characters are enough), type, scope, its full text, and your recommendation:
+For each item give its id (its first 12 characters: ids proposed in the same minute share the first 10), type, scope, its full text, and your recommendation:
 approve, reject, or "check" with one line of reason. Mark items labelled `FROM ANOTHER DEVICE` or flagged by the
 scan, and do not recommend approving those without saying why.
 
@@ -32,8 +32,8 @@ scan, and do not recommend approving those without saying why.
 End with ready-to-copy lines that follow your recommendations, in one code block, for example:
 
 ```
-rewire approve 01M61NFF 01M61NFG0
-rewire reject 01M60TX5
+rewire approve 01M61NFFZ5J8 01M61NFG063W
+rewire reject 01M60TX5CXH8
 ```
 
 Tell the user to send those lines **as their own message, with nothing else in it** (they may edit them first).
