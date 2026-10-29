@@ -551,6 +551,80 @@ pub fn review(brain: &Brain, action: &str, ids: &[String], force: bool) -> Resul
     Ok(out)
 }
 
+/// Fold notes that say the same thing into one: each of `drops` becomes superseded by `keep` (kept in history,
+/// out of recall and the snapshot), and `keep` takes over their search keywords. Notes only, of one type: two
+/// proposals in the inbox are settled by approving one and rejecting the other. The caller holds the brain lock
+/// and has made sure the user asked.
+pub fn merge(brain: &Brain, keep: &str, drops: &[String]) -> Result<Vec<Outcome>> {
+    let Some(kept) = resolve_id(brain, keep).filter(Node::active) else {
+        return Ok(vec![Outcome::Failed(format!("! {keep}: no current note with this id"))]);
+    };
+    let type_of = |n: &Node| n.meta.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut out = Vec::new();
+    let mut meta = kept.meta.clone();
+    let mut keywords: Vec<Value> = meta.get("keywords").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut merged = 0;
+    for id in drops {
+        let Some(old) = resolve_id(brain, id).filter(Node::active) else {
+            out.push(Outcome::Failed(format!("! {id}: no current note with this id")));
+            continue;
+        };
+        if old.id() == kept.id() || type_of(&old) != type_of(&kept) || type_of(&old) == "project" {
+            out.push(Outcome::Failed(format!("! {id}: only another note of the same type ({}) can be merged into it", type_of(&kept))));
+            continue;
+        }
+        let mut gone = old.meta.clone();
+        gone.insert("retracted_at".into(), json!(now_iso()));
+        gone.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
+        brain.write_node(&gone, &old.body, Some(&old.path))?;
+        if let Some(Value::Array(e)) = meta.get_mut("edges") {
+            e.push(json!({"rel": "supersedes", "to": old.id()}));
+        }
+        for k in old.meta.get("keywords").and_then(Value::as_array).into_iter().flatten() {
+            if !keywords.contains(k) && keywords.len() < 24 {
+                keywords.push(k.clone());
+            }
+        }
+        out.push(Outcome::Done(format!("merged [{}] {} into [{}] {}", short_of(old.id()), old.title(), short_of(kept.id()), kept.title())));
+        merged += 1;
+    }
+    if merged > 0 {
+        meta.insert("keywords".into(), Value::Array(keywords));
+        brain.write_node(&meta, &kept.body, Some(&kept.path))?;
+        write_home(brain, &mut Index::new(brain))?;
+        brain.commit(&format!("merge {merged} note(s) into {}", short_of(kept.id())));
+    }
+    Ok(out)
+}
+
+/// Pairs of current notes (same type and scope) whose words mostly agree, likeliest first: candidates for
+/// `merge`, shown by `rewire review`. Words only: the same claim in two languages is found through its keywords.
+pub fn duplicates(brain: &Brain) -> Vec<(Node, Node)> {
+    let notes: Vec<Node> =
+        brain.iter_nodes().into_iter().filter(|n| n.active() && n.meta.get("type").and_then(Value::as_str) != Some("project")).collect();
+    let text = |n: &Node| {
+        let kw = n.meta.get("keywords").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));
+        format!("{} {} {}", n.title(), n.body, kw.unwrap_or_default())
+    };
+    let texts: Vec<(String, usize)> = notes.iter().map(|n| (text(n), text::content_words(&text(n)).len())).collect();
+    let mut pairs = Vec::new();
+    for i in 0..notes.len().min(1000) {
+        for j in i + 1..notes.len().min(1000) {
+            let same = |k: &str| notes[i].meta.get(k) == notes[j].meta.get(k);
+            let ((a, na), (b, nb)) = (&texts[i], &texts[j]);
+            if !same("type") || !same("scope") || *na < 3 || *nb < 3 {
+                continue;
+            }
+            let score = (text::overlap(a, b) as f64 / *na as f64).min(text::overlap(b, a) as f64 / *nb as f64);
+            if score >= 0.5 {
+                pairs.push((score, i, j));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.into_iter().take(20).map(|(_, i, j)| (notes[i].clone(), notes[j].clone())).collect()
+}
+
 /// Take one session back out of memory, whether its changes were applied at consolidation or approved later from
 /// the inbox: notes it created are removed, notes it updated return to their content before it, notes it
 /// superseded or contradicted become current again, and its pending proposals and session record are dropped.

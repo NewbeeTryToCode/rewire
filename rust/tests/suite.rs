@@ -3288,3 +3288,44 @@ fn project_hubs_list_their_notes_and_keep_what_a_person_wrote() {
     let snap = rewire::snapshot::build(&c.brain, &mut Index::new(&c.brain), None, Some("alpha")).unwrap();
     assert!(snap.text.contains("Goal: own the memory.") && !snap.text.contains("rewire:generated"));
 }
+
+#[test]
+fn duplicate_notes_are_found_and_merged_into_one() {
+    let mut c = Case::new();
+    let keep = c.add(
+        "preference",
+        "The user writes in Indonesian and prefers answers in Indonesian",
+        json!({"keywords": ["bahasa", "indonesia"]}),
+    );
+    let twin = c.add(
+        "preference",
+        "The user writes mainly in Indonesian and wants answers in Indonesian",
+        json!({"keywords": ["bahasa", "jawaban"]}),
+    );
+    let other = c.add("preference", "The user prefers tabs over spaces", json!({}));
+    let fact = c.add("fact", "The user writes in Indonesian and prefers answers in Indonesian", json!({}));
+    let pairs = ops::duplicates(&c.brain);
+    let ids: Vec<(String, String)> = pairs.iter().map(|(a, b)| (a.id().to_string(), b.id().to_string())).collect();
+    assert!(ids.iter().any(|(a, b)| [a, b].contains(&&keep.id().to_string()) && [a, b].contains(&&twin.id().to_string())), "{ids:?}");
+    // not across types, not unrelated notes
+    assert!(!ids.iter().any(|(a, b)| [a, b].iter().any(|x| *x == other.id() || *x == fact.id())), "{ids:?}");
+    let short = |n: &rewire::brain::Node| rewire::util::short_of(n.id());
+    let out = ops::merge(&c.brain, &short(&keep), &[short(&twin), short(&fact), "zzzzzzzz".into()]).unwrap();
+    assert!(matches!(&out[0], ops::Outcome::Done(l) if l.starts_with("merged")), "{out:?}");
+    assert!(matches!(&out[1], ops::Outcome::Failed(l) if l.contains("same type")), "{out:?}");
+    assert!(matches!(&out[2], ops::Outcome::Failed(_)), "{out:?}");
+    let gone = c.brain.get_node(twin.id()).unwrap();
+    assert!(!gone.active() && rewire::brain::is_set(gone.meta.get("valid_to")));
+    let kept = c.brain.get_node(keep.id()).unwrap();
+    assert!(kept.active() && kept.meta["edges"].as_array().unwrap().contains(&json!({"rel": "supersedes", "to": short(&twin)})));
+    let kw: Vec<&str> = kept.meta["keywords"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(kw.contains(&"indonesia") && kw.contains(&"jawaban") && kw.iter().filter(|k| **k == "bahasa").count() == 1, "{kw:?}");
+    assert!(c.brain.get_node(fact.id()).unwrap().active());
+    // and from the chat, the same way as approve
+    let third = c.add("preference", "The user prefers tabs over spaces for indentation", json!({}));
+    let prompt = format!("rewire merge {} {}", short(&other), short(&third));
+    let (projects, payload) = chat_transcript(&c, "s-merge", &prompt, 2, &[]);
+    let said = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(said.contains("merged") && said.contains("tabs over spaces for indentation"), "{said}");
+    assert!(!c.brain.get_node(third.id()).unwrap().active());
+}

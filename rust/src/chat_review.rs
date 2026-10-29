@@ -1,5 +1,5 @@
-//! Review from the chat: the user approves or rejects inbox items by sending a message made only of review
-//! commands ("rewire approve <ids>", "rewire reject <ids>"). The UserPromptSubmit hook carries out what the user
+//! Review from the chat: the user approves or rejects inbox items, or merges duplicate notes, by sending a message
+//! made only of review commands ("rewire approve <ids>", "rewire reject <ids>", "rewire merge <keep> <other>"). The UserPromptSubmit hook carries out what the user
 //! typed, so a review needs no terminal, from the web, the desktop or the phone; the agent never runs it.
 //!
 //! The hook acts only when the session's own transcript shows the same text as the latest message from a human,
@@ -22,19 +22,20 @@ const TAIL_BYTES: u64 = 512 * 1024;
 const MAX_IDS: usize = 50;
 
 /// The review commands a message consists of, or None when it is anything else. Every non-empty line must be
-/// `rewire approve|reject <id>…` (or `/rewire-review approve|reject <id>…`): a command inside other text, a pasted
-/// document say, is never acted on.
+/// `rewire approve|reject <id>…` or `rewire merge <keep> <other>…` (also after `/rewire-review`): a command inside
+/// other text, a pasted document say, is never acted on.
 pub fn parse(prompt: &str) -> Option<Vec<(String, Vec<String>)>> {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = R.get_or_init(|| {
-        regex::Regex::new(r"^(?:rewire|/rewire-review)\s+(approve|reject)((?:\s+(?:all|[0-9A-Za-z]{4,26}))+)\s*$").unwrap()
+        regex::Regex::new(r"^(?:rewire|/rewire-review)\s+(approve|reject|merge)((?:\s+(?:all|[0-9A-Za-z]{4,26}))+)\s*$").unwrap()
     });
     let mut commands = Vec::new();
     let mut count = 0;
     for line in prompt.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let c = re.captures(line)?;
         let ids: Vec<String> = c[2].split_whitespace().map(String::from).collect();
-        if ids.len() > 1 && ids.iter().any(|i| i == "all") {
+        let all = ids.iter().any(|i| i == "all");
+        if (ids.len() > 1 && all) || (&c[1] == "merge" && (all || ids.len() < 2)) {
             return None;
         }
         count += ids.len();
@@ -145,13 +146,24 @@ pub fn run_in(brain: &Brain, payload: &Value, projects: &Path) -> Result<Option<
     // what was decided on, as its file says before it is applied (not as the agent described it)
     let inbox = brain.iter_inbox();
     let mut items = Vec::new();
-    for typed in commands.iter().flat_map(|(_, ids)| ids).filter(|i| *i != "all") {
-        let up = typed.to_uppercase();
-        let hits: Vec<_> =
-            inbox.iter().filter(|i| i.meta.get("inbox_id").and_then(Value::as_str).is_some_and(|id| id.starts_with(&up))).collect();
-        if let [item] = hits.as_slice() {
-            let text = snapshot::printable(&format!("{}: {}", item.title(), item.body.trim().replace('\n', " ")));
-            items.push(format!("- {typed}: {}", text.chars().take(300).collect::<String>()));
+    let shown = |title: &str, body: &str| {
+        snapshot::printable(&format!("{title}: {}", body.trim().replace('\n', " "))).chars().take(300).collect::<String>()
+    };
+    for (action, ids) in &commands {
+        for typed in ids.iter().filter(|i| *i != "all") {
+            if action == "merge" {
+                // merged are notes already in memory, not inbox items
+                if let Some(n) = ops::resolve_id(brain, typed) {
+                    items.push(format!("- {typed}: {}", shown(n.title(), &n.body)));
+                }
+                continue;
+            }
+            let up = typed.to_uppercase();
+            let hits: Vec<_> =
+                inbox.iter().filter(|i| i.meta.get("inbox_id").and_then(Value::as_str).is_some_and(|id| id.starts_with(&up))).collect();
+            if let [item] = hits.as_slice() {
+                items.push(format!("- {typed}: {}", shown(item.title(), &item.body)));
+            }
         }
     }
     let mut lines = Vec::new();
@@ -167,14 +179,15 @@ pub fn run_in(brain: &Brain, payload: &Value, projects: &Path) -> Result<Option<
             Err(e) => return Err(e),
         };
         for (action, ids) in &commands {
-            for outcome in ops::review(brain, action, ids, false)? {
+            let outcomes = if action == "merge" { ops::merge(brain, &ids[0], &ids[1..])? } else { ops::review(brain, action, ids, false)? };
+            for outcome in outcomes {
                 let (Outcome::Done(l) | Outcome::Skipped(l) | Outcome::Failed(l)) = outcome;
                 lines.push(format!("- {l}"));
             }
         }
     }
     if !items.is_empty() {
-        lines.push("Items as their inbox files said:".into());
+        lines.push("Items as their files said:".into());
         lines.extend(items);
     }
     if brain.config.sync_auto {
@@ -196,6 +209,7 @@ mod tests {
         assert_eq!(p[0], ("approve".to_string(), vec!["01M61NFF".to_string(), "01m61nfg0".to_string()]));
         assert_eq!(p[1], ("reject".to_string(), vec!["01M60TX5".to_string()]));
         assert_eq!(parse("/rewire-review approve all").unwrap()[0].1, ["all"]);
+        assert_eq!(parse("rewire merge fg531z4v r5t189wq").unwrap()[0], ("merge".to_string(), vec!["fg531z4v".into(), "r5t189wq".into()]));
         for text in [
             "please rewire approve 01M61NFF",
             "rewire approve 01M61NFF\nand also this",
@@ -204,6 +218,8 @@ mod tests {
             "rewire approve all 01M61NFF",
             "rewire approve 01M6;rm",
             "rewire forget 01M61NFF",
+            "rewire merge fg531z4v",
+            "rewire merge all fg531z4v",
         ] {
             assert!(parse(text).is_none(), "{text:?}");
         }

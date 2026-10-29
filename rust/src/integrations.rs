@@ -322,6 +322,7 @@ pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
         rules.push(format!("Bash({exe} remember --apply:*)"));
         rules.push(format!("Bash({exe} review reject:*)"));
         rules.push(format!("Bash({exe} forget:*)"));
+        rules.push(format!("Bash({exe} merge:*)"));
         rules.push(format!("Bash({exe} undo:*)"));
         rules.push(format!("Bash({exe} remote set:*)"));
         rules.push(format!("Bash({exe} install cloud:*)"));

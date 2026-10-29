@@ -7,7 +7,7 @@ description: Show the user's rewire memory inbox (proposed memories waiting for 
 
 The user approves or rejects proposed memories by sending a message of review commands. A hook carries those
 out from the user's own message. **You never approve, reject or edit memories yourself**, and you never run
-`rewire review approve|reject` or `rewire hook`: rewire refuses both from an agent session, and trying is wrong.
+`rewire review approve|reject`, `rewire merge` or `rewire hook`: rewire refuses both from an agent session, and trying is wrong.
 
 ## 1. Read the inbox
 
@@ -21,6 +21,8 @@ Write in the user's language. Group the items and keep each item's text as the i
 
 1. **Constraints and contradictions first.** These change future sessions the most.
 2. **Duplicates.** Items that say the same thing as another item or an existing memory: suggest rejecting all but one.
+   `rewire review` also lists **possible duplicate notes** already in memory: for a real pair, suggest
+   `rewire merge <keep> <other>` (the other becomes superseded by the one kept, and stays in history).
 3. **Everything else**, by type (preference, decision, fact, skill).
 
 For each item give its id (its first 12 characters: ids proposed in the same minute share the first 10), type, scope, its full text, and your recommendation:
@@ -34,6 +36,7 @@ End with ready-to-copy lines that follow your recommendations, in one code block
 ```
 rewire approve 01M61NFFZ5J8 01M61NFG063W
 rewire reject 01M60TX5CXH8
+rewire merge fg531z4v r5t189wq
 ```
 
 Tell the user to send those lines **as their own message, with nothing else in it** (they may edit them first).

@@ -164,6 +164,12 @@ pub enum Cmd {
         #[arg(short = 'n', default_value_t = 20)]
         limit: usize,
     },
+    /// fold notes that say the same thing into one: the others become superseded by the first (kept in history)
+    Merge {
+        keep: String,
+        #[arg(required = true)]
+        drops: Vec<String>,
+    },
     /// retract a note (by id, short id or title); it stays in git history
     Forget {
         id: String,
@@ -805,6 +811,20 @@ pub fn run(cli: Cli) -> Result<()> {
                         flags.map(|f| format!("  flags: {}", crate::snapshot::printable(&python_list(f)))).unwrap_or_default()
                     );
                 }
+                let twins = ops::duplicates(&brain);
+                if !twins.is_empty() {
+                    println!("\nPossible duplicate notes (keep one with `rewire merge <keep> <other>`):");
+                    for (a, b) in twins {
+                        let show = |n: &crate::brain::Node| {
+                            format!(
+                                "[{}] {}",
+                                crate::util::short_of(n.id()),
+                                crate::snapshot::printable(&format!("{}: {}", n.title(), n.body.trim()))
+                            )
+                        };
+                        println!("  {}\n  {}\n", show(&a), show(&b));
+                    }
+                }
                 let waiting = ops::unreviewed(&brain);
                 if !waiting.is_empty() {
                     println!("\nFrom other devices (shown to agents on this device once you approve them):");
@@ -905,6 +925,27 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             if list.len() > limit {
                 println!("… {} more (-n {})", list.len() - limit, list.len());
+            }
+        }
+        Cmd::Merge { keep, drops } => {
+            let brain = open_brain(bp);
+            // which notes stay current in every future session: the user's call, like forget
+            if let Some(marker) = agent_shell() {
+                fail(format!("merge is refused inside an agent session ({marker}): run it in your own terminal, or send it in the chat"));
+            }
+            let _g = writing(&brain);
+            let mut errors = 0;
+            for outcome in ops::merge(&brain, &keep, &drops)? {
+                match outcome {
+                    ops::Outcome::Done(l) | ops::Outcome::Skipped(l) => println!("{l}"),
+                    ops::Outcome::Failed(l) => {
+                        eprintln!("{l}");
+                        errors += 1;
+                    }
+                }
+            }
+            if errors > 0 {
+                std::process::exit(1);
             }
         }
         Cmd::Forget { id, reason } => {
