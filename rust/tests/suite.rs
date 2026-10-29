@@ -298,6 +298,22 @@ fn transcripts_claude_code_codex_and_internal() {
     assert!(!tx::is_internal(&work, &[hi], Path::new("/b")));
 }
 
+#[test]
+fn published_artifacts_and_pull_requests_are_outputs() {
+    let (_, meta, _, _) = tx::read(&fix("claude_code_outputs.jsonl"), 0, None).unwrap();
+    let got: Vec<(usize, &str, &str, &str)> =
+        meta.outputs.iter().map(|o| (o.n, o.kind.as_str(), o.title.as_str(), o.url.as_str())).collect();
+    // a read is no output, a republish of the same page is not a second one, a refused publish is none
+    assert_eq!(
+        got,
+        [
+            (3, "artifact", "Roadmap AI Engineering", "https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6"),
+            (7, "pull request", "Add [learning] notes", "https://github.com/me/notes/pull/7"),
+            (7, "pull request", "Fix typo", "https://github.com/me/notes/pull/8"),
+        ]
+    );
+}
+
 // ---- consolidation -------------------------------------------------------
 
 /// Prompts the fake provider received (most recent last).
@@ -773,6 +789,28 @@ fn transcript_kept_redacted_searchable_and_profile_filtered() {
     assert!(content.contains("concise"));
     assert!(!content.contains("I think you like YAML"));
     assert!(!content.contains("evil.example"));
+}
+
+#[test]
+fn outputs_reach_the_record_the_prompt_and_recall_whatever_transcripts_keeps() {
+    let c = Case::new(); // coding profile: the transcript keeps user turns only, which never hold the links
+    let mut con = Consolidator::new(&c.brain, Some(Fake::new(vec![extraction(vec![], vec![])])), Box::new(|_| {})).unwrap();
+    assert_eq!(con.run_file(&fix("claude_code_outputs.jsonl"), None).unwrap()["status"], "consolidated");
+    let prompt = PROMPTS.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find(|p| p.contains("learning roadmap")).cloned().unwrap();
+    assert!(prompt.contains("OUTPUTS:\n- [3] artifact: [Roadmap AI Engineering](https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6)"));
+    let day = c.brain.path(&["sessions", "2026-10-01"]);
+    let content = read(&std::fs::read_dir(&day).unwrap().next().unwrap().unwrap().path());
+    assert!(content.contains(
+        "## Outputs\n\n- [3] artifact: [Roadmap AI Engineering](https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6)\n\
+         - [7] pull request: [Add learning notes](https://github.com/me/notes/pull/7)\n\
+         - [7] pull request: [Fix typo](https://github.com/me/notes/pull/8)\n\n## Applied"
+    ));
+    assert!(!content.contains("OtherOne1234567890abcd") && !content.contains("Broken9990000000000xyz"));
+    let mut index = Index::new(&c.brain);
+    let hits = index.search_episodes("roadmap artifact link", 3, &[], None, None).unwrap();
+    let row = hits.iter().find(|h| h.text.starts_with("Outputs: ")).unwrap();
+    // shown by recall, not withheld as a secret: the link ids only look random
+    assert!(row.text.contains("DYry1ig7z7QJPjcHdW4BC6") && rewire::security::blocked(&row.text).is_empty());
 }
 
 #[test]
@@ -2134,8 +2172,19 @@ fn more_secret_shapes_are_caught_and_ordinary_text_is_not() {
         "fixed in commit 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b",
         "the monkey test 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b",
         "author of 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b",
+        "the roadmap is at https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6",
+        "see https://claude.ai/code/artifact/65a08365-5f4e-4386-a25a-09969ff8af33 and https://github.com/me/notes/pull/7",
     ] {
         assert!(scan(text).is_empty(), "{text:?}");
+        assert_eq!(redact(text), text);
+    }
+    // a link is exempt, not the text around it, nor a token merely shaped like an artifact path
+    for text in [
+        "https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6 key Zx9Qm2Lk7Pw4Rt8Yv3Nb6Hc1Jd5Fg0SaXy",
+        "https://example.com/artifact/Zx9Qm2Lk7Pw4Rt8Yv3Nb6Hc1Jd5Fg0Sa",
+        "https://claude.ai/artifact/sk-ant-abcdefghijklmnopqrstuvwxyz0123",
+    ] {
+        assert!(scan(text).contains(&"secret".to_string()), "{text:?}");
     }
 }
 
@@ -2707,7 +2756,7 @@ fn imported_sessions_never_auto_apply_and_a_failed_llm_keeps_the_transcript() {
     )
     .unwrap();
     con.review_all = true;
-    let meta = rewire::transcripts::SessionMeta { session: Some("imp".into()), cwd: None, date: Some("2026-10-01".into()) };
+    let meta = rewire::transcripts::SessionMeta { session: Some("imp".into()), date: Some("2026-10-01".into()), ..Default::default() };
     let turns = vec![rewire::transcripts::Turn { n: 1, role: "user".into(), text: "I prefer tabs".into(), ts: String::new() }];
     let r = con.consolidate("import", &meta, &turns).unwrap();
     assert_eq!(r["applied"].as_array().map_or(0, |a| a.len()), 0, "{r:?}");
@@ -2876,8 +2925,22 @@ fn transcript_only_blocks_are_replaced_per_session_and_bad_settings_never_run_th
     let con = Consolidator::new(&c.brain, Some(Fake::new(vec![])), Box::new(|_| {})).unwrap();
     let fb = [rewire::consolidate::FALLBACK_SUMMARY.to_string()];
     let write = |session: &str, summary: &[String], text: &str| {
-        con.write_session("import", session, None, summary, &[], &[], &[], 0, &Default::default(), "2026-10-01", &[text.to_string()], &[])
-            .unwrap()
+        con.write_session(
+            "import",
+            session,
+            None,
+            summary,
+            &[],
+            &[],
+            &[],
+            &[],
+            0,
+            &Default::default(),
+            "2026-10-01",
+            &[text.to_string()],
+            &[],
+        )
+        .unwrap()
     };
     // two ids, one file name
     write("a.b", &fb, "[1 user] first");

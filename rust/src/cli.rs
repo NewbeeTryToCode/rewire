@@ -543,7 +543,12 @@ pub fn run(cli: Cli) -> Result<()> {
                         ts: t["ts"].as_str().unwrap_or("").into(),
                     })
                     .collect();
-                let meta = crate::transcripts::SessionMeta { session: Some(session.clone()), cwd: field("cwd"), date: field("date") };
+                let meta = crate::transcripts::SessionMeta {
+                    session: Some(session.clone()),
+                    cwd: field("cwd"),
+                    date: field("date"),
+                    ..Default::default()
+                };
                 let before = (usage.calls.get(), usage.prompt_chars.get(), usage.completion_chars.get(), usage.seconds.get());
                 let start = std::time::Instant::now();
                 let mut rec = json!({"session": session, "turns": turns.len()});
@@ -564,6 +569,7 @@ pub fn run(cli: Cli) -> Result<()> {
                             &session,
                             project.as_deref(),
                             &fallback,
+                            &meta.outputs,
                             &[],
                             &[],
                             &[],
@@ -583,6 +589,7 @@ pub fn run(cli: Cli) -> Result<()> {
                         &session,
                         project.as_deref(),
                         &[],
+                        &meta.outputs,
                         &[],
                         &[],
                         &[],
