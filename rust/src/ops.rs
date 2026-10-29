@@ -1033,6 +1033,7 @@ fn md_link(brain: &Brain, path: &str, title: &str) -> String {
 /// Write README.md: an overview a person can read on GitHub or in Obsidian. Deterministic (no
 /// timestamps, no activation-based order) so it only changes when the memory itself changes.
 pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf> {
+    crate::hubs::refresh(brain)?;
     index.refresh()?;
     let mut active = index.rows("active = 1 ORDER BY importance DESC, recorded_at DESC, id", &[])?;
     let unreviewed = brain.untrusted_ids(); // from another device and not reviewed here: not on the home page either
@@ -1140,6 +1141,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         "## How this brain works".into(),
         "".into(),
         "- `nodes/<type>/` — one memory per file; relations are links you can click.".into(),
+        "- `nodes/project/` — one page per project: its rules, decisions, facts and latest sessions, kept up to date.".into(),
         "- `events/` — when memories were used (the usage log; experimental ordering by use is computed from it).".into(),
         "- `sessions/` — a summary of every consolidated agent session.".into(),
         "- Superseded memories are kept (status `superseded`) so history is never lost.".into(),

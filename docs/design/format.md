@@ -79,6 +79,31 @@ After the body, relations are mirrored for readers:
 The `## Related` section is generated and never part of the body. Legacy v0.1 nodes stored
 `edges: [{"rel", "to"}]`; readers still accept it.
 
+### Project pages
+
+A project hub's body ends with a generated block, rewritten (only when it changes) whenever the home page is:
+
+```
+<what a person wrote, kept as is; may be empty>
+
+<!-- rewire:generated (rewritten from this project's notes and sessions: edit those, not this block) -->
+
+## Rules | Decisions | Facts | Preferences | Concepts | People      (active notes of the project, newest first)
+- [<title>](<relative path>) · <valid_from or recorded_at date>
+
+## Recent sessions                                                   (the latest 5 session records of the project)
+- [<date> · <file stem>](<relative path>): <summary, cut at 160 characters>
+
+<details><summary>No longer valid (<n>)</summary>                    (superseded notes)
+- ~~[<title>](<relative path>)~~ · until <valid_to>
+</details>
+
+<!-- /rewire:generated -->
+```
+
+Members are the notes with the hub's scope, and notes of another scope with an `about` link to the hub. The index
+leaves the block out: search, recall snippets and the session-start snapshot read only what a person wrote.
+
 ## Events
 
 One JSON object per line, keys sorted, `ensure_ascii=False`, Python default separators (`", "`, `": "`).

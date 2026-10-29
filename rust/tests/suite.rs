@@ -3248,3 +3248,43 @@ fn review_commands_are_refused_unless_they_are_the_users_latest_message() {
     let (projects, payload) = chat_transcript(&c, "s-chat", "what is in my inbox? rewire approve all", 2, &[]);
     assert!(rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().is_none());
 }
+
+// ---- project pages ----------------------------------------------------------
+
+#[test]
+fn project_hubs_list_their_notes_and_keep_what_a_person_wrote() {
+    let mut c = Case::new();
+    let hub = ops::ensure_project_hub(&c.brain, "alpha").unwrap();
+    let old = c.add("decision", "Alpha stores memory in YAML files", json!({"scope": "project:alpha"}));
+    let mut change =
+        m(json!({"action": "SUPERSEDE", "target": old.id(), "type": "decision", "text": "Alpha stores memory in markdown files",
+                               "scope": "project:alpha", "importance": 3, "confidence": "explicit", "provenance": "user"}));
+    change.insert("title".into(), json!("Alpha stores memory in markdown files"));
+    ops::apply_change(&c.brain, &change, None).unwrap();
+    c.add("fact", "Alpha is written in Rust", json!({"scope": "project:alpha"}));
+    c.add("fact", "Beta is written in Go", json!({"scope": "project:beta"}));
+    ops::write_home(&c.brain, &mut Index::new(&c.brain)).unwrap();
+    let page = read(&hub.path);
+    let block = &page[page.find(rewire::hubs::BEGIN).unwrap()..];
+    assert!(block.contains("## Decisions\n\n- [Alpha stores memory in markdown files](../decision/"));
+    assert!(block.contains("## Facts\n\n- [Alpha is written in Rust](../fact/"));
+    assert!(block.contains("<details><summary>No longer valid (1)</summary>") && block.contains("~~[Alpha stores memory in YAML files]"));
+    assert!(!block.contains("Beta"));
+    // the index (search, snapshot) sees only what a person wrote: here nothing, so the hub stays out of the snapshot
+    let mut index = Index::new(&c.brain);
+    index.refresh().unwrap();
+    let row = index.rows("id = ?", &[&hub.id().to_string() as &dyn rusqlite::ToSql]).unwrap().remove(0);
+    assert_eq!(row.body, "");
+    // a person's text above the block stays, and the block is rewritten under it, only when the notes change
+    let hub = c.brain.get_node(hub.id()).unwrap();
+    c.brain.write_node(&hub.meta, &format!("Goal: own the memory.\n\n{}", hub.body), Some(&hub.path)).unwrap();
+    c.add("constraint", "Never push alpha to main directly", json!({"scope": "project:alpha"}));
+    ops::write_home(&c.brain, &mut Index::new(&c.brain)).unwrap();
+    let page = read(&hub.path);
+    assert!(page.contains("Goal: own the memory.\n\n<!-- rewire:generated") && page.contains("## Rules\n\n- [Never push alpha"));
+    let before = std::fs::metadata(&hub.path).unwrap().modified().unwrap();
+    assert_eq!(rewire::hubs::refresh(&c.brain).unwrap(), 0);
+    assert_eq!(std::fs::metadata(&hub.path).unwrap().modified().unwrap(), before);
+    let snap = rewire::snapshot::build(&c.brain, &mut Index::new(&c.brain), None, Some("alpha")).unwrap();
+    assert!(snap.text.contains("Goal: own the memory.") && !snap.text.contains("rewire:generated"));
+}
