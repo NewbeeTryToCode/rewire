@@ -463,6 +463,94 @@ pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// What a review did to one item: done, left alone on purpose, or not done.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Done(String),
+    Skipped(String),
+    Failed(String),
+}
+
+/// Approve or reject inbox items, and rules, preferences and skills from other devices, by id or `all`; then
+/// rewrite the home page and commit. The one path for `rewire review` in a terminal and for the review commands
+/// the user sends in the chat (chat_review): the caller holds the brain lock and has made sure the user asked.
+pub fn review(brain: &Brain, action: &str, ids: &[String], force: bool) -> Result<Vec<Outcome>> {
+    use crate::cli::{py_str, python_list};
+    let mut out = Vec::new();
+    // rules, preferences and skills from other devices: approving shows them here, rejecting is not offered
+    // (it would delete them on every device; edit or delete the file instead)
+    let all = ids.len() == 1 && ids[0] == "all";
+    let mut inbox_ids = Vec::new();
+    for id in ids {
+        if let Some(key) = (!all).then(|| unreviewed_key(brain, id)).flatten() {
+            if action == "approve" {
+                trust(brain, &key)?;
+                out.push(Outcome::Done(format!("approved {key} (from another device)")));
+            } else if key.starts_with("nodes/") {
+                // rejecting a rule that came from another device forgets it, on every device once synced
+                out.push(match forget_unreviewed(brain, &key, "rejected on review") {
+                    Ok(msg) => Outcome::Done(format!("rejected {key}: {msg}")),
+                    Err(e) => Outcome::Failed(format!("! {key}: {e}")),
+                });
+            } else {
+                out.push(Outcome::Failed(format!("! {key} is a skill from another device: delete its folder to reject it everywhere")));
+            }
+        } else {
+            inbox_ids.push(id.clone());
+        }
+    }
+    if all && action == "approve" {
+        for (key, _, why) in unreviewed(brain) {
+            if why.is_empty() || force {
+                trust(brain, &key)?;
+                out.push(Outcome::Done(format!("approved {key} (from another device)")));
+            } else {
+                out.push(Outcome::Skipped(format!("skipped flagged item {key} (['{why}']): check it, then approve it by name")));
+            }
+        }
+    }
+    let ids: Vec<String> = if all {
+        // "all" never approves items the scan flagged (injection, secret): those need a look and their id
+        // nor proposals that arrived from another device: what they say about themselves is not checked
+        let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
+            action == "approve"
+                && !force
+                && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                    || !security::scan(&i.body).is_empty()
+                    || brain.is_untrusted(&i.path))
+        });
+        for item in &flagged {
+            out.push(Outcome::Skipped(format!(
+                "skipped {} ({}): check it, then approve it by id",
+                item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
+                if brain.is_untrusted(&item.path) {
+                    "from another device".to_string()
+                } else {
+                    format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
+                }
+            )));
+        }
+        clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
+    } else {
+        inbox_ids
+    };
+    for id in &ids {
+        let r = if action == "approve" {
+            approve(brain, id, force).map(|what| format!("approved {id} → {what}"))
+        } else {
+            reject(brain, id).map(|_| format!("rejected {id}"))
+        };
+        match r {
+            Ok(done) => out.push(Outcome::Done(done)),
+            Err(Error::Op(e)) | Err(Error::Schema(e)) => out.push(Outcome::Failed(format!("! {e}"))),
+            Err(e) => return Err(e),
+        }
+    }
+    write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("review {action} {} item(s)", ids.len()));
+    Ok(out)
+}
+
 /// Take one session back out of memory, whether its changes were applied at consolidation or approved later from
 /// the inbox: notes it created are removed, notes it updated return to their content before it, notes it
 /// superseded or contradicted become current again, and its pending proposals and session record are dropped.

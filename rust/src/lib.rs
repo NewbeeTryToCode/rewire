@@ -6,6 +6,7 @@
 
 pub mod activation;
 pub mod brain;
+pub mod chat_review;
 pub mod cli;
 pub mod config;
 pub mod consolidate;

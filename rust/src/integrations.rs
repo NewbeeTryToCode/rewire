@@ -16,6 +16,8 @@ pub const PROMPT_HITS: usize = 5;
 pub const PROMPT_CHARS: usize = 1200;
 pub const PROMPT_SESSIONS: usize = 50;
 pub const SKILL: &str = include_str!("../templates/SKILL.md");
+/// The `/rewire-review` skill for Claude Code: the agent shows the inbox, the user decides in a message of their own.
+pub const REVIEW_SKILL: &str = include_str!("../templates/REVIEW_SKILL.md");
 
 pub const AGENTS_SNIPPET: &str = "## Memory (rewire)
 This user keeps a portable memory. At the start of a session run `rewire prime` and read its output
@@ -33,7 +35,12 @@ pub static SPAWN_BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::
 
 /// Start `rewire consolidate --pending` in the background; it outlives the hook.
 pub fn spawn_consolidation(brain: &Brain) {
-    spawn_background(brain, "--pending");
+    spawn_background(brain, &["consolidate", "--pending"]);
+}
+
+/// Start `rewire sync` in the background, so a review from the chat reaches the remote without holding the hook.
+pub fn spawn_push(brain: &Brain) {
+    spawn_background(brain, &["sync"]);
 }
 
 /// Start the idle watcher (`rewire consolidate --watch`) unless one is already running for this brain.
@@ -44,7 +51,7 @@ pub fn spawn_watcher(brain: &Brain) {
     // checked here too, so a prompt does not start a process only to see it exit; the watcher checks again
     let free = watch_lock(brain).ok().flatten().is_some(); // released at the end of this statement
     if free {
-        spawn_background(brain, "--watch");
+        spawn_background(brain, &["consolidate", "--watch"]);
     }
 }
 
@@ -86,7 +93,7 @@ pub fn watch(brain: &Brain, mut run: impl FnMut() -> Result<()>) -> Result<()> {
     Ok(())
 }
 
-fn spawn_background(brain: &Brain, mode: &str) {
+fn spawn_background(brain: &Brain, args: &[&str]) {
     if !SPAWN_BACKGROUND.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
@@ -98,7 +105,7 @@ fn spawn_background(brain: &Brain, mode: &str) {
         Err(_) => (Stdio::null(), Stdio::null()),
     };
     let mut cmd = Command::new(exe);
-    cmd.arg("--brain").arg(&brain.root).args(["consolidate", mode]);
+    cmd.arg("--brain").arg(&brain.root).args(args);
     cmd.env("REWIRE_INTERNAL", "1").stdin(Stdio::null()).stdout(out).stderr(err);
     #[cfg(unix)]
     {
@@ -214,6 +221,10 @@ pub fn hook(brain: Brain, event: &str, payload: &Value, harness: &str) -> Result
             return Ok(String::new());
         }
         spawn_watcher(&brain);
+        // a message made only of review commands is carried out, not searched for
+        if let Some(done) = crate::chat_review::run(&brain, payload)? {
+            return Ok(done);
+        }
         return prompt_context(&brain, payload);
     }
     let start = event == "session-start";
@@ -314,6 +325,8 @@ pub fn deny_rules(command: &str, brain: Option<&Path>) -> Vec<String> {
         rules.push(format!("Bash({exe} undo:*)"));
         rules.push(format!("Bash({exe} remote set:*)"));
         rules.push(format!("Bash({exe} install cloud:*)"));
+        // the hook carries out review commands the user sends in the chat: only the harness runs it
+        rules.push(format!("Bash({exe} hook:*)"));
     }
     if let Some(root) = brain {
         // "//" starts an absolute path in a Claude Code permission rule
@@ -406,6 +419,14 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
             "hooks and permission rules (the agent may not approve memories or edit the brain directly) written to {}{}",
             settings_path.display(),
             if had_settings { format!(" (backup: {})", backup.display()) } else { String::new() }
+        ));
+        // next to settings.json: Claude Code reads skills from <config dir>/skills
+        let skill = settings_path.with_file_name("skills").join("rewire-review").join("SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap())?;
+        crate::util::atomic_write(&skill, REVIEW_SKILL)?;
+        lines.push(format!(
+            "/rewire-review skill written to {}: review the inbox in the chat, approve by sending `rewire approve <ids>`",
+            skill.display()
         ));
     } else {
         lines.push(format!("Add to {}:\n{}", settings_path.display(), serde_json::to_string_pretty(&wanted)?));

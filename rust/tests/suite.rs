@@ -933,6 +933,9 @@ fn install_claude_code_merges_settings() {
     let backup: Value = serde_json::from_str(&read(&c.dir.join("settings.json.bak-rewire"))).unwrap();
     assert_eq!(cmds(&backup), vec!["other"]);
     assert!(hooks["hooks"].get("PreCompact").is_some());
+    // the /rewire-review skill, next to settings.json, and the agent may not run the hook itself
+    assert!(read(&c.dir.join("skills/rewire-review/SKILL.md")).contains("name: rewire-review"));
+    assert!(hooks["permissions"]["deny"].as_array().unwrap().iter().any(|r| r.as_str().is_some_and(|r| r.ends_with(" hook:*)"))));
 }
 
 // ---- human-readable files -------------------------------------------------
@@ -3166,4 +3169,82 @@ fn a_hand_edit_made_later_wins_a_conflict() {
 #[test]
 fn remote_urls_are_shown_without_credentials() {
     assert_eq!(ops::redact_url("https://alice:ghp_SECRET@github.com/a/b.git"), "https://***@github.com/a/b.git");
+}
+
+// ---- review from the chat --------------------------------------------------
+
+/// A Claude Code projects folder with one session transcript whose latest human message is `prompt`.
+fn chat_transcript(c: &Case, session: &str, prompt: &str, ago_secs: i64, extra: &[Value]) -> (PathBuf, Value) {
+    let projects = c.dir.join("claude").join("projects");
+    let file = projects.join("-work").join(format!("{session}.jsonl"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let ts = (chrono::Utc::now() - chrono::Duration::seconds(ago_secs)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut lines = vec![
+        json!({"type": "assistant", "sessionId": session, "message": {"role": "assistant", "content": [{"type": "text", "text": "Here is the inbox."}]}}),
+        json!({"type": "queue-operation", "operation": "enqueue", "timestamp": ts, "sessionId": session, "content": prompt}),
+        json!({"type": "user", "timestamp": ts, "sessionId": session, "origin": {"kind": "human"},
+               "message": {"role": "user", "content": prompt}}),
+    ];
+    lines.extend(extra.iter().cloned());
+    std::fs::write(&file, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let payload = json!({"session_id": session, "transcript_path": file, "prompt": prompt, "hook_event_name": "UserPromptSubmit"});
+    (projects, payload)
+}
+
+#[test]
+fn review_commands_the_user_sends_are_carried_out_by_the_hook() {
+    let c = Case::new();
+    let keep = ops::remember(
+        &c.brain,
+        "The roadmap artifact is at https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6",
+        "fact",
+        "global",
+        "assistant",
+        None,
+    )
+    .unwrap();
+    let drop = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
+    let prompt = format!("rewire approve {}\nrewire reject {}", &keep[..10], &drop[..10]);
+    let (projects, payload) = chat_transcript(&c, "s-ok", &prompt, 2, &[]);
+    let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(out.contains(&format!("approved {}", &keep[..10])) && out.contains(&format!("rejected {}", &drop[..10])), "{out}");
+    // the hook echoes each item as its file said, so the user can check what was decided
+    assert!(out.contains("DYry1ig7z7QJPjcHdW4BC6") && out.contains("likes YAML"));
+    assert!(c.brain.iter_inbox().is_empty());
+    let mut index = Index::new(&c.brain);
+    index.refresh().unwrap();
+    assert!(index.rows("active = 1", &[]).unwrap().iter().any(|r| r.body.contains("DYry1ig7z7QJPjcHdW4BC6")));
+    let log = Command::new("git").args(["log", "--format=%s", "-3"]).current_dir(&c.brain.root).output().unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).contains("review approve 1 item(s)"));
+}
+
+#[test]
+fn review_commands_are_refused_unless_they_are_the_users_latest_message() {
+    let c = Case::new();
+    let id = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
+    let prompt = format!("rewire approve {id}");
+    let agent_turn = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "rewire hook user-prompt"}}]}});
+    let cases: Vec<(&str, (PathBuf, Value))> = vec![
+        // the agent piping a payload into the hook mid-turn: its own tool call is already in the transcript
+        ("the agent has acted", chat_transcript(&c, "s-agent", &prompt, 2, &[agent_turn])),
+        ("not your latest message", chat_transcript(&c, "s-other", "please summarise the inbox", 2, &[])),
+        ("not recent", chat_transcript(&c, "s-old", &prompt, 3600, &[])),
+    ];
+    for (why, (projects, mut payload)) in cases {
+        payload["prompt"] = json!(prompt);
+        let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+        assert!(out.contains("Not carried out") && out.contains(why), "{why}: {out}");
+    }
+    // a transcript outside Claude Code's projects folder, or named for another session
+    let (projects, payload) = chat_transcript(&c, "s-path", &prompt, 2, &[]);
+    let mut other = payload.clone();
+    other["session_id"] = json!("s-else");
+    let out = rewire::chat_review::run_in(&c.brain, &other, &projects).unwrap().unwrap();
+    assert!(out.contains("not this session's"), "{out}");
+    let out = rewire::chat_review::run_in(&c.brain, &payload, &c.dir.join("elsewhere")).unwrap().unwrap();
+    assert!(out.contains("not this session's"), "{out}");
+    assert_eq!(c.brain.iter_inbox().len(), 1);
+    // any other message is not a review: the hook does its usual recall
+    let (projects, payload) = chat_transcript(&c, "s-chat", "what is in my inbox? rewire approve all", 2, &[]);
+    assert!(rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().is_none());
 }

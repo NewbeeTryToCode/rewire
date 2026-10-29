@@ -841,84 +841,16 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             let _g = writing(&brain);
             let mut errors = 0;
-            // rules, preferences and skills from other devices: approving shows them here, rejecting is not offered
-            // (it would delete them on every device; edit or delete the file instead)
-            let all = ids == ["all"];
-            let mut inbox_ids = Vec::new();
-            for id in &ids {
-                if let Some(key) = (!all).then(|| ops::unreviewed_key(&brain, id)).flatten() {
-                    if action == "approve" {
-                        ops::trust(&brain, &key)?;
-                        println!("approved {key} (from another device)");
-                    } else if key.starts_with("nodes/") {
-                        // rejecting a rule that came from another device forgets it, on every device once synced
-                        match ops::forget_unreviewed(&brain, &key, "rejected on review") {
-                            Ok(msg) => println!("rejected {key}: {msg}"),
-                            Err(e) => {
-                                eprintln!("! {key}: {e}");
-                                errors += 1;
-                            }
-                        }
-                    } else {
-                        eprintln!("! {key} is a skill from another device: delete its folder to reject it everywhere");
+            for outcome in ops::review(&brain, &action, &ids, force)? {
+                match outcome {
+                    ops::Outcome::Done(l) => println!("{l}"),
+                    ops::Outcome::Skipped(l) => eprintln!("{l}"),
+                    ops::Outcome::Failed(l) => {
+                        eprintln!("{l}");
                         errors += 1;
                     }
-                } else {
-                    inbox_ids.push(id.clone());
                 }
             }
-            if all && action == "approve" {
-                for (key, _, why) in ops::unreviewed(&brain) {
-                    if why.is_empty() || force {
-                        ops::trust(&brain, &key)?;
-                        println!("approved {key} (from another device)");
-                    } else {
-                        eprintln!("skipped flagged item {key} (['{why}']): check it, then approve it by name");
-                    }
-                }
-            }
-            let ids = inbox_ids;
-            let ids: Vec<String> = if all {
-                // "all" never approves items the scan flagged (injection, secret): those need a look and their id
-                // nor proposals that arrived from another device: what they say about themselves is not checked
-                let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
-                    action == "approve"
-                        && !force
-                        && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
-                            || !crate::security::scan(&i.body).is_empty()
-                            || brain.is_untrusted(&i.path))
-                });
-                for item in &flagged {
-                    eprintln!(
-                        "skipped {} ({}): check it, then approve it by id",
-                        item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
-                        if brain.is_untrusted(&item.path) {
-                            "from another device".to_string()
-                        } else {
-                            format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
-                        }
-                    );
-                }
-                clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
-            } else {
-                ids
-            };
-            for id in &ids {
-                let r = if action == "approve" {
-                    ops::approve(&brain, id, force).map(|what| println!("approved {id} → {what}"))
-                } else {
-                    ops::reject(&brain, id).map(|_| println!("rejected {id}"))
-                };
-                match r {
-                    Err(Error::Op(e)) | Err(Error::Schema(e)) => {
-                        eprintln!("! {e}");
-                        errors += 1;
-                    }
-                    other => other?,
-                }
-            }
-            ops::write_home(&brain, &mut Index::new(&brain))?;
-            brain.commit(&format!("review {action} {} item(s)", ids.len()));
             if errors > 0 {
                 std::process::exit(1);
             }
@@ -1095,7 +1027,7 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 /// Python list repr of strings: ['secret', 'injection'].
-fn python_list(v: &Value) -> String {
+pub fn python_list(v: &Value) -> String {
     let items: Vec<String> = v.as_array().map(|a| a.iter().map(|x| format!("'{}'", py_str(x))).collect()).unwrap_or_default();
     format!("[{}]", items.join(", "))
 }

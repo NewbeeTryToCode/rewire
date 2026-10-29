@@ -90,6 +90,22 @@ to what this device keeps (`transcripts`, `profile`) is not taken until you set 
 Other brain.toml settings from the remote apply as they come (budgets and chunk size have floors; recall weights,
 link following and the project map are not checked), so keep the remote private.
 
+### Review from the chat
+
+No terminal at hand (Claude Code on the web, the desktop app, the phone)? Run `/rewire-review`: the agent shows the
+inbox, grouped and with its recommendation, and ends with lines to copy. Send them back as a message of their own:
+
+```
+rewire approve 01M61NFF 01M61NFG0
+rewire reject 01M60TX5
+```
+
+The `UserPromptSubmit` hook carries that out, not the agent: it acts only on a message made of nothing but review
+commands, only when the session's transcript shows the same text as your latest message with no agent turn after it,
+and it replies with each item's text as its file said, the outcome, and one commit in the brain. `rewire install
+claude-code --write` installs the skill and a rule that denies the agent `rewire hook`. As with the other checks,
+this raises the bar and is not a sandbox: an agent that writes the transcript file as you could forge a message.
+
 Harnesses without hooks can still be used: the agent runs `rewire prime` via instructions in AGENTS.md/the skill, and its transcripts are consolidated *lazily* on the next hook or with `rewire consolidate --pending`.
 
 ### Cloud sessions (Claude Code on the web)
@@ -116,7 +132,8 @@ else in it is refused). `REWIRE_REMOTE` turns auto sync on for the brain it name
 
 `REWIRE_REMOTE_TRUSTED=1` makes what comes from the repository count as reviewed in the VM: a VM's review state ends
 with the session, so without it every rule, preference and skill would wait for a review that never comes. The review
-gate therefore does not apply in cloud sessions: review rules on your own machine and keep the repository private.
+gate therefore does not apply in cloud sessions: review the inbox from the chat (see Review from the chat) or on your
+own machine, and keep the repository private.
 `rewire install cloud --review` leaves it off. An agent in the VM can change these settings for its own commands,
 like everything else it can do as you there.
 
