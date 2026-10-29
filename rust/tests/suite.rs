@@ -3329,3 +3329,43 @@ fn duplicate_notes_are_found_and_merged_into_one() {
     assert!(said.contains("merged") && said.contains("tabs over spaces for indentation"), "{said}");
     assert!(!c.brain.get_node(third.id()).unwrap().active());
 }
+
+#[test]
+fn where_a_project_stands_is_proposed_for_its_page_and_set_on_approval() {
+    let c = Case::new();
+    let hub = ops::ensure_project_hub(&c.brain, "proj").unwrap(); // the fixture's session runs in /work/proj
+    let mut out = extraction(vec![], vec![]);
+    out["project_now"] = json!("- Focus: the deploy script\n- Next: add a dry run");
+    run_fixture(&c.brain, Fake::new(vec![out]));
+    let items = c.brain.iter_inbox();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].meta["kind"], "hub_section");
+    assert_eq!(items[0].meta["target"], hub.id());
+    let id = items[0].meta["inbox_id"].as_str().unwrap().to_string();
+    // a model's synthesis is never applied on its own
+    assert!(rewire::hubs::section(&c.brain.get_node(hub.id()).unwrap().body, "Now").is_none());
+    let done = ops::review(&c.brain, "approve", &[id], false).unwrap();
+    assert!(matches!(&done[0], ops::Outcome::Done(l) if l.contains("Now of")), "{done:?}");
+    let page = c.brain.get_node(hub.id()).unwrap().body;
+    assert!(page.starts_with("## Now (as of 2026-10-01)\n\n- Focus: the deploy script"), "{page}");
+    assert!(page.contains(rewire::hubs::BEGIN), "the generated block stays under it: {page}");
+    let snap = rewire::snapshot::build(&c.brain, &mut Index::new(&c.brain), None, Some("proj")).unwrap();
+    assert!(snap.text.contains("Focus: the deploy script"), "{}", snap.text);
+    // the next session is shown the page's current text, and the same text again proposes nothing
+    let c2 = Case::new();
+    let hub2 = ops::ensure_project_hub(&c2.brain, "proj").unwrap();
+    let body = rewire::hubs::set_section(&hub2.body, "Now", "2026-09-30", "- Focus: the deploy script");
+    c2.brain.write_node(&hub2.meta, &body, Some(&hub2.path)).unwrap();
+    let mut same = extraction(vec![], vec![]);
+    same["project_now"] = json!("- Focus: the deploy script");
+    run_fixture(&c2.brain, Fake::new(vec![same]));
+    let prompt = PROMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .rev()
+        .find(|p| p.contains("PROJECT NOW:\n- Focus: the deploy script"))
+        .cloned();
+    assert!(prompt.is_some());
+    assert!(c2.brain.iter_inbox().is_empty());
+}

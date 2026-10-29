@@ -262,18 +262,26 @@ pub fn remember(brain: &Brain, text: &str, type_: &str, scope: &str, provenance:
 
 // ---- applying changes -----------------------------------------------------
 
+/// The current hub (page) of a project, if it has one.
+pub fn project_hub(brain: &Brain, slug: &str) -> Option<Node> {
+    let scope = format!("project:{slug}");
+    let mut paths: Vec<_> = fs::read_dir(brain.path(&["nodes", "project"]))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|p| brain.read_node(&p))
+        .find(|n| n.meta.get("scope").and_then(Value::as_str) == Some(scope.as_str()) && n.active())
+}
+
 pub fn ensure_project_hub(brain: &Brain, slug: &str) -> Result<Node> {
     let scope = format!("project:{slug}");
-    if let Ok(entries) = fs::read_dir(brain.path(&["nodes", "project"])) {
-        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "md")).collect();
-        paths.sort();
-        for p in paths {
-            if let Some(n) = brain.read_node(&p) {
-                if n.meta.get("scope").and_then(Value::as_str) == Some(scope.as_str()) && n.active() {
-                    return Ok(n);
-                }
-            }
-        }
+    if let Some(hub) = project_hub(brain, slug) {
+        return Ok(hub);
     }
     let mut fields = Meta::new();
     fields.insert("scope".into(), json!(scope));
@@ -421,6 +429,22 @@ pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
     let Some(item) = brain.iter_inbox().into_iter().find(|i| i.path == path) else {
         return op(format!("inbox item not found: {inbox_id}"));
     };
+    if item.meta.get("kind").and_then(Value::as_str) == Some("hub_section") {
+        // a project page's section, as the inbox item shows it
+        let Some(hub) = item.meta.get("target").and_then(Value::as_str).and_then(|t| resolve_id(brain, t)).filter(Node::active) else {
+            return op(format!("{inbox_id}: the project page it updates is gone"));
+        };
+        let why = security::scan(&item.body);
+        if !why.is_empty() && !force {
+            return op(format!("{inbox_id}: flagged ({}); check it, then approve with --force or reject", why.join(", ")));
+        }
+        let name = item.meta.get("section").and_then(Value::as_str).unwrap_or(crate::hubs::NOW);
+        let date = item.meta.get("valid_from").and_then(Value::as_str).map(String::from).unwrap_or_else(|| now_iso()[..10].to_string());
+        let body = crate::hubs::set_section(&hub.body, name, &date, &item.body);
+        brain.write_node(&hub.meta, &body, Some(&hub.path))?;
+        fs::remove_file(&path)?;
+        return Ok(format!("{name} of [{}] {}", short_of(hub.id()), hub.title()));
+    }
     if item.meta.get("kind").and_then(Value::as_str) == Some("skill") {
         match skills::apply(brain, &item.meta, &item.body) {
             Err(Error::Op(e)) => return op(format!("{inbox_id}: {e}")),

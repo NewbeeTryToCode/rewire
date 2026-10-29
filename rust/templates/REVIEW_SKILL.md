@@ -23,7 +23,8 @@ Write in the user's language. Group the items and keep each item's text as the i
 2. **Duplicates.** Items that say the same thing as another item or an existing memory: suggest rejecting all but one.
    `rewire review` also lists **possible duplicate notes** already in memory: for a real pair, suggest
    `rewire merge <keep> <other>` (the other becomes superseded by the one kept, and stays in history).
-3. **Everything else**, by type (preference, decision, fact, skill).
+3. **Everything else**, by type (preference, decision, fact, skill). A `SECTION` item is the new "Now" of a project
+   page (where the project stands): show its full text next to the page's current one (`rewire get <target>`).
 
 For each item give its id (its first 12 characters: ids proposed in the same minute share the first 10), type, scope, its full text, and your recommendation:
 approve, reject, or "check" with one line of reason. Mark items labelled `FROM ANOTHER DEVICE` or flagged by the

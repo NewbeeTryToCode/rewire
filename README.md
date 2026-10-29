@@ -101,7 +101,9 @@ rewire reject 01M60TX5CXH8
 rewire merge fg531z4v r5t189wq        # two notes that say the same thing: keep the first
 ```
 
-The `UserPromptSubmit` hook carries that out, not the agent: it acts only on a message made of nothing but review
+Proposals include each project page's `## Now` section (where the project stands: focus, next steps, blockers),
+which consolidation keeps current as a reviewed proposal, one per project. The `UserPromptSubmit` hook carries the
+review out, not the agent: it acts only on a message made of nothing but review
 commands, only when the session's transcript shows the same text as your latest message with no agent turn after it,
 and it replies with each item's text as its file said, the outcome, and one commit in the brain. `rewire install
 claude-code --write` installs the skill and a rule that denies the agent `rewire hook`. As with the other checks,

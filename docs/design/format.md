@@ -104,6 +104,12 @@ A project hub's body ends with a generated block, rewritten (only when it change
 Members are the notes with the hub's scope, and notes of another scope with an `about` link to the hub. The index
 leaves the block out: search, recall snippets and the session-start snapshot read only what a person wrote.
 
+Where the project stands lives in that text as a `## Now (as of <date>)` section: 2-6 lines (focus, next steps,
+blockers, open questions). Consolidation shows the model the current section (`PROJECT NOW`) and, when a session
+changes it, queues the new text as an inbox item with `kind: "hub_section"`, `section: "Now"` and `target` = the
+hub id; at most one waits per project (a newer one replaces it). Approving it sets the section in place, or adds
+it after the rest of the text; nothing else on the page changes.
+
 ## Events
 
 One JSON object per line, keys sorted, `ensure_ascii=False`, Python default separators (`", "`, `": "`).

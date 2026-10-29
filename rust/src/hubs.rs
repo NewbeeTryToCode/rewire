@@ -43,6 +43,49 @@ pub fn with_block(body: &str, block: &str) -> String {
     }
 }
 
+/// The heading of the section that says where a project stands, kept up to date through review.
+pub const NOW: &str = "Now";
+
+/// The text of a `## <name>` section in what a person wrote (heading line excluded), if there is one.
+pub fn section(body: &str, name: &str) -> Option<String> {
+    let own = strip(body);
+    let lines: Vec<&str> = own.lines().collect();
+    let start = lines.iter().position(|l| is_heading(l, name))?;
+    let end = lines[start + 1..].iter().position(|l| l.starts_with("## ")).map(|e| start + 1 + e).unwrap_or(lines.len());
+    Some(lines[start + 1..end].join("\n").trim().to_string())
+}
+
+fn is_heading(line: &str, name: &str) -> bool {
+    line.strip_prefix("## ").is_some_and(|h| h == name || h.starts_with(&format!("{name} (")))
+}
+
+/// The body with its `## <name>` section set to `text` (headed "<name> (as of <date>)"), added after what a person
+/// wrote when there is none yet. The rest of the text and the generated block are kept.
+pub fn set_section(body: &str, name: &str, date: &str, text: &str) -> String {
+    let own = strip(body);
+    let block = body.find(BEGIN).map(|s| body[s..].to_string());
+    let mut lines: Vec<String> = own.lines().map(String::from).collect();
+    let new = vec![format!("## {name} (as of {date})"), String::new(), text.trim().to_string()];
+    match lines.iter().position(|l| is_heading(l, name)) {
+        Some(start) => {
+            let end = lines[start + 1..].iter().position(|l| l.starts_with("## ")).map(|e| start + 1 + e).unwrap_or(lines.len());
+            let tail = if end < lines.len() { vec![String::new()] } else { Vec::new() };
+            lines.splice(start..end, new.into_iter().chain(tail));
+        }
+        None => {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.extend(new);
+        }
+    }
+    let own = lines.join("\n").trim().to_string();
+    match block {
+        Some(b) => with_block(&own, b.trim()),
+        None => own,
+    }
+}
+
 fn link(title: &str, target: &Path, dir: &Path) -> String {
     format!("[{}]({})", title.replace('[', "(").replace(']', ")"), relpath(target, dir))
 }
@@ -168,5 +211,16 @@ mod tests {
         assert_eq!(with_block(&body, &newer), format!("Goal: own the memory.\n\n{newer}"));
         assert_eq!(strip(&body), "Goal: own the memory.");
         assert_eq!(strip(&block), "");
+    }
+
+    #[test]
+    fn the_now_section_is_set_in_place_or_added() {
+        let block = format!("{BEGIN}\n\n## Facts\n\n- y\n\n{END}");
+        let body = set_section(&with_block("Goal: own the memory.", &block), NOW, "2026-10-29", "- Focus: hubs");
+        assert_eq!(body, format!("Goal: own the memory.\n\n## Now (as of 2026-10-29)\n\n- Focus: hubs\n\n{block}"));
+        assert_eq!(section(&body, NOW).as_deref(), Some("- Focus: hubs"));
+        let mid = "Goal.\n\n## Now (as of 2026-10-01)\n\n- old\n\n## Brief\n\nkeep me";
+        assert_eq!(set_section(mid, NOW, "2026-10-29", "- new"), "Goal.\n\n## Now (as of 2026-10-29)\n\n- new\n\n## Brief\n\nkeep me");
+        assert_eq!(section("## Nowhere\n\nx", NOW), None);
     }
 }
