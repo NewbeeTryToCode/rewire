@@ -169,6 +169,9 @@ pub enum Cmd {
         keep: String,
         #[arg(required = true)]
         drops: Vec<String>,
+        /// the kept note's new text, saying what all of them said (otherwise its text stays as it is)
+        #[arg(long)]
+        text: Option<String>,
     },
     /// retract a note (by id, short id or title); it stays in git history
     Forget {
@@ -927,7 +930,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 println!("… {} more (-n {})", list.len() - limit, list.len());
             }
         }
-        Cmd::Merge { keep, drops } => {
+        Cmd::Merge { keep, drops, text } => {
             let brain = open_brain(bp);
             // which notes stay current in every future session: the user's call, like forget
             if let Some(marker) = agent_shell() {
@@ -935,7 +938,7 @@ pub fn run(cli: Cli) -> Result<()> {
             }
             let _g = writing(&brain);
             let mut errors = 0;
-            for outcome in ops::merge(&brain, &keep, &drops)? {
+            for outcome in ops::merge(&brain, &keep, &drops, text.as_deref())? {
                 match outcome {
                     ops::Outcome::Done(l) | ops::Outcome::Skipped(l) => println!("{l}"),
                     ops::Outcome::Failed(l) => {

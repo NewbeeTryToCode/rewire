@@ -914,7 +914,14 @@ fn prompt_hook_adds_only_new_relevant_notes() {
 fn install_claude_code_merges_settings() {
     let c = Case::new();
     let path = c.dir.join("settings.json");
-    std::fs::write(&path, json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "other"}]}]}}).to_string()).unwrap();
+    // an older install of the per-prompt hook, with less time than a review from the chat needs
+    std::fs::write(
+        &path,
+        json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "other"}]}],
+                         "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "rewire hook user-prompt", "timeout": 5}]}]}})
+        .to_string(),
+    )
+    .unwrap();
     integrations::install_claude_code(true, Some(&path), Some(&c.brain.root)).unwrap();
     integrations::install_claude_code(true, Some(&path), Some(&c.brain.root)).unwrap(); // idempotent
     let hooks: Value = serde_json::from_str(&read(&path)).unwrap();
@@ -933,6 +940,9 @@ fn install_claude_code_merges_settings() {
     let backup: Value = serde_json::from_str(&read(&c.dir.join("settings.json.bak-rewire"))).unwrap();
     assert_eq!(cmds(&backup), vec!["other"]);
     assert!(hooks["hooks"].get("PreCompact").is_some());
+    let prompt_hooks = hooks["hooks"]["UserPromptSubmit"].as_array().unwrap();
+    assert_eq!(prompt_hooks.len(), 1, "not installed twice: {prompt_hooks:?}");
+    assert_eq!(prompt_hooks[0]["hooks"][0]["timeout"], 15);
     // the /rewire-review skill, next to settings.json, and the agent may not run the hook itself
     assert!(read(&c.dir.join("skills/rewire-review/SKILL.md")).contains("name: rewire-review"));
     assert!(hooks["permissions"]["deny"].as_array().unwrap().iter().any(|r| r.as_str().is_some_and(|r| r.ends_with(" hook:*)"))));
@@ -3311,7 +3321,7 @@ fn duplicate_notes_are_found_and_merged_into_one() {
     // not across types, not unrelated notes
     assert!(!ids.iter().any(|(a, b)| [a, b].iter().any(|x| *x == other.id() || *x == fact.id())), "{ids:?}");
     let short = |n: &rewire::brain::Node| rewire::util::short_of(n.id());
-    let out = ops::merge(&c.brain, &short(&keep), &[short(&twin), short(&fact), "zzzzzzzz".into()]).unwrap();
+    let out = ops::merge(&c.brain, &short(&keep), &[short(&twin), short(&fact), "zzzzzzzz".into()], None).unwrap();
     assert!(matches!(&out[0], ops::Outcome::Done(l) if l.starts_with("merged")), "{out:?}");
     assert!(matches!(&out[1], ops::Outcome::Failed(l) if l.contains("same type")), "{out:?}");
     assert!(matches!(&out[2], ops::Outcome::Failed(_)), "{out:?}");
@@ -3398,9 +3408,9 @@ fn merge_walkthrough_on_a_project_page() {
     let found: Vec<(String, String)> = pairs.iter().map(|(a, b)| (a.title().to_string(), b.title().to_string())).collect();
     println!("=====FILE duplicates.txt\n{found:#?}");
     assert!(pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&keep.id()) && [a.id(), b.id()].contains(&twin.id())));
-    // known limit: the same fact in two languages shares too few words to be found
+    // without keywords (consolidation writes them in both languages) the same fact in two languages is not found
     assert!(!pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&id_id.id()) && [a.id(), b.id()].contains(&id_en.id())));
-    let out = ops::merge(&c.brain, &rewire::util::short_of(keep.id()), &[rewire::util::short_of(twin.id())]).unwrap();
+    let out = ops::merge(&c.brain, &rewire::util::short_of(keep.id()), &[rewire::util::short_of(twin.id())], None).unwrap();
     println!("=====FILE merge-output.txt\n{out:#?}");
     let hub = c.brain.get_node(hub.id()).unwrap();
     show("after/hub.md", &hub.path);
@@ -3444,4 +3454,51 @@ fn a_review_sent_through_the_slash_command_is_verified_against_what_was_typed() 
     let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
     assert!(out.contains("rejected"), "{out}");
     assert!(c.brain.iter_inbox().is_empty());
+}
+
+#[test]
+fn a_merge_can_carry_the_merged_text_and_the_merged_note_points_to_it() {
+    let mut c = Case::new();
+    let keep = c.add(
+        "fact",
+        "PR #9 stores the links of artifacts in session records",
+        json!({"keywords": ["pr #9", "outputs", "artifact", "link"]}),
+    );
+    let twin = c.add(
+        "fact",
+        "PR #9 was merged on 2026-10-29 and keeps pull request links too",
+        json!({"keywords": ["pr #9", "merged", "pull request", "link"]}),
+    );
+    let short = |n: &rewire::brain::Node| rewire::util::short_of(n.id());
+    // a text the schema refuses (claims are at most 600 characters) changes nothing
+    let long = "x ".repeat(400);
+    let out = ops::merge(&c.brain, &short(&keep), &[short(&twin)], Some(&long)).unwrap();
+    assert!(matches!(&out[0], ops::Outcome::Failed(l) if l.contains("nothing merged")), "{out:?}");
+    assert!(c.brain.get_node(twin.id()).unwrap().active());
+    let merged = "PR #9 (merged 2026-10-29) stores the links of artifacts and pull requests in session records.";
+    let prompt = format!("rewire merge {} {} --text \"{merged}\"", short(&keep), short(&twin));
+    let (projects, payload) = chat_transcript(&c, "s-text", &prompt, 2, &[]);
+    let said = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(said.contains("now says: PR #9 (merged 2026-10-29)"), "{said}");
+    assert_eq!(c.brain.get_node(keep.id()).unwrap().body.trim(), merged);
+    // the merged note says what replaced it
+    let page = read(&c.brain.get_node(twin.id()).unwrap().path);
+    assert!(page.contains("superseded_by: \"[[") && page.contains("- superseded by: [PR #9 stores the links"), "{page}");
+}
+
+#[test]
+fn the_same_claim_in_two_languages_is_found_through_its_keywords() {
+    let mut c = Case::new();
+    let id = c.add(
+        "fact",
+        "Pengguna memakai akun GitHub NewbeeTryToCode untuk repo rewire dan brain",
+        json!({"keywords": ["github", "akun", "account", "newbeetrytocode", "repo", "identitas"]}),
+    );
+    let en = c.add(
+        "fact",
+        "The user's GitHub account is NewbeeTryToCode, which owns the rewire repository",
+        json!({"keywords": ["github", "account", "akun", "newbeetrytocode", "repository", "identity"]}),
+    );
+    let pairs = ops::duplicates(&c.brain);
+    assert!(pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&id.id()) && [a.id(), b.id()].contains(&en.id())), "{}", pairs.len());
 }

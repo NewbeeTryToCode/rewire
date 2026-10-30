@@ -307,7 +307,7 @@ pub fn claude_code_settings(command: &str, brain: Option<&Path>) -> Value {
     let entry =
         |evt: &str, timeout: u64| json!([{"hooks": [{"type": "command", "command": format!("{command} hook {evt}"), "timeout": timeout}]}]);
     json!({
-        "hooks": {"SessionStart": entry("session-start", 60), "UserPromptSubmit": entry("user-prompt", 5), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)},
+        "hooks": {"SessionStart": entry("session-start", 60), "UserPromptSubmit": entry("user-prompt", 15), "SessionEnd": entry("session-end", 5), "PreCompact": entry("pre-compact", 5)},
         "permissions": {"deny": deny_rules(command, brain)},
     })
 }
@@ -396,6 +396,17 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
             });
             if !present {
                 existing.extend(entries.as_array().into_iter().flatten().cloned());
+            }
+            // an older install gave the hook less time than this version needs (a review from the chat runs in it)
+            let wanted_timeout = entries[0]["hooks"][0]["timeout"].as_u64().unwrap_or(0);
+            for h in existing.iter_mut().filter_map(|e| e.get_mut("hooks").and_then(Value::as_array_mut)).flatten() {
+                let ours = h
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c == wanted_cmd || (c.ends_with(&suffix) && c.contains("rewire")));
+                if ours && h.get("timeout").and_then(Value::as_u64).is_some_and(|t| t < wanted_timeout) {
+                    h["timeout"] = json!(wanted_timeout);
+                }
             }
         }
         let deny = obj

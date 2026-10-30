@@ -22,12 +22,16 @@ const TAIL_BYTES: u64 = 512 * 1024;
 const MAX_IDS: usize = 50;
 
 /// The review commands a message consists of, or None when it is anything else. Every non-empty line must be
-/// `rewire approve|reject <id>…` or `rewire merge <keep> <other>…` (also after `/rewire-review`): a command inside
-/// other text, a pasted document say, is never acted on.
-pub fn parse(prompt: &str) -> Option<Vec<(String, Vec<String>)>> {
+/// `rewire approve|reject <id>…` or `rewire merge <keep> <other>… [--text "<merged text>"]` (also after
+/// `/rewire-review`): a command inside other text, a pasted document say, is never acted on. Each command is
+/// (action, ids, the merged text if given).
+pub fn parse(prompt: &str) -> Option<Vec<Command>> {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = R.get_or_init(|| {
-        regex::Regex::new(r"^(?:rewire|/rewire-review)\s+(approve|reject|merge)((?:\s+(?:all|[0-9A-Za-z]{4,26}))+)\s*$").unwrap()
+        regex::Regex::new(
+            r#"^(?:rewire|/rewire-review)\s+(approve|reject|merge)((?:\s+(?:all|[0-9A-Za-z]{4,26}))+)(?:\s+--text\s+"((?:[^"\\]|\\.)*)")?\s*$"#,
+        )
+        .unwrap()
     });
     let mut commands = Vec::new();
     let mut count = 0;
@@ -35,14 +39,19 @@ pub fn parse(prompt: &str) -> Option<Vec<(String, Vec<String>)>> {
         let c = re.captures(line)?;
         let ids: Vec<String> = c[2].split_whitespace().map(String::from).collect();
         let all = ids.iter().any(|i| i == "all");
-        if (ids.len() > 1 && all) || (&c[1] == "merge" && (all || ids.len() < 2)) {
+        let merge = &c[1] == "merge";
+        if (ids.len() > 1 && all) || (merge && (all || ids.len() < 2)) || (!merge && c.get(3).is_some()) {
             return None;
         }
+        let text = c.get(3).map(|t| t.as_str().replace("\\\"", "\"").replace("\\\\", "\\"));
         count += ids.len();
-        commands.push((c[1].to_string(), ids));
+        commands.push((c[1].to_string(), ids, text));
     }
     (!commands.is_empty() && count <= MAX_IDS).then_some(commands)
 }
+
+/// (action, ids, merged text) of one review command.
+pub type Command = (String, Vec<String>, Option<String>);
 
 fn claude_projects() -> PathBuf {
     crate::brain::expand_user(&std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| "~/.claude".into())).join("projects")
@@ -154,7 +163,7 @@ pub fn run_in(brain: &Brain, payload: &Value, projects: &Path) -> Result<Option<
     let shown = |title: &str, body: &str| {
         snapshot::printable(&format!("{title}: {}", body.trim().replace('\n', " "))).chars().take(300).collect::<String>()
     };
-    for (action, ids) in &commands {
+    for (action, ids, _) in &commands {
         for typed in ids.iter().filter(|i| *i != "all") {
             if action == "merge" {
                 // merged are notes already in memory, not inbox items
@@ -183,8 +192,12 @@ pub fn run_in(brain: &Brain, payload: &Value, projects: &Path) -> Result<Option<
             }
             Err(e) => return Err(e),
         };
-        for (action, ids) in &commands {
-            let outcomes = if action == "merge" { ops::merge(brain, &ids[0], &ids[1..])? } else { ops::review(brain, action, ids, false)? };
+        for (action, ids, text) in &commands {
+            let outcomes = if action == "merge" {
+                ops::merge(brain, &ids[0], &ids[1..], text.as_deref())?
+            } else {
+                ops::review(brain, action, ids, false)?
+            };
             for outcome in outcomes {
                 let (Outcome::Done(l) | Outcome::Skipped(l) | Outcome::Failed(l)) = outcome;
                 lines.push(format!("- {l}"));
@@ -211,10 +224,15 @@ mod tests {
     #[test]
     fn only_messages_made_of_review_commands() {
         let p = parse("rewire approve 01M61NFF 01m61nfg0\n\nrewire reject 01M60TX5").unwrap();
-        assert_eq!(p[0], ("approve".to_string(), vec!["01M61NFF".to_string(), "01m61nfg0".to_string()]));
-        assert_eq!(p[1], ("reject".to_string(), vec!["01M60TX5".to_string()]));
+        assert_eq!(p[0], ("approve".to_string(), vec!["01M61NFF".to_string(), "01m61nfg0".to_string()], None));
+        assert_eq!(p[1], ("reject".to_string(), vec!["01M60TX5".to_string()], None));
         assert_eq!(parse("/rewire-review approve all").unwrap()[0].1, ["all"]);
-        assert_eq!(parse("rewire merge fg531z4v r5t189wq").unwrap()[0], ("merge".to_string(), vec!["fg531z4v".into(), "r5t189wq".into()]));
+        assert_eq!(
+            parse("rewire merge fg531z4v r5t189wq").unwrap()[0],
+            ("merge".to_string(), vec!["fg531z4v".into(), "r5t189wq".into()], None)
+        );
+        let merged = parse(r#"rewire merge fg531z4v r5t189wq --text "PR #9 adds \"Outputs\"; merged 2026-10-29""#).unwrap();
+        assert_eq!(merged[0].2.as_deref(), Some(r#"PR #9 adds "Outputs"; merged 2026-10-29"#));
         for text in [
             "please rewire approve 01M61NFF",
             "rewire approve 01M61NFF\nand also this",
@@ -225,6 +243,8 @@ mod tests {
             "rewire forget 01M61NFF",
             "rewire merge fg531z4v",
             "rewire merge all fg531z4v",
+            r#"rewire approve 01M61NFF --text "x""#,
+            r#"rewire merge fg531z4v r5t189wq --text "unclosed"#,
         ] {
             assert!(parse(text).is_none(), "{text:?}");
         }

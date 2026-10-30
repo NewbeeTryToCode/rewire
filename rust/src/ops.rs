@@ -375,11 +375,17 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
         old.insert("retracted_at".into(), json!(now_iso()));
         if action == "SUPERSEDE" {
             old.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
+            old.insert("superseded_by".into(), json!(stem_link(&node)));
         }
         brain.write_node(&old, &target.body, Some(&target.path))?;
         return Ok(node);
     }
     brain.write_node(&meta, &text, None)
+}
+
+/// `[[<file stem>]]` of a note, as relation keys write it.
+fn stem_link(node: &Node) -> String {
+    format!("[[{}]]", node.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
 /// Fingerprint of a note's content, pinned on inbox items that change an existing note.
@@ -576,13 +582,25 @@ pub fn review(brain: &Brain, action: &str, ids: &[String], force: bool) -> Resul
 }
 
 /// Fold notes that say the same thing into one: each of `drops` becomes superseded by `keep` (kept in history,
-/// out of recall and the snapshot), and `keep` takes over their search keywords. Notes only, of one type: two
+/// out of recall and the snapshot, pointing to `keep`), and `keep` takes over their search keywords and, when the
+/// user gives one, a merged `text` that says what all of them said. Notes only, of one type: two
 /// proposals in the inbox are settled by approving one and rejecting the other. The caller holds the brain lock
 /// and has made sure the user asked.
-pub fn merge(brain: &Brain, keep: &str, drops: &[String]) -> Result<Vec<Outcome>> {
+pub fn merge(brain: &Brain, keep: &str, drops: &[String], text: Option<&str>) -> Result<Vec<Outcome>> {
     let Some(kept) = resolve_id(brain, keep).filter(Node::active) else {
         return Ok(vec![Outcome::Failed(format!("! {keep}: no current note with this id"))]);
     };
+    // the merged text the user gave, checked like any note before anything changes
+    let text = text.map(str::trim).filter(|t| !t.is_empty());
+    if let Some(t) = text {
+        let why = security::scan(t);
+        if !why.is_empty() {
+            return Ok(vec![Outcome::Failed(format!("! the merged text is flagged ({}): nothing merged", why.join(", ")))]);
+        }
+        if let Err(e) = schema::validate(&kept.meta, t) {
+            return Ok(vec![Outcome::Failed(format!("! the merged text: {e}; nothing merged"))]);
+        }
+    }
     let type_of = |n: &Node| n.meta.get("type").and_then(Value::as_str).unwrap_or("").to_string();
     let mut out = Vec::new();
     let mut meta = kept.meta.clone();
@@ -600,6 +618,7 @@ pub fn merge(brain: &Brain, keep: &str, drops: &[String]) -> Result<Vec<Outcome>
         let mut gone = old.meta.clone();
         gone.insert("retracted_at".into(), json!(now_iso()));
         gone.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
+        gone.insert("superseded_by".into(), json!(stem_link(&kept)));
         brain.write_node(&gone, &old.body, Some(&old.path))?;
         if let Some(Value::Array(e)) = meta.get_mut("edges") {
             e.push(json!({"rel": "supersedes", "to": old.id()}));
@@ -614,15 +633,24 @@ pub fn merge(brain: &Brain, keep: &str, drops: &[String]) -> Result<Vec<Outcome>
     }
     if merged > 0 {
         meta.insert("keywords".into(), Value::Array(keywords));
-        brain.write_node(&meta, &kept.body, Some(&kept.path))?;
+        let body = match text {
+            Some(t) => {
+                meta.insert("recorded_at".into(), json!(now_iso()));
+                out.push(Outcome::Done(format!("[{}] now says: {t}", short_of(kept.id()))));
+                t.to_string()
+            }
+            None => kept.body.clone(),
+        };
+        brain.write_node(&meta, &body, Some(&kept.path))?;
         write_home(brain, &mut Index::new(brain))?;
         brain.commit(&format!("merge {merged} note(s) into {}", short_of(kept.id())));
     }
     Ok(out)
 }
 
-/// Pairs of current notes (same type and scope) whose words mostly agree, likeliest first: candidates for
-/// `merge`, shown by `rewire review`. Words only: the same claim in two languages is found through its keywords.
+/// Pairs of current notes (same type and scope) whose words mostly agree, or whose keywords do, likeliest first:
+/// candidates for `merge`, shown by `rewire review`. Consolidation writes keywords in English and in the user's
+/// language, so the same claim written in two languages is found through them.
 pub fn duplicates(brain: &Brain) -> Vec<(Node, Node)> {
     let notes: Vec<Node> =
         brain.iter_nodes().into_iter().filter(|n| n.active() && n.meta.get("type").and_then(Value::as_str) != Some("project")).collect();
@@ -633,6 +661,19 @@ pub fn duplicates(brain: &Brain) -> Vec<(Node, Node)> {
     // each note's words worked out once: the pairs are many
     let words: Vec<(Vec<String>, std::collections::HashSet<String>)> =
         notes.iter().map(|n| (text::content_words(&text(n)), text::tokens(&text(n)))).collect();
+    let keywords: Vec<std::collections::HashSet<String>> = notes
+        .iter()
+        .map(|n| {
+            n.meta
+                .get("keywords")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|k| k.trim().to_lowercase())
+                .collect()
+        })
+        .collect();
     let mut pairs = Vec::new();
     for i in 0..notes.len().min(1000) {
         for j in i + 1..notes.len().min(1000) {
@@ -640,6 +681,15 @@ pub fn duplicates(brain: &Brain) -> Vec<(Node, Node)> {
             let ((wa, ta), (wb, tb)) = (&words[i], &words[j]);
             if !same("type") || !same("scope") || wa.len() < 3 || wb.len() < 3 {
                 continue;
+            }
+            // the same search terms (8-15 a note, in both languages): the same claim, whatever language its text is in
+            let (ka, kb) = (&keywords[i], &keywords[j]);
+            if ka.len() >= 4 && kb.len() >= 4 {
+                let shared = ka.intersection(kb).count() as f64 / ka.len().min(kb.len()) as f64;
+                if shared >= 0.6 {
+                    pairs.push((shared, i, j));
+                    continue;
+                }
             }
             // most pairs share almost no word: skip them before the stem-aware count
             if wa.iter().filter(|w| tb.contains(*w)).count() * 4 < wa.len().min(wb.len()) {

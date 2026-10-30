@@ -62,6 +62,7 @@ them, then any other keys in their original order.
 | `source` | `"<harness> · <full session id> · turn <n>"` (any part may be absent) |
 | `keywords` | list of lowercase search terms (optional) |
 | relation keys | `about`, `part_of`, `depends_on`, `related_to`, `supersedes`, `contradicts`: list of `"[[<target file stem>]]"` |
+| `superseded_by` | `"[[<file stem>]]"` of the note that replaced this one (set by SUPERSEDE and `merge`; shown under Related) |
 
 Derived keys (`status`, `aliases`, `tags`) are regenerated on every write and ignored on read. A claim body
 (constraint, preference, fact, decision) is at most 600 characters.

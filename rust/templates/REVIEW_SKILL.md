@@ -22,7 +22,10 @@ Write in the user's language. Group the items and keep each item's text as the i
 1. **Constraints and contradictions first.** These change future sessions the most.
 2. **Duplicates.** Items that say the same thing as another item or an existing memory: suggest rejecting all but one.
    `rewire review` also lists **possible duplicate notes** already in memory: for a real pair, suggest
-   `rewire merge <keep> <other>` (the other becomes superseded by the one kept, and stays in history).
+   `rewire merge <keep> <other>` (the other becomes superseded by the one kept, and stays in history). When the
+   other note says something the kept one does not, draft one merged text (at most 600 characters, every fact from
+   both, nothing new, in the language of the notes) and suggest `rewire merge <keep> <other> --text "<text>"`,
+   showing the text so the user can check it. Escape a `"` inside the text as `\"`.
 3. **Everything else**, by type (preference, decision, fact, skill). A `SECTION` item is the new "Now" of a project
    page (where the project stands): show its full text next to the page's current one (`rewire get <target>`).
 

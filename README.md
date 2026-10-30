@@ -99,6 +99,7 @@ inbox, grouped and with its recommendation, and ends with lines to copy. Send th
 rewire approve 01M61NFFZ5J8 01M61NFG063W
 rewire reject 01M60TX5CXH8
 rewire merge fg531z4v r5t189wq        # two notes that say the same thing: keep the first
+rewire merge fg531z4v r5t189wq --text "<one text saying what both said>"
 ```
 
 Proposals include each project page's `## Now` section (where the project stands: focus, next steps, blockers),
@@ -155,7 +156,7 @@ rewire get <id>                   # or: rewire get skill:<name>
 rewire remember --type preference "Always write tests before features"   # goes to the inbox (scope: this project, or --scope global)
 rewire review                     # view the inbox
 rewire review approve <id|all>    # --force if the target note has changed since it was proposed
-rewire merge <keep> <other>       # two notes say the same thing: the other is superseded by the one kept
+rewire merge <keep> <other>       # two notes say the same thing: the other is superseded by the one kept (--text "…" rewrites it)
 rewire forget <id>                # retract a note (it stays in git history)
 rewire consolidate --pending      # process pending transcripts (--retry: the ones that failed)
 rewire import sessions.jsonl      # import chat history (JSON lines); --llm also consolidates it
