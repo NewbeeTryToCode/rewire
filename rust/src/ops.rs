@@ -262,18 +262,26 @@ pub fn remember(brain: &Brain, text: &str, type_: &str, scope: &str, provenance:
 
 // ---- applying changes -----------------------------------------------------
 
+/// The current hub (page) of a project, if it has one.
+pub fn project_hub(brain: &Brain, slug: &str) -> Option<Node> {
+    let scope = format!("project:{slug}");
+    let mut paths: Vec<_> = fs::read_dir(brain.path(&["nodes", "project"]))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|p| brain.read_node(&p))
+        .find(|n| n.meta.get("scope").and_then(Value::as_str) == Some(scope.as_str()) && n.active())
+}
+
 pub fn ensure_project_hub(brain: &Brain, slug: &str) -> Result<Node> {
     let scope = format!("project:{slug}");
-    if let Ok(entries) = fs::read_dir(brain.path(&["nodes", "project"])) {
-        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "md")).collect();
-        paths.sort();
-        for p in paths {
-            if let Some(n) = brain.read_node(&p) {
-                if n.meta.get("scope").and_then(Value::as_str) == Some(scope.as_str()) && n.active() {
-                    return Ok(n);
-                }
-            }
-        }
+    if let Some(hub) = project_hub(brain, slug) {
+        return Ok(hub);
     }
     let mut fields = Meta::new();
     fields.insert("scope".into(), json!(scope));
@@ -367,11 +375,17 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
         old.insert("retracted_at".into(), json!(now_iso()));
         if action == "SUPERSEDE" {
             old.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
+            old.insert("superseded_by".into(), json!(stem_link(&node)));
         }
         brain.write_node(&old, &target.body, Some(&target.path))?;
         return Ok(node);
     }
     brain.write_node(&meta, &text, None)
+}
+
+/// `[[<file stem>]]` of a note, as relation keys write it.
+fn stem_link(node: &Node) -> String {
+    format!("[[{}]]", node.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
 /// Fingerprint of a note's content, pinned on inbox items that change an existing note.
@@ -421,6 +435,22 @@ pub fn approve(brain: &Brain, inbox_id: &str, force: bool) -> Result<String> {
     let Some(item) = brain.iter_inbox().into_iter().find(|i| i.path == path) else {
         return op(format!("inbox item not found: {inbox_id}"));
     };
+    if item.meta.get("kind").and_then(Value::as_str) == Some("hub_section") {
+        // a project page's section, as the inbox item shows it
+        let Some(hub) = item.meta.get("target").and_then(Value::as_str).and_then(|t| resolve_id(brain, t)).filter(Node::active) else {
+            return op(format!("{inbox_id}: the project page it updates is gone"));
+        };
+        let why = security::scan(&item.body);
+        if !why.is_empty() && !force {
+            return op(format!("{inbox_id}: flagged ({}); check it, then approve with --force or reject", why.join(", ")));
+        }
+        let name = item.meta.get("section").and_then(Value::as_str).unwrap_or(crate::hubs::NOW);
+        let date = item.meta.get("valid_from").and_then(Value::as_str).map(String::from).unwrap_or_else(|| now_iso()[..10].to_string());
+        let body = crate::hubs::set_section(&hub.body, name, &date, &item.body);
+        brain.write_node(&hub.meta, &body, Some(&hub.path))?;
+        fs::remove_file(&path)?;
+        return Ok(format!("{name} of [{}] {}", short_of(hub.id()), hub.title()));
+    }
     if item.meta.get("kind").and_then(Value::as_str) == Some("skill") {
         match skills::apply(brain, &item.meta, &item.body) {
             Err(Error::Op(e)) => return op(format!("{inbox_id}: {e}")),
@@ -461,6 +491,218 @@ pub fn reject(brain: &Brain, inbox_id: &str) -> Result<()> {
     }
     fs::remove_file(path)?;
     Ok(())
+}
+
+/// What a review did to one item: done, left alone on purpose, or not done.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    Done(String),
+    Skipped(String),
+    Failed(String),
+}
+
+/// Approve or reject inbox items, and rules, preferences and skills from other devices, by id or `all`; then
+/// rewrite the home page and commit. The one path for `rewire review` in a terminal and for the review commands
+/// the user sends in the chat (chat_review): the caller holds the brain lock and has made sure the user asked.
+pub fn review(brain: &Brain, action: &str, ids: &[String], force: bool) -> Result<Vec<Outcome>> {
+    use crate::cli::{py_str, python_list};
+    let mut out = Vec::new();
+    // rules, preferences and skills from other devices: approving shows them here, rejecting is not offered
+    // (it would delete them on every device; edit or delete the file instead)
+    let all = ids.len() == 1 && ids[0] == "all";
+    let mut inbox_ids = Vec::new();
+    for id in ids {
+        if let Some(key) = (!all).then(|| unreviewed_key(brain, id)).flatten() {
+            if action == "approve" {
+                trust(brain, &key)?;
+                out.push(Outcome::Done(format!("approved {key} (from another device)")));
+            } else if key.starts_with("nodes/") {
+                // rejecting a rule that came from another device forgets it, on every device once synced
+                out.push(match forget_unreviewed(brain, &key, "rejected on review") {
+                    Ok(msg) => Outcome::Done(format!("rejected {key}: {msg}")),
+                    Err(e) => Outcome::Failed(format!("! {key}: {e}")),
+                });
+            } else {
+                out.push(Outcome::Failed(format!("! {key} is a skill from another device: delete its folder to reject it everywhere")));
+            }
+        } else {
+            inbox_ids.push(id.clone());
+        }
+    }
+    if all && action == "approve" {
+        for (key, _, why) in unreviewed(brain) {
+            if why.is_empty() || force {
+                trust(brain, &key)?;
+                out.push(Outcome::Done(format!("approved {key} (from another device)")));
+            } else {
+                out.push(Outcome::Skipped(format!("skipped flagged item {key} (['{why}']): check it, then approve it by name")));
+            }
+        }
+    }
+    let ids: Vec<String> = if all {
+        // "all" never approves items the scan flagged (injection, secret): those need a look and their id
+        // nor proposals that arrived from another device: what they say about themselves is not checked
+        let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
+            action == "approve"
+                && !force
+                && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                    || !security::scan(&i.body).is_empty()
+                    || brain.is_untrusted(&i.path))
+        });
+        for item in &flagged {
+            out.push(Outcome::Skipped(format!(
+                "skipped {} ({}): check it, then approve it by id",
+                item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
+                if brain.is_untrusted(&item.path) {
+                    "from another device".to_string()
+                } else {
+                    format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
+                }
+            )));
+        }
+        clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
+    } else {
+        inbox_ids
+    };
+    for id in &ids {
+        let r = if action == "approve" {
+            approve(brain, id, force).map(|what| format!("approved {id} → {what}"))
+        } else {
+            reject(brain, id).map(|_| format!("rejected {id}"))
+        };
+        match r {
+            Ok(done) => out.push(Outcome::Done(done)),
+            Err(Error::Op(e)) | Err(Error::Schema(e)) => out.push(Outcome::Failed(format!("! {e}"))),
+            Err(e) => return Err(e),
+        }
+    }
+    write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("review {action} {} item(s)", ids.len()));
+    Ok(out)
+}
+
+/// Fold notes that say the same thing into one: each of `drops` becomes superseded by `keep` (kept in history,
+/// out of recall and the snapshot, pointing to `keep`), and `keep` takes over their search keywords and, when the
+/// user gives one, a merged `text` that says what all of them said. Notes only, of one type: two
+/// proposals in the inbox are settled by approving one and rejecting the other. The caller holds the brain lock
+/// and has made sure the user asked.
+pub fn merge(brain: &Brain, keep: &str, drops: &[String], text: Option<&str>) -> Result<Vec<Outcome>> {
+    let Some(kept) = resolve_id(brain, keep).filter(Node::active) else {
+        return Ok(vec![Outcome::Failed(format!("! {keep}: no current note with this id"))]);
+    };
+    // the merged text the user gave, checked like any note before anything changes
+    let text = text.map(str::trim).filter(|t| !t.is_empty());
+    if let Some(t) = text {
+        let why = security::scan(t);
+        if !why.is_empty() {
+            return Ok(vec![Outcome::Failed(format!("! the merged text is flagged ({}): nothing merged", why.join(", ")))]);
+        }
+        if let Err(e) = schema::validate(&kept.meta, t) {
+            return Ok(vec![Outcome::Failed(format!("! the merged text: {e}; nothing merged"))]);
+        }
+    }
+    let type_of = |n: &Node| n.meta.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+    let mut out = Vec::new();
+    let mut meta = kept.meta.clone();
+    let mut keywords: Vec<Value> = meta.get("keywords").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut merged = 0;
+    for id in drops {
+        let Some(old) = resolve_id(brain, id).filter(Node::active) else {
+            out.push(Outcome::Failed(format!("! {id}: no current note with this id")));
+            continue;
+        };
+        if old.id() == kept.id() || type_of(&old) != type_of(&kept) || type_of(&old) == "project" {
+            out.push(Outcome::Failed(format!("! {id}: only another note of the same type ({}) can be merged into it", type_of(&kept))));
+            continue;
+        }
+        let mut gone = old.meta.clone();
+        gone.insert("retracted_at".into(), json!(now_iso()));
+        gone.insert("valid_to".into(), json!(now_iso()[..10].to_string()));
+        gone.insert("superseded_by".into(), json!(stem_link(&kept)));
+        brain.write_node(&gone, &old.body, Some(&old.path))?;
+        if let Some(Value::Array(e)) = meta.get_mut("edges") {
+            e.push(json!({"rel": "supersedes", "to": old.id()}));
+        }
+        for k in old.meta.get("keywords").and_then(Value::as_array).into_iter().flatten() {
+            if !keywords.contains(k) && keywords.len() < 24 {
+                keywords.push(k.clone());
+            }
+        }
+        out.push(Outcome::Done(format!("merged [{}] {} into [{}] {}", short_of(old.id()), old.title(), short_of(kept.id()), kept.title())));
+        merged += 1;
+    }
+    if merged > 0 {
+        meta.insert("keywords".into(), Value::Array(keywords));
+        let body = match text {
+            Some(t) => {
+                meta.insert("recorded_at".into(), json!(now_iso()));
+                out.push(Outcome::Done(format!("[{}] now says: {t}", short_of(kept.id()))));
+                t.to_string()
+            }
+            None => kept.body.clone(),
+        };
+        brain.write_node(&meta, &body, Some(&kept.path))?;
+        write_home(brain, &mut Index::new(brain))?;
+        brain.commit(&format!("merge {merged} note(s) into {}", short_of(kept.id())));
+    }
+    Ok(out)
+}
+
+/// Pairs of current notes (same type and scope) whose words mostly agree, or whose keywords do, likeliest first:
+/// candidates for `merge`, shown by `rewire review`. Consolidation writes keywords in English and in the user's
+/// language, so the same claim written in two languages is found through them.
+pub fn duplicates(brain: &Brain) -> Vec<(Node, Node)> {
+    let notes: Vec<Node> =
+        brain.iter_nodes().into_iter().filter(|n| n.active() && n.meta.get("type").and_then(Value::as_str) != Some("project")).collect();
+    let text = |n: &Node| {
+        let kw = n.meta.get("keywords").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));
+        format!("{} {} {}", n.title(), n.body, kw.unwrap_or_default())
+    };
+    // each note's words worked out once: the pairs are many
+    let words: Vec<(Vec<String>, std::collections::HashSet<String>)> =
+        notes.iter().map(|n| (text::content_words(&text(n)), text::tokens(&text(n)))).collect();
+    let keywords: Vec<std::collections::HashSet<String>> = notes
+        .iter()
+        .map(|n| {
+            n.meta
+                .get("keywords")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|k| k.trim().to_lowercase())
+                .collect()
+        })
+        .collect();
+    let mut pairs = Vec::new();
+    for i in 0..notes.len().min(1000) {
+        for j in i + 1..notes.len().min(1000) {
+            let same = |k: &str| notes[i].meta.get(k) == notes[j].meta.get(k);
+            let ((wa, ta), (wb, tb)) = (&words[i], &words[j]);
+            if !same("type") || !same("scope") || wa.len() < 3 || wb.len() < 3 {
+                continue;
+            }
+            // the same search terms (8-15 a note, in both languages): the same claim, whatever language its text is in
+            let (ka, kb) = (&keywords[i], &keywords[j]);
+            if ka.len() >= 4 && kb.len() >= 4 {
+                let shared = ka.intersection(kb).count() as f64 / ka.len().min(kb.len()) as f64;
+                if shared >= 0.6 {
+                    pairs.push((shared, i, j));
+                    continue;
+                }
+            }
+            // most pairs share almost no word: skip them before the stem-aware count
+            if wa.iter().filter(|w| tb.contains(*w)).count() * 4 < wa.len().min(wb.len()) {
+                continue;
+            }
+            let score = (text::overlap_of(wa, tb) as f64 / wa.len() as f64).min(text::overlap_of(wb, ta) as f64 / wb.len() as f64);
+            if score >= 0.5 {
+                pairs.push((score, i, j));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.into_iter().take(20).map(|(_, i, j)| (notes[i].clone(), notes[j].clone())).collect()
 }
 
 /// Take one session back out of memory, whether its changes were applied at consolidation or approved later from
@@ -945,6 +1187,7 @@ fn md_link(brain: &Brain, path: &str, title: &str) -> String {
 /// Write README.md: an overview a person can read on GitHub or in Obsidian. Deterministic (no
 /// timestamps, no activation-based order) so it only changes when the memory itself changes.
 pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf> {
+    crate::hubs::refresh(brain)?;
     index.refresh()?;
     let mut active = index.rows("active = 1 ORDER BY importance DESC, recorded_at DESC, id", &[])?;
     let unreviewed = brain.untrusted_ids(); // from another device and not reviewed here: not on the home page either
@@ -1052,6 +1295,7 @@ pub fn write_home(brain: &Brain, index: &mut Index) -> Result<std::path::PathBuf
         "## How this brain works".into(),
         "".into(),
         "- `nodes/<type>/` — one memory per file; relations are links you can click.".into(),
+        "- `nodes/project/` — one page per project: its rules, decisions, facts and latest sessions, kept up to date.".into(),
         "- `events/` — when memories were used (the usage log; experimental ordering by use is computed from it).".into(),
         "- `sessions/` — a summary of every consolidated agent session.".into(),
         "- Superseded memories are kept (status `superseded`) so history is never lost.".into(),

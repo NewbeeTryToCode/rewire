@@ -6,10 +6,12 @@
 
 pub mod activation;
 pub mod brain;
+pub mod chat_review;
 pub mod cli;
 pub mod config;
 pub mod consolidate;
 pub mod fm;
+pub mod hubs;
 pub mod index;
 pub mod integrations;
 pub mod llm;

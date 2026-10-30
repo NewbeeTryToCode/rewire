@@ -138,9 +138,17 @@ pub fn content_words(query: &str) -> Vec<String> {
 /// stems of 4+ letters match as prefixes). An absolute relevance signal: BM25 scores are only
 /// comparable within one query.
 pub fn overlap(query: &str, doc: &str) -> usize {
-    let lower = doc.to_lowercase();
-    let tokens: std::collections::HashSet<&str> = words_re().find_iter(&lower).map(|m| m.as_str()).collect();
-    content_words(query)
+    overlap_of(&content_words(query), &tokens(doc))
+}
+
+/// The lowercase words of a text, for `overlap_of`.
+pub fn tokens(doc: &str) -> std::collections::HashSet<String> {
+    words_re().find_iter(&doc.to_lowercase()).map(|m| m.as_str().to_string()).collect()
+}
+
+/// `overlap` with the query's content words and the document's tokens worked out once, for comparing many pairs.
+pub fn overlap_of(words: &[String], tokens: &std::collections::HashSet<String>) -> usize {
+    words
         .iter()
         .filter(|w| {
             tokens.contains(w.as_str())

@@ -838,6 +838,8 @@ impl Index {
             }
             let Ok(text) = fs::read_to_string(path) else { continue };
             let Ok((meta, body)) = nodefmt::parse(&text) else { continue };
+            // a project page's generated block lists its notes: searched for and shown are only the page's own words
+            let body = crate::hubs::strip(&body);
             if let Some((_, _, Some(old_id))) = old {
                 Self::delete_node(db, old_id)?;
             }

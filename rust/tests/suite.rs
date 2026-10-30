@@ -914,7 +914,14 @@ fn prompt_hook_adds_only_new_relevant_notes() {
 fn install_claude_code_merges_settings() {
     let c = Case::new();
     let path = c.dir.join("settings.json");
-    std::fs::write(&path, json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "other"}]}]}}).to_string()).unwrap();
+    // an older install of the per-prompt hook, with less time than a review from the chat needs
+    std::fs::write(
+        &path,
+        json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "other"}]}],
+                         "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "rewire hook user-prompt", "timeout": 5}]}]}})
+        .to_string(),
+    )
+    .unwrap();
     integrations::install_claude_code(true, Some(&path), Some(&c.brain.root)).unwrap();
     integrations::install_claude_code(true, Some(&path), Some(&c.brain.root)).unwrap(); // idempotent
     let hooks: Value = serde_json::from_str(&read(&path)).unwrap();
@@ -933,6 +940,12 @@ fn install_claude_code_merges_settings() {
     let backup: Value = serde_json::from_str(&read(&c.dir.join("settings.json.bak-rewire"))).unwrap();
     assert_eq!(cmds(&backup), vec!["other"]);
     assert!(hooks["hooks"].get("PreCompact").is_some());
+    let prompt_hooks = hooks["hooks"]["UserPromptSubmit"].as_array().unwrap();
+    assert_eq!(prompt_hooks.len(), 1, "not installed twice: {prompt_hooks:?}");
+    assert_eq!(prompt_hooks[0]["hooks"][0]["timeout"], 15);
+    // the /rewire-review skill, next to settings.json, and the agent may not run the hook itself
+    assert!(read(&c.dir.join("skills/rewire-review/SKILL.md")).contains("name: rewire-review"));
+    assert!(hooks["permissions"]["deny"].as_array().unwrap().iter().any(|r| r.as_str().is_some_and(|r| r.ends_with(" hook:*)"))));
 }
 
 // ---- human-readable files -------------------------------------------------
@@ -3166,4 +3179,326 @@ fn a_hand_edit_made_later_wins_a_conflict() {
 #[test]
 fn remote_urls_are_shown_without_credentials() {
     assert_eq!(ops::redact_url("https://alice:ghp_SECRET@github.com/a/b.git"), "https://***@github.com/a/b.git");
+}
+
+// ---- review from the chat --------------------------------------------------
+
+/// A Claude Code projects folder with one session transcript whose latest human message is `prompt`.
+fn chat_transcript(c: &Case, session: &str, prompt: &str, ago_secs: i64, extra: &[Value]) -> (PathBuf, Value) {
+    let projects = c.dir.join("claude").join("projects");
+    let file = projects.join("-work").join(format!("{session}.jsonl"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let ts = (chrono::Utc::now() - chrono::Duration::seconds(ago_secs)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut lines = vec![
+        json!({"type": "assistant", "sessionId": session, "message": {"role": "assistant", "content": [{"type": "text", "text": "Here is the inbox."}]}}),
+        json!({"type": "queue-operation", "operation": "enqueue", "timestamp": ts, "sessionId": session, "content": prompt}),
+        json!({"type": "user", "timestamp": ts, "sessionId": session, "origin": {"kind": "human"},
+               "message": {"role": "user", "content": prompt}}),
+    ];
+    lines.extend(extra.iter().cloned());
+    std::fs::write(&file, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let payload = json!({"session_id": session, "transcript_path": file, "prompt": prompt, "hook_event_name": "UserPromptSubmit"});
+    (projects, payload)
+}
+
+#[test]
+fn review_commands_the_user_sends_are_carried_out_by_the_hook() {
+    let c = Case::new();
+    let keep = ops::remember(
+        &c.brain,
+        "The roadmap artifact is at https://claude.ai/artifact/DYry1ig7z7QJPjcHdW4BC6",
+        "fact",
+        "global",
+        "assistant",
+        None,
+    )
+    .unwrap();
+    let drop = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
+    // whole ids: two made in the same millisecond share their first 10 characters
+    let prompt = format!("rewire approve {keep}\nrewire reject {drop}");
+    let (projects, payload) = chat_transcript(&c, "s-ok", &prompt, 2, &[]);
+    let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(out.contains(&format!("approved {keep}")) && out.contains(&format!("rejected {drop}")), "{out}");
+    // the hook echoes each item as its file said, so the user can check what was decided
+    assert!(out.contains("DYry1ig7z7QJPjcHdW4BC6") && out.contains("likes YAML"));
+    assert!(c.brain.iter_inbox().is_empty());
+    let mut index = Index::new(&c.brain);
+    index.refresh().unwrap();
+    assert!(index.rows("active = 1", &[]).unwrap().iter().any(|r| r.body.contains("DYry1ig7z7QJPjcHdW4BC6")));
+    let log = Command::new("git").args(["log", "--format=%s", "-3"]).current_dir(&c.brain.root).output().unwrap();
+    assert!(String::from_utf8_lossy(&log.stdout).contains("review approve 1 item(s)"));
+}
+
+#[test]
+fn review_commands_are_refused_unless_they_are_the_users_latest_message() {
+    let c = Case::new();
+    let id = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
+    let prompt = format!("rewire approve {id}");
+    let agent_turn = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "rewire hook user-prompt"}}]}});
+    let cases: Vec<(&str, (PathBuf, Value))> = vec![
+        // the agent piping a payload into the hook mid-turn: its own tool call is already in the transcript
+        ("the agent has acted", chat_transcript(&c, "s-agent", &prompt, 2, &[agent_turn])),
+        ("not your latest message", chat_transcript(&c, "s-other", "please summarise the inbox", 2, &[])),
+        ("not recent", chat_transcript(&c, "s-old", &prompt, 3600, &[])),
+    ];
+    for (why, (projects, mut payload)) in cases {
+        payload["prompt"] = json!(prompt);
+        let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+        assert!(out.contains("Not carried out") && out.contains(why), "{why}: {out}");
+    }
+    // a transcript outside Claude Code's projects folder, or named for another session
+    let (projects, payload) = chat_transcript(&c, "s-path", &prompt, 2, &[]);
+    let mut other = payload.clone();
+    other["session_id"] = json!("s-else");
+    let out = rewire::chat_review::run_in(&c.brain, &other, &projects).unwrap().unwrap();
+    assert!(out.contains("not this session's"), "{out}");
+    let out = rewire::chat_review::run_in(&c.brain, &payload, &c.dir.join("elsewhere")).unwrap().unwrap();
+    assert!(out.contains("not this session's"), "{out}");
+    assert_eq!(c.brain.iter_inbox().len(), 1);
+    // any other message is not a review: the hook does its usual recall
+    let (projects, payload) = chat_transcript(&c, "s-chat", "what is in my inbox? rewire approve all", 2, &[]);
+    assert!(rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().is_none());
+}
+
+// ---- project pages ----------------------------------------------------------
+
+#[test]
+fn project_hubs_list_their_notes_and_keep_what_a_person_wrote() {
+    let mut c = Case::new();
+    let hub = ops::ensure_project_hub(&c.brain, "alpha").unwrap();
+    let old = c.add("decision", "Alpha stores memory in YAML files", json!({"scope": "project:alpha"}));
+    let mut change =
+        m(json!({"action": "SUPERSEDE", "target": old.id(), "type": "decision", "text": "Alpha stores memory in markdown files",
+                               "scope": "project:alpha", "importance": 3, "confidence": "explicit", "provenance": "user"}));
+    change.insert("title".into(), json!("Alpha stores memory in markdown files"));
+    ops::apply_change(&c.brain, &change, None).unwrap();
+    c.add("fact", "Alpha is written in Rust", json!({"scope": "project:alpha"}));
+    c.add("fact", "Beta is written in Go", json!({"scope": "project:beta"}));
+    ops::write_home(&c.brain, &mut Index::new(&c.brain)).unwrap();
+    let page = read(&hub.path);
+    let block = &page[page.find(rewire::hubs::BEGIN).unwrap()..];
+    assert!(block.contains("## Decisions\n\n- [Alpha stores memory in markdown files](../decision/"));
+    assert!(block.contains("## Facts\n\n- [Alpha is written in Rust](../fact/"));
+    assert!(block.contains("<details><summary>No longer valid (1)</summary>") && block.contains("~~[Alpha stores memory in YAML files]"));
+    assert!(!block.contains("Beta"));
+    // the index (search, snapshot) sees only what a person wrote: here nothing, so the hub stays out of the snapshot
+    let mut index = Index::new(&c.brain);
+    index.refresh().unwrap();
+    let row = index.rows("id = ?", &[&hub.id().to_string() as &dyn rusqlite::ToSql]).unwrap().remove(0);
+    assert_eq!(row.body, "");
+    // a person's text above the block stays, and the block is rewritten under it, only when the notes change
+    let hub = c.brain.get_node(hub.id()).unwrap();
+    c.brain.write_node(&hub.meta, &format!("Goal: own the memory.\n\n{}", hub.body), Some(&hub.path)).unwrap();
+    c.add("constraint", "Never push alpha to main directly", json!({"scope": "project:alpha"}));
+    ops::write_home(&c.brain, &mut Index::new(&c.brain)).unwrap();
+    let page = read(&hub.path);
+    assert!(page.contains("Goal: own the memory.\n\n<!-- rewire:generated") && page.contains("## Rules\n\n- [Never push alpha"));
+    let before = std::fs::metadata(&hub.path).unwrap().modified().unwrap();
+    assert_eq!(rewire::hubs::refresh(&c.brain).unwrap(), 0);
+    assert_eq!(std::fs::metadata(&hub.path).unwrap().modified().unwrap(), before);
+    let snap = rewire::snapshot::build(&c.brain, &mut Index::new(&c.brain), None, Some("alpha")).unwrap();
+    assert!(snap.text.contains("Goal: own the memory.") && !snap.text.contains("rewire:generated"));
+}
+
+#[test]
+fn duplicate_notes_are_found_and_merged_into_one() {
+    let mut c = Case::new();
+    let keep = c.add(
+        "preference",
+        "The user writes in Indonesian and prefers answers in Indonesian",
+        json!({"keywords": ["bahasa", "indonesia"]}),
+    );
+    let twin = c.add(
+        "preference",
+        "The user writes mainly in Indonesian and wants answers in Indonesian",
+        json!({"keywords": ["bahasa", "jawaban"]}),
+    );
+    let other = c.add("preference", "The user prefers tabs over spaces", json!({}));
+    let fact = c.add("fact", "The user writes in Indonesian and prefers answers in Indonesian", json!({}));
+    let pairs = ops::duplicates(&c.brain);
+    let ids: Vec<(String, String)> = pairs.iter().map(|(a, b)| (a.id().to_string(), b.id().to_string())).collect();
+    assert!(ids.iter().any(|(a, b)| [a, b].contains(&&keep.id().to_string()) && [a, b].contains(&&twin.id().to_string())), "{ids:?}");
+    // not across types, not unrelated notes
+    assert!(!ids.iter().any(|(a, b)| [a, b].iter().any(|x| *x == other.id() || *x == fact.id())), "{ids:?}");
+    let short = |n: &rewire::brain::Node| rewire::util::short_of(n.id());
+    let out = ops::merge(&c.brain, &short(&keep), &[short(&twin), short(&fact), "zzzzzzzz".into()], None).unwrap();
+    assert!(matches!(&out[0], ops::Outcome::Done(l) if l.starts_with("merged")), "{out:?}");
+    assert!(matches!(&out[1], ops::Outcome::Failed(l) if l.contains("same type")), "{out:?}");
+    assert!(matches!(&out[2], ops::Outcome::Failed(_)), "{out:?}");
+    let gone = c.brain.get_node(twin.id()).unwrap();
+    assert!(!gone.active() && rewire::brain::is_set(gone.meta.get("valid_to")));
+    let kept = c.brain.get_node(keep.id()).unwrap();
+    assert!(kept.active() && kept.meta["edges"].as_array().unwrap().contains(&json!({"rel": "supersedes", "to": short(&twin)})));
+    let kw: Vec<&str> = kept.meta["keywords"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(kw.contains(&"indonesia") && kw.contains(&"jawaban") && kw.iter().filter(|k| **k == "bahasa").count() == 1, "{kw:?}");
+    assert!(c.brain.get_node(fact.id()).unwrap().active());
+    // and from the chat, the same way as approve
+    let third = c.add("preference", "The user prefers tabs over spaces for indentation", json!({}));
+    let prompt = format!("rewire merge {} {}", short(&other), short(&third));
+    let (projects, payload) = chat_transcript(&c, "s-merge", &prompt, 2, &[]);
+    let said = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(said.contains("merged") && said.contains("tabs over spaces for indentation"), "{said}");
+    assert!(!c.brain.get_node(third.id()).unwrap().active());
+}
+
+#[test]
+fn where_a_project_stands_is_proposed_for_its_page_and_set_on_approval() {
+    let c = Case::new();
+    let hub = ops::ensure_project_hub(&c.brain, "proj").unwrap(); // the fixture's session runs in /work/proj
+    let mut out = extraction(vec![], vec![]);
+    out["project_now"] = json!("- Focus: the deploy script\n- Next: add a dry run");
+    run_fixture(&c.brain, Fake::new(vec![out]));
+    let items = c.brain.iter_inbox();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].meta["kind"], "hub_section");
+    assert_eq!(items[0].meta["target"], hub.id());
+    let id = items[0].meta["inbox_id"].as_str().unwrap().to_string();
+    // a model's synthesis is never applied on its own
+    assert!(rewire::hubs::section(&c.brain.get_node(hub.id()).unwrap().body, "Now").is_none());
+    let done = ops::review(&c.brain, "approve", &[id], false).unwrap();
+    assert!(matches!(&done[0], ops::Outcome::Done(l) if l.contains("Now of")), "{done:?}");
+    let page = c.brain.get_node(hub.id()).unwrap().body;
+    assert!(page.starts_with("## Now (as of 2026-10-01)\n\n- Focus: the deploy script"), "{page}");
+    assert!(page.contains(rewire::hubs::BEGIN), "the generated block stays under it: {page}");
+    let snap = rewire::snapshot::build(&c.brain, &mut Index::new(&c.brain), None, Some("proj")).unwrap();
+    assert!(snap.text.contains("Focus: the deploy script"), "{}", snap.text);
+    // the next session is shown the page's current text, and the same text again proposes nothing
+    let c2 = Case::new();
+    let hub2 = ops::ensure_project_hub(&c2.brain, "proj").unwrap();
+    let body = rewire::hubs::set_section(&hub2.body, "Now", "2026-09-30", "- Focus: the deploy script");
+    c2.brain.write_node(&hub2.meta, &body, Some(&hub2.path)).unwrap();
+    let mut same = extraction(vec![], vec![]);
+    same["project_now"] = json!("- Focus: the deploy script");
+    run_fixture(&c2.brain, Fake::new(vec![same]));
+    let prompt = PROMPTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .rev()
+        .find(|p| p.contains("PROJECT NOW:\n- Focus: the deploy script"))
+        .cloned();
+    assert!(prompt.is_some());
+    assert!(c2.brain.iter_inbox().is_empty());
+}
+
+#[test]
+fn merge_walkthrough_on_a_project_page() {
+    // a project with two facts that say the same thing, the case `rewire merge` is for; printed with --nocapture
+    let mut c = Case::new();
+    let hub = ops::ensure_project_hub(&c.brain, "rewire").unwrap();
+    let keep = c.add(
+        "fact",
+        "Perbaikan rewire yang menyimpan link artifact dan pull request sebuah sesi di bagian Outputs di-merge ke main lewat PR #9 (https://github.com/NewbeeTryToCode/rewire/pull/9) pada 2026-10-29.",
+        json!({"scope": "project:rewire", "keywords": ["outputs", "pr #9", "artifact", "link"], "about": ["[[rewire-x]]"]}),
+    );
+    let twin = c.add(
+        "fact",
+        "PR #9 rewire (https://github.com/NewbeeTryToCode/rewire/pull/9) menambahkan bagian Outputs di file sesi sehingga link artifact dan pull request tersimpan; di-merge ke main pada 2026-10-29.",
+        json!({"scope": "project:rewire", "keywords": ["outputs", "session", "pull request", "tautan"]}),
+    );
+    c.add("fact", "Remote brain rewire adalah repo GitHub private NewbeeTryToCode/brain.", json!({"scope": "project:rewire"}));
+    let id_id = c.add("fact", "Pengguna memakai akun GitHub NewbeeTryToCode; repo rewire dan brain adalah miliknya.", json!({}));
+    let id_en = c.add("fact", "The user's GitHub account is NewbeeTryToCode, and the rewire repository belongs to them.", json!({}));
+    ops::write_home(&c.brain, &mut Index::new(&c.brain)).unwrap();
+    let show = |label: &str, p: &Path| println!("=====FILE {label}\n{}", read(p));
+    show("before/hub.md", &hub.path);
+    show("before/keep.md", &keep.path);
+    show("before/twin.md", &twin.path);
+    let pairs = ops::duplicates(&c.brain);
+    let found: Vec<(String, String)> = pairs.iter().map(|(a, b)| (a.title().to_string(), b.title().to_string())).collect();
+    println!("=====FILE duplicates.txt\n{found:#?}");
+    assert!(pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&keep.id()) && [a.id(), b.id()].contains(&twin.id())));
+    // without keywords (consolidation writes them in both languages) the same fact in two languages is not found
+    assert!(!pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&id_id.id()) && [a.id(), b.id()].contains(&id_en.id())));
+    let out = ops::merge(&c.brain, &rewire::util::short_of(keep.id()), &[rewire::util::short_of(twin.id())], None).unwrap();
+    println!("=====FILE merge-output.txt\n{out:#?}");
+    let hub = c.brain.get_node(hub.id()).unwrap();
+    show("after/hub.md", &hub.path);
+    show("after/keep.md", &keep.path);
+    show("after/twin.md", &twin.path);
+    assert!(read(&hub.path).contains("No longer valid (1)"));
+}
+
+#[test]
+fn project_pages_changed_on_two_devices_merge_without_an_inbox_item() {
+    let t = two();
+    ops::ensure_project_hub(&t.a, "alpha").unwrap();
+    t.a.commit("page");
+    sync::sync(&t.a).unwrap();
+    sync::sync(&t.b).unwrap();
+    // each device learns something about the project and rewrites the page
+    for (brain, text) in [(&t.a, "Alpha ships from the laptop"), (&t.b, "Alpha builds in the codespace")] {
+        let change = m(
+            json!({"action": "NEW", "type": "fact", "text": text, "scope": "project:alpha", "confidence": "explicit", "provenance": "user"}),
+        );
+        ops::apply_change(brain, &change, None).unwrap();
+        ops::write_home(brain, &mut Index::new(brain)).unwrap();
+        brain.commit("learn");
+    }
+    sync::sync(&t.a).unwrap();
+    let notes = sync::sync(&t.b).unwrap();
+    assert!(t.b.iter_inbox().is_empty(), "{notes:?}");
+    let hub = ops::project_hub(&t.b, "alpha").unwrap();
+    assert!(hub.body.contains("Alpha ships from the laptop") && hub.body.contains("Alpha builds in the codespace"), "{}", hub.body);
+}
+
+#[test]
+fn a_review_sent_through_the_slash_command_is_verified_against_what_was_typed() {
+    let c = Case::new();
+    let id = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
+    let prompt = format!("/rewire-review reject {id}");
+    // Claude Code records the slash command's expansion after the queued text the user typed
+    let expansion = json!({"type": "user", "origin": {"kind": "human"}, "timestamp": chrono::Utc::now().to_rfc3339(),
+                           "message": {"role": "user", "content": "<command-message>rewire-review</command-message>\n<command-name>/rewire-review</command-name>"}});
+    let (projects, payload) = chat_transcript(&c, "s-slash", &prompt, 2, &[expansion]);
+    let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(out.contains("rejected"), "{out}");
+    assert!(c.brain.iter_inbox().is_empty());
+}
+
+#[test]
+fn a_merge_can_carry_the_merged_text_and_the_merged_note_points_to_it() {
+    let mut c = Case::new();
+    let keep = c.add(
+        "fact",
+        "PR #9 stores the links of artifacts in session records",
+        json!({"keywords": ["pr #9", "outputs", "artifact", "link"]}),
+    );
+    let twin = c.add(
+        "fact",
+        "PR #9 was merged on 2026-10-29 and keeps pull request links too",
+        json!({"keywords": ["pr #9", "merged", "pull request", "link"]}),
+    );
+    let short = |n: &rewire::brain::Node| rewire::util::short_of(n.id());
+    // a text the schema refuses (claims are at most 600 characters) changes nothing
+    let long = "x ".repeat(400);
+    let out = ops::merge(&c.brain, &short(&keep), &[short(&twin)], Some(&long)).unwrap();
+    assert!(matches!(&out[0], ops::Outcome::Failed(l) if l.contains("nothing merged")), "{out:?}");
+    assert!(c.brain.get_node(twin.id()).unwrap().active());
+    let merged = "PR #9 (merged 2026-10-29) stores the links of artifacts and pull requests in session records.";
+    let prompt = format!("rewire merge {} {} --text \"{merged}\"", short(&keep), short(&twin));
+    let (projects, payload) = chat_transcript(&c, "s-text", &prompt, 2, &[]);
+    let said = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(said.contains("now says: PR #9 (merged 2026-10-29)"), "{said}");
+    assert_eq!(c.brain.get_node(keep.id()).unwrap().body.trim(), merged);
+    // the merged note says what replaced it
+    let page = read(&c.brain.get_node(twin.id()).unwrap().path);
+    assert!(page.contains("superseded_by: \"[[") && page.contains("- superseded by: [PR #9 stores the links"), "{page}");
+}
+
+#[test]
+fn the_same_claim_in_two_languages_is_found_through_its_keywords() {
+    let mut c = Case::new();
+    let id = c.add(
+        "fact",
+        "Pengguna memakai akun GitHub NewbeeTryToCode untuk repo rewire dan brain",
+        json!({"keywords": ["github", "akun", "account", "newbeetrytocode", "repo", "identitas"]}),
+    );
+    let en = c.add(
+        "fact",
+        "The user's GitHub account is NewbeeTryToCode, which owns the rewire repository",
+        json!({"keywords": ["github", "account", "akun", "newbeetrytocode", "repository", "identity"]}),
+    );
+    let pairs = ops::duplicates(&c.brain);
+    assert!(pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&id.id()) && [a.id(), b.id()].contains(&en.id())), "{}", pairs.len());
 }

@@ -233,6 +233,16 @@ pub fn render(meta: &Meta, body: &str, path: &Path, locate: &dyn Fn(&str) -> Opt
     for (rel, links) in by_rel {
         out.insert(rel, Value::Array(links));
     }
+    // a superseded note says what replaced it (the replacing note holds the `supersedes` link)
+    if let Some(to) = meta.get("superseded_by").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        match locate(&short(to)) {
+            Some(t) => {
+                let label = title_of(&t).unwrap_or_else(|| short(to)).replace('[', "(").replace(']', ")");
+                related.push(format!("- superseded by: [{label}]({})", relpath(&t, dir)));
+            }
+            None => related.push(format!("- superseded by: {} (missing)", short(to))),
+        }
+    }
     for (k, v) in meta {
         if !ORDER.contains(&k.as_str()) && k != "edges" && !RELATIONS.contains(&k.as_str()) {
             out.insert(k.clone(), v.clone());

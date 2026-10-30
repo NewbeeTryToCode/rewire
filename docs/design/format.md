@@ -62,6 +62,7 @@ them, then any other keys in their original order.
 | `source` | `"<harness> · <full session id> · turn <n>"` (any part may be absent) |
 | `keywords` | list of lowercase search terms (optional) |
 | relation keys | `about`, `part_of`, `depends_on`, `related_to`, `supersedes`, `contradicts`: list of `"[[<target file stem>]]"` |
+| `superseded_by` | `"[[<file stem>]]"` of the note that replaced this one (set by SUPERSEDE and `merge`; shown under Related) |
 
 Derived keys (`status`, `aliases`, `tags`) are regenerated on every write and ignored on read. A claim body
 (constraint, preference, fact, decision) is at most 600 characters.
@@ -78,6 +79,39 @@ After the body, relations are mirrored for readers:
 
 The `## Related` section is generated and never part of the body. Legacy v0.1 nodes stored
 `edges: [{"rel", "to"}]`; readers still accept it.
+
+### Project pages
+
+A project hub's body ends with a generated block, rewritten (only when it changes) whenever the home page is:
+
+```
+<what a person wrote, kept as is; may be empty>
+
+<!-- rewire:generated (rewritten from this project's notes and sessions: edit those, not this block) -->
+
+## Rules | Decisions | Facts | Preferences | Concepts | People      (active notes of the project, newest first)
+- [<title>](<relative path>) · <valid_from or recorded_at date>
+
+## Recent sessions                                                   (the latest 5 session records of the project)
+- [<date> · <file stem>](<relative path>): <summary, cut at 160 characters>
+
+<details><summary>No longer valid (<n>)</summary>                    (superseded notes)
+- ~~[<title>](<relative path>)~~ · until <valid_to>
+</details>
+
+<!-- /rewire:generated -->
+```
+
+Members are the notes with the hub's scope, and notes of another scope with an `about` link to the hub. The index
+leaves the block out: search, recall snippets and the session-start snapshot read only what a person wrote. The
+block depends on the notes alone (not on what this device has reviewed), so every device renders the same page; a
+sync conflict on a page whose two sides differ only in the block takes either side and renders it again.
+
+Where the project stands lives in that text as a `## Now (as of <date>)` section: 2-6 lines (focus, next steps,
+blockers, open questions). Consolidation shows the model the current section (`PROJECT NOW`) and, when a session
+changes it, queues the new text as an inbox item with `kind: "hub_section"`, `section: "Now"` and `target` = the
+hub id; at most one waits per project (a newer one replaces it). Approving it sets the section in place, or adds
+it after the rest of the text; nothing else on the page changes.
 
 ## Events
 
