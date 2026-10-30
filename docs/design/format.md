@@ -102,7 +102,9 @@ A project hub's body ends with a generated block, rewritten (only when it change
 ```
 
 Members are the notes with the hub's scope, and notes of another scope with an `about` link to the hub. The index
-leaves the block out: search, recall snippets and the session-start snapshot read only what a person wrote.
+leaves the block out: search, recall snippets and the session-start snapshot read only what a person wrote. The
+block depends on the notes alone (not on what this device has reviewed), so every device renders the same page; a
+sync conflict on a page whose two sides differ only in the block takes either side and renders it again.
 
 Where the project stands lives in that text as a `## Now (as of <date>)` section: 2-6 lines (focus, next steps,
 blockers, open questions). Consolidation shows the model the current section (`PROJECT NOW`) and, when a session

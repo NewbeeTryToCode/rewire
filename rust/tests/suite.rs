@@ -3369,3 +3369,78 @@ fn where_a_project_stands_is_proposed_for_its_page_and_set_on_approval() {
     assert!(prompt.is_some());
     assert!(c2.brain.iter_inbox().is_empty());
 }
+
+#[test]
+fn merge_walkthrough_on_a_project_page() {
+    // a project with two facts that say the same thing, the case `rewire merge` is for; printed with --nocapture
+    let mut c = Case::new();
+    let hub = ops::ensure_project_hub(&c.brain, "rewire").unwrap();
+    let keep = c.add(
+        "fact",
+        "Perbaikan rewire yang menyimpan link artifact dan pull request sebuah sesi di bagian Outputs di-merge ke main lewat PR #9 (https://github.com/NewbeeTryToCode/rewire/pull/9) pada 2026-10-29.",
+        json!({"scope": "project:rewire", "keywords": ["outputs", "pr #9", "artifact", "link"], "about": ["[[rewire-x]]"]}),
+    );
+    let twin = c.add(
+        "fact",
+        "PR #9 rewire (https://github.com/NewbeeTryToCode/rewire/pull/9) menambahkan bagian Outputs di file sesi sehingga link artifact dan pull request tersimpan; di-merge ke main pada 2026-10-29.",
+        json!({"scope": "project:rewire", "keywords": ["outputs", "session", "pull request", "tautan"]}),
+    );
+    c.add("fact", "Remote brain rewire adalah repo GitHub private NewbeeTryToCode/brain.", json!({"scope": "project:rewire"}));
+    let id_id = c.add("fact", "Pengguna memakai akun GitHub NewbeeTryToCode; repo rewire dan brain adalah miliknya.", json!({}));
+    let id_en = c.add("fact", "The user's GitHub account is NewbeeTryToCode, and the rewire repository belongs to them.", json!({}));
+    ops::write_home(&c.brain, &mut Index::new(&c.brain)).unwrap();
+    let show = |label: &str, p: &Path| println!("=====FILE {label}\n{}", read(p));
+    show("before/hub.md", &hub.path);
+    show("before/keep.md", &keep.path);
+    show("before/twin.md", &twin.path);
+    let pairs = ops::duplicates(&c.brain);
+    let found: Vec<(String, String)> = pairs.iter().map(|(a, b)| (a.title().to_string(), b.title().to_string())).collect();
+    println!("=====FILE duplicates.txt\n{found:#?}");
+    assert!(pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&keep.id()) && [a.id(), b.id()].contains(&twin.id())));
+    // known limit: the same fact in two languages shares too few words to be found
+    assert!(!pairs.iter().any(|(a, b)| [a.id(), b.id()].contains(&id_id.id()) && [a.id(), b.id()].contains(&id_en.id())));
+    let out = ops::merge(&c.brain, &rewire::util::short_of(keep.id()), &[rewire::util::short_of(twin.id())]).unwrap();
+    println!("=====FILE merge-output.txt\n{out:#?}");
+    let hub = c.brain.get_node(hub.id()).unwrap();
+    show("after/hub.md", &hub.path);
+    show("after/keep.md", &keep.path);
+    show("after/twin.md", &twin.path);
+    assert!(read(&hub.path).contains("No longer valid (1)"));
+}
+
+#[test]
+fn project_pages_changed_on_two_devices_merge_without_an_inbox_item() {
+    let t = two();
+    ops::ensure_project_hub(&t.a, "alpha").unwrap();
+    t.a.commit("page");
+    sync::sync(&t.a).unwrap();
+    sync::sync(&t.b).unwrap();
+    // each device learns something about the project and rewrites the page
+    for (brain, text) in [(&t.a, "Alpha ships from the laptop"), (&t.b, "Alpha builds in the codespace")] {
+        let change = m(
+            json!({"action": "NEW", "type": "fact", "text": text, "scope": "project:alpha", "confidence": "explicit", "provenance": "user"}),
+        );
+        ops::apply_change(brain, &change, None).unwrap();
+        ops::write_home(brain, &mut Index::new(brain)).unwrap();
+        brain.commit("learn");
+    }
+    sync::sync(&t.a).unwrap();
+    let notes = sync::sync(&t.b).unwrap();
+    assert!(t.b.iter_inbox().is_empty(), "{notes:?}");
+    let hub = ops::project_hub(&t.b, "alpha").unwrap();
+    assert!(hub.body.contains("Alpha ships from the laptop") && hub.body.contains("Alpha builds in the codespace"), "{}", hub.body);
+}
+
+#[test]
+fn a_review_sent_through_the_slash_command_is_verified_against_what_was_typed() {
+    let c = Case::new();
+    let id = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
+    let prompt = format!("/rewire-review reject {id}");
+    // Claude Code records the slash command's expansion after the queued text the user typed
+    let expansion = json!({"type": "user", "origin": {"kind": "human"}, "timestamp": chrono::Utc::now().to_rfc3339(),
+                           "message": {"role": "user", "content": "<command-message>rewire-review</command-message>\n<command-name>/rewire-review</command-name>"}});
+    let (projects, payload) = chat_transcript(&c, "s-slash", &prompt, 2, &[expansion]);
+    let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
+    assert!(out.contains("rejected"), "{out}");
+    assert!(c.brain.iter_inbox().is_empty());
+}

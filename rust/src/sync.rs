@@ -152,6 +152,15 @@ fn resolve(brain: &Brain) -> Result<Vec<String>> {
                 (Some(ours), Some(theirs)) => {
                     let (m_ours, b_ours) = nodefmt::parse(&ours).map_err(Error::Sync)?;
                     let (m_theirs, b_theirs) = nodefmt::parse(&theirs).map_err(Error::Sync)?;
+                    // a project page whose two sides differ only in the generated block: either will do, the block
+                    // is rendered again from the merged notes right after the pull
+                    let page = |m: &Meta| m.get("type").and_then(Value::as_str) == Some("project");
+                    if page(&m_ours) && page(&m_theirs) && crate::hubs::strip(&b_ours) == crate::hubs::strip(&b_theirs) {
+                        crate::util::atomic_write(&full, &ours)?;
+                        g(brain, &["add", "--", path])?;
+                        notes.push(format!("{path}: project page, regenerated after the merge"));
+                        continue;
+                    }
                     // newest edit wins: by the notes' own times, and (a hand edit changes neither) by when each side
                     // last committed the file
                     let committed =

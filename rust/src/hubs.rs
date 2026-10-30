@@ -122,14 +122,14 @@ fn sessions_of(brain: &Brain, slug: &str) -> Vec<(String, PathBuf, String)> {
 }
 
 /// The generated block of one hub.
-pub fn block(brain: &Brain, hub: &Node, nodes: &[Node], hidden: &std::collections::HashSet<String>) -> String {
+pub fn block(brain: &Brain, hub: &Node, nodes: &[Node]) -> String {
     let scope = hub.meta.get("scope").and_then(Value::as_str).unwrap_or("");
     let hub_short = short_of(hub.id());
     let dir = hub.path.parent().map(Path::to_path_buf).unwrap_or_default();
     // the project's own notes, and notes elsewhere that say they are about it (a lesson promoted to global)
     let mut members: Vec<&Node> = nodes
         .iter()
-        .filter(|n| n.id() != hub.id() && n.meta.get("type").and_then(Value::as_str) != Some("project") && !hidden.contains(n.id()))
+        .filter(|n| n.id() != hub.id() && n.meta.get("type").and_then(Value::as_str) != Some("project"))
         .filter(|n| {
             n.meta.get("scope").and_then(Value::as_str) == Some(scope)
                 || crate::nodefmt::edges_of(&n.meta).iter().any(|(rel, to)| rel == "about" && short_of(to) == hub_short)
@@ -184,11 +184,12 @@ pub fn block(brain: &Brain, hub: &Node, nodes: &[Node], hidden: &std::collection
 
 /// Rewrite the generated block of every active project hub whose notes changed. Returns how many were written.
 pub fn refresh(brain: &Brain) -> Result<usize> {
+    // the same notes give the same page on every device (which notes this device has reviewed does not count), so
+    // two devices never commit two versions of a page; the page is no instruction: search and the snapshot skip it
     let nodes = brain.iter_nodes();
-    let hidden = brain.untrusted_ids(); // from another device and not reviewed here: not on a page either
     let mut written = 0;
     for hub in nodes.iter().filter(|n| n.meta.get("type").and_then(Value::as_str) == Some("project") && n.active()) {
-        let body = with_block(&hub.body, &block(brain, hub, &nodes, &hidden));
+        let body = with_block(&hub.body, &block(brain, hub, &nodes));
         if body.trim() != hub.body.trim() {
             brain.write_node(&hub.meta, &body, Some(&hub.path))?;
             written += 1;

@@ -61,8 +61,13 @@ fn human_text(d: &Value) -> Option<String> {
             if d.get("origin").and_then(|o| o.get("kind")).and_then(Value::as_str).is_some_and(|k| k != "human") {
                 return None;
             }
-            // a plain string: tool results and injected blocks are arrays
-            d.get("message").and_then(|m| m.get("content")).and_then(Value::as_str).map(String::from)
+            // a plain string: tool results and injected blocks are arrays; a slash command is recorded as its
+            // expansion (`<command-message>…`), while what the user typed is in the queue entry before it
+            d.get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_str)
+                .filter(|t| !t.trim_start().starts_with("<command-"))
+                .map(String::from)
         }
         _ => None,
     }

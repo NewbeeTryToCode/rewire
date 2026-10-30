@@ -630,16 +630,22 @@ pub fn duplicates(brain: &Brain) -> Vec<(Node, Node)> {
         let kw = n.meta.get("keywords").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));
         format!("{} {} {}", n.title(), n.body, kw.unwrap_or_default())
     };
-    let texts: Vec<(String, usize)> = notes.iter().map(|n| (text(n), text::content_words(&text(n)).len())).collect();
+    // each note's words worked out once: the pairs are many
+    let words: Vec<(Vec<String>, std::collections::HashSet<String>)> =
+        notes.iter().map(|n| (text::content_words(&text(n)), text::tokens(&text(n)))).collect();
     let mut pairs = Vec::new();
     for i in 0..notes.len().min(1000) {
         for j in i + 1..notes.len().min(1000) {
             let same = |k: &str| notes[i].meta.get(k) == notes[j].meta.get(k);
-            let ((a, na), (b, nb)) = (&texts[i], &texts[j]);
-            if !same("type") || !same("scope") || *na < 3 || *nb < 3 {
+            let ((wa, ta), (wb, tb)) = (&words[i], &words[j]);
+            if !same("type") || !same("scope") || wa.len() < 3 || wb.len() < 3 {
                 continue;
             }
-            let score = (text::overlap(a, b) as f64 / *na as f64).min(text::overlap(b, a) as f64 / *nb as f64);
+            // most pairs share almost no word: skip them before the stem-aware count
+            if wa.iter().filter(|w| tb.contains(*w)).count() * 4 < wa.len().min(wb.len()) {
+                continue;
+            }
+            let score = (text::overlap_of(wa, tb) as f64 / wa.len() as f64).min(text::overlap_of(wb, ta) as f64 / wb.len() as f64);
             if score >= 0.5 {
                 pairs.push((score, i, j));
             }
