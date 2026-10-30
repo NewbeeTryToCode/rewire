@@ -3204,10 +3204,11 @@ fn review_commands_the_user_sends_are_carried_out_by_the_hook() {
     )
     .unwrap();
     let drop = ops::remember(&c.brain, "The user likes YAML", "preference", "global", "assistant", None).unwrap();
-    let prompt = format!("rewire approve {}\nrewire reject {}", &keep[..10], &drop[..10]);
+    // whole ids: two made in the same millisecond share their first 10 characters
+    let prompt = format!("rewire approve {keep}\nrewire reject {drop}");
     let (projects, payload) = chat_transcript(&c, "s-ok", &prompt, 2, &[]);
     let out = rewire::chat_review::run_in(&c.brain, &payload, &projects).unwrap().unwrap();
-    assert!(out.contains(&format!("approved {}", &keep[..10])) && out.contains(&format!("rejected {}", &drop[..10])), "{out}");
+    assert!(out.contains(&format!("approved {keep}")) && out.contains(&format!("rejected {drop}")), "{out}");
     // the hook echoes each item as its file said, so the user can check what was decided
     assert!(out.contains("DYry1ig7z7QJPjcHdW4BC6") && out.contains("likes YAML"));
     assert!(c.brain.iter_inbox().is_empty());
