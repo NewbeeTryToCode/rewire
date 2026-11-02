@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "astack": {
+      "source": {
+        "source": "github",
+        "repo": "NewbeeTryToCode/astack"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "stack@astack": true
+  }
+}
