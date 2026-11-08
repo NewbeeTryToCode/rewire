@@ -48,7 +48,8 @@ pub fn loads(text: &str) -> Result<(Meta, String), String> {
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
-        let item = (line.starts_with(' ') || line.starts_with('\t')).then(|| line.trim_start().strip_prefix("- ")).flatten();
+        // Obsidian indents the items by two spaces; YAML also allows them at the key's own column, so accept both
+        let item = line.trim_start().strip_prefix("- ");
         if let Some(item) = item {
             let Some(key) = list_key.clone() else {
                 return Err(format!("invalid frontmatter line: {line:?}"));

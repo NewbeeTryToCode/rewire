@@ -139,6 +139,7 @@ fn obsidian_block_list_properties_are_read() {
     .unwrap();
     c.index.rebuild().unwrap();
     assert!(c.brain.get_node("01BLOCKLIST000000000000001").is_some());
+    assert_eq!(c.brain.get_node("01BLOCKLIST000000000000001").unwrap().meta["keywords"], json!(["deploy", "region"]));
     assert_eq!(titles(&c.search("deploy region", &["global"])), vec!["Rollout plan"]);
 }
 
