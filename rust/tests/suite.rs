@@ -2118,6 +2118,45 @@ fn install_denies_the_agent_approving_or_editing_memory() {
 }
 
 #[test]
+fn install_from_a_moved_binary_replaces_the_old_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install = |name: &str| {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("rewire");
+        std::fs::copy(env!("CARGO_BIN_EXE_rewire"), &bin).unwrap();
+        bin.canonicalize().unwrap()
+    };
+    let first = install("a");
+    let second = install("b");
+    let config = tmp.path().join("claude");
+    let run = |exe: &Path| {
+        let mut cmd = Command::new(exe);
+        let out = as_user(&mut cmd)
+            .args(["install", "claude-code", "--write"])
+            .env("CLAUDE_CONFIG_DIR", &config)
+            .env("REWIRE_BRAIN", tmp.path().join("brain"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        read(&config.join("settings.json"))
+    };
+    run(&first);
+    let after_second = run(&second);
+    let v: Value = serde_json::from_str(&after_second).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(cmds, [format!("{} hook session-start", second.display())]);
+    let deny = v["permissions"]["deny"].to_string();
+    assert!(!deny.contains(&first.parent().unwrap().to_string_lossy().into_owned()), "{deny}");
+    assert_eq!(run(&second), after_second); // the same path installs nothing twice
+}
+
+#[test]
 fn injection_phrasings_and_hidden_letters_are_flagged() {
     use rewire::security::{blocked, scan};
     for text in [

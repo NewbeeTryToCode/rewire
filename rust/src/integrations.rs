@@ -372,6 +372,14 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 .ok_or_else(|| unexpected(&format!("\"hooks.{event}\" is not a list")))?;
             let wanted_cmd = entries[0]["hooks"][0]["command"].as_str().unwrap_or_default().to_string();
             let suffix = wanted_cmd.split_once(" hook ").map(|(_, e)| format!(" hook {e}")).unwrap_or_default();
+            // a rewire hook for this event that names another binary path (an older install, a binary that moved):
+            // point it here, or the event keeps running a path that no longer exists
+            let elsewhere = |c: &str| c != wanted_cmd && !suffix.is_empty() && c.ends_with(&suffix) && c.contains("rewire");
+            for hook in existing.iter_mut().flat_map(|e| e.get_mut("hooks").and_then(Value::as_array_mut).into_iter().flatten()) {
+                if hook.get("command").and_then(Value::as_str).is_some_and(elsewhere) {
+                    hook["command"] = json!(wanted_cmd);
+                }
+            }
             // already installed, by full path or (older installs) by bare name
             let present = existing.iter().any(|e| {
                 e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
@@ -398,6 +406,17 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 deny.push(rule.clone());
             }
         }
+        // rules an older install wrote for the binary's path then: the binary is here now, so they only deny a path
+        // that is not there anymore. Another tool's rules and the bare `rewire` rules stay.
+        let wanted_rules: Vec<&str> = wanted["permissions"]["deny"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        deny.retain(|rule| {
+            let Some(inner) = rule.as_str().and_then(|r| r.strip_prefix("Bash(")).and_then(|r| r.strip_suffix(')')) else {
+                return true;
+            };
+            let exe = inner.split_whitespace().next().unwrap_or_default();
+            let moved = exe.rsplit('/').next() == Some("rewire") && exe != command;
+            !moved || wanted_rules.iter().any(|w| rule.as_str() == Some(*w))
+        });
         if let Some(dir) = settings_path.parent() {
             fs::create_dir_all(dir)?;
         }
