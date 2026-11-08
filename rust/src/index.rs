@@ -587,7 +587,8 @@ impl Index {
         self.refresh_max_age(ACT_MAX_AGE)
     }
 
-    /// Node files the last full scan could not read (the list `doctor` reports, from the same parser).
+    /// Node files the last full scan could not read. `rewire rebuild` prints them; `doctor` builds the same list from
+    /// the same parser through `brain::broken_nodes`.
     pub fn broken(&mut self) -> Result<Vec<String>> {
         let raw: Option<String> = self.db()?.query_row("SELECT v FROM meta WHERE k='broken'", [], |r| r.get(0)).optional()?;
         Ok(raw.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())

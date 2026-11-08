@@ -173,6 +173,21 @@ fn doctor_reports_an_index_it_cannot_open() {
     assert!(ops::is_problem(line), "{line}");
 }
 
+/// A recall query reads `fts`: an index whose search table is gone must not look healthy to `doctor`.
+#[test]
+fn doctor_reports_an_index_whose_search_table_is_gone() {
+    let c = Case::new();
+    Index::new(&c.brain).rebuild().unwrap();
+    let db = c.brain.path(&[".index", "brain.db"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE fts").unwrap();
+    drop(conn);
+    let report = ops::doctor(&c.brain);
+    let line = report.iter().find(|l| l.starts_with("index:")).unwrap_or_else(|| panic!("doctor must report the index: {report:#?}"));
+    assert!(ops::is_problem(line), "{line}");
+    assert!(line.contains("rewire rebuild"), "{line}");
+}
+
 /// The error a command prints for an unreadable index names the same way out `doctor` does.
 #[test]
 fn an_unreadable_index_names_the_way_out() {

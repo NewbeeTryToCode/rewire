@@ -406,15 +406,16 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 deny.push(rule.clone());
             }
         }
-        // rules an older install wrote for the binary's path then: the binary is here now, so they only deny a path
-        // that is not there anymore. Another tool's rules and the bare `rewire` rules stay.
+        // rules an older install wrote for another rewire binary path are dropped, whether or not that copy is still
+        // there (one install, one path). Another tool's rules and every bare `rewire` rule stay.
         let wanted_rules: Vec<&str> = wanted["permissions"]["deny"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
         deny.retain(|rule| {
             let Some(inner) = rule.as_str().and_then(|r| r.strip_prefix("Bash(")).and_then(|r| r.strip_suffix(')')) else {
                 return true;
             };
             let exe = inner.split_whitespace().next().unwrap_or_default();
-            let moved = exe.rsplit('/').next() == Some("rewire") && exe != command;
+            // no "/" means the plain name: the rules `deny_rules` writes for it, and any the user wrote, stay
+            let moved = exe.contains('/') && exe.rsplit('/').next() == Some("rewire") && exe != command;
             !moved || wanted_rules.iter().any(|w| rule.as_str() == Some(*w))
         });
         if let Some(dir) = settings_path.parent() {

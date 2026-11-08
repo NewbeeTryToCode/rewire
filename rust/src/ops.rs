@@ -833,10 +833,14 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
             report.push(format!("BLOCKED ({why}) {}: hidden from sessions until edited", node.path.display()));
         }
     }
-    // The index is what recall answers from. A snapshot error sends the user here, so this report must see the same
-    // failure recall sees; it opens the database without a full scan (that is `rewire rebuild`'s job).
+    // A hook whose snapshot failed sends the user here, so this opens the index the way recall does (that runs the
+    // usual incremental scan) and reads the search table, the one recall fails on. It cannot catch every query that
+    // can fail later; it catches an index that cannot be opened, read or searched at all.
     let mut index = Index::new(brain);
-    let probed = index.db().and_then(|db| Ok(db.query_row("SELECT count(*) FROM nodes", [], |r| r.get::<_, i64>(0))?));
+    let probed = index.db().and_then(|db| {
+        db.query_row("SELECT count(*) FROM fts", [], |r| r.get::<_, i64>(0))?;
+        Ok(db.query_row("SELECT count(*) FROM nodes", [], |r| r.get::<_, i64>(0))?)
+    });
     if let Err(e) = probed {
         let e = e.to_string();
         let why = e.strip_prefix("index: ").unwrap_or(&e);
