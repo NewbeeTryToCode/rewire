@@ -338,7 +338,9 @@ fn trim_excerpt(query: &str, excerpt: &str) -> String {
 
 /// Static word vectors (WordLlama) are a weak ranker: at equal weight in rank fusion, excerpts that sit mid-list
 /// in both rankings pushed out the best keyword match (LongMemEval single-session-user all evidence 100% -> 95%).
-/// At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16 results).
+/// At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16). The only record
+/// of that pair is `research_notes/CortexDB versus SQLite untuk rewire/local_backends.md:6`: no file in
+/// `experiments/eval/results` carries it.
 const EP_SEM_WEIGHT: f64 = 0.25;
 
 /// Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
@@ -481,7 +483,7 @@ impl Index {
             spread: brain.config.spread.clone(),
             db: None,
             // source-excerpt bonus for the top memory hit, as a share of the best excerpt score
-            // (tuned: experiments/locomo/evidence.py)
+            // (tuned with experiments/locomo/evidence.py, since removed: no artifact is left for 0.35)
             seed_weight: 0.35,
             mat: None,
             epmat: None,
