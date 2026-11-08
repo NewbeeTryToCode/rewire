@@ -100,7 +100,7 @@ impl<'a> Server<'a> {
             "recall" => {
                 let query = args.get("query").and_then(Value::as_str).ok_or_else(|| Error::Op("missing argument: query".into()))?;
                 self.index.refresh()?;
-                let k = int_arg(args, "k", 8)?.max(1) as usize;
+                let k = int_arg(args, "k", 8)?.clamp(1, 50) as usize; // the schema's range
                 let episodes = int_arg(args, "episodes", 3)?.clamp(0, 30) as usize;
                 let scope = args.get("scope").and_then(Value::as_str);
                 let also: Vec<String> = match args.get("also") {
@@ -159,7 +159,8 @@ impl<'a> Server<'a> {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
         let result = match method {
             "initialize" => {
-                let version = params.get("protocolVersion").and_then(Value::as_str).filter(|v| !v.is_empty()).unwrap_or(PROTOCOL);
+                // one version is implemented: echo the client's when it asks for that one, name ours otherwise
+                let version = params.get("protocolVersion").and_then(Value::as_str).filter(|v| *v == PROTOCOL).unwrap_or(PROTOCOL);
                 json!({"protocolVersion": version, "capabilities": {"tools": {}},
                        "serverInfo": {"name": "rewire", "version": VERSION}})
             }

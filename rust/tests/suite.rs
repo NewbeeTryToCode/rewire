@@ -682,10 +682,11 @@ fn undo_takes_back_approved_changes_and_restores_what_they_replaced() {
 
 /// The command as the user runs it in their own terminal (the suite itself may run inside an agent session).
 fn as_user(cmd: &mut Command) -> &mut Command {
-    for k in ["CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"] {
+    for k in ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"] {
         cmd.env_remove(k);
     }
-    cmd.env("REWIRE_NOT_AN_AGENT", "1") // `cargo test` itself may run under an agent
+    // `cargo test` itself may run under an agent. A test that simulates an agent session removes this again.
+    cmd.env("REWIRE_NOT_AN_AGENT", "1")
 }
 
 #[test]
@@ -1636,7 +1637,7 @@ fn install_cloud_writes_settings_and_registers_mcp() {
         if user {
             as_user(&mut cmd);
         } else {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.output().unwrap()
     };
@@ -2006,6 +2007,7 @@ fn remember_apply_is_refused_inside_an_agent_shell() {
             .arg("--brain")
             .arg(tmp.path().join("b"))
             .args(args)
+            .env_remove("REWIRE_NOT_AN_AGENT")
             .env("CLAUDECODE", "1")
             .output()
             .unwrap()
@@ -2199,7 +2201,7 @@ fn review_approve_is_refused_inside_an_agent_shell() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
         as_user(cmd.arg("--brain").arg(tmp.path().join("b")).args(args));
         if agent {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.stdin(std::process::Stdio::null()).output().unwrap()
     };
@@ -2226,6 +2228,163 @@ fn install_denies_the_agent_approving_or_editing_memory() {
     let edit = format!("Edit(//{}/**)", c.brain.root.to_string_lossy().trim_start_matches('/'));
     assert!(deny.contains(&edit.as_str()), "{deny:?}");
     assert_eq!(deny.iter().filter(|r| **r == edit).count(), 1); // idempotent
+}
+
+#[test]
+fn install_from_a_moved_binary_replaces_the_old_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install = |name: &str| {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("rewire");
+        std::fs::copy(env!("CARGO_BIN_EXE_rewire"), &bin).unwrap();
+        bin.canonicalize().unwrap()
+    };
+    let first = install("a");
+    let second = install("b");
+    let config = tmp.path().join("claude");
+    let run = |exe: &Path| {
+        let mut cmd = Command::new(exe);
+        let out = as_user(&mut cmd)
+            .args(["install", "claude-code", "--write"])
+            .env("CLAUDE_CONFIG_DIR", &config)
+            .env("REWIRE_BRAIN", tmp.path().join("brain"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        read(&config.join("settings.json"))
+    };
+    run(&first);
+    let after_second = run(&second);
+    let v: Value = serde_json::from_str(&after_second).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(cmds, [format!("{} hook session-start", second.display())]);
+    let deny = v["permissions"]["deny"].to_string();
+    assert!(!deny.contains(&first.parent().unwrap().to_string_lossy().into_owned()), "{deny}");
+    assert_eq!(run(&second), after_second); // the same path installs nothing twice
+}
+
+#[test]
+fn the_generic_agent_variable_is_detected_and_the_opt_out_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire = |args: &[&str], env: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+        cmd.arg("--brain").arg(&brain).args(args);
+        for k in
+            ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL", "REWIRE_NOT_AN_AGENT"]
+        {
+            cmd.env_remove(k);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
+    };
+    assert!(rewire(&["init"], &[]).status.success());
+    let out = rewire(&["remote", "set", "https://example.com/elsewhere/b.git"], &[("AGENT", "1")]);
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("agent session"), "{}", String::from_utf8_lossy(&out.stderr));
+    // the opt-out says "a test suite or a benchmark, not an agent": it beats a marker the harness left behind
+    let out = rewire(&["remote", "set", "https://example.com/me/b.git"], &[("CLAUDECODE", "1"), ("REWIRE_NOT_AN_AGENT", "1")]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn setup_local_reports_a_doctor_problem_and_installs_where_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let bin = tmp.path().join("bin");
+    let install = tmp.path().join("custom-bin");
+    for dir in [&home, &bin, &install] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let script = |path: &Path, body: String| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let seen = tmp.path().join("install-dir-seen-by-install-sh");
+    // the pipe's second half only has to exit 0; the first half records what the child installer is told
+    script(
+        &bin.join("curl"),
+        format!("#!/bin/sh\nprintf '%s' \"${{REWIRE_INSTALL_DIR:-unset}}\" > '{}'\nprintf 'exit 0\\n'\n", seen.display()),
+    );
+    for tool in ["sh", "cat"] {
+        std::os::unix::fs::symlink(format!("/bin/{tool}"), bin.join(tool)).unwrap();
+    }
+    let doctor_problem = "#!/bin/sh\nif [ \"$1\" = doctor ]; then echo 'doctor: claude is not installed'; exit 1; fi\nexit 0\n";
+    script(&install.join("rewire"), doctor_problem.into());
+    let out = Command::new("/bin/bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("scripts/setup-local.sh"))
+        .env("HOME", &home)
+        .env("PATH", &bin) // no claude, no codex, and the binary only in REWIRE_INSTALL_DIR
+        .env("REWIRE_INSTALL_DIR", &install)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("Done"), "{stdout}");
+    assert_eq!(read(&seen), install.to_string_lossy().into_owned());
+}
+
+#[test]
+fn mcp_answers_an_unsupported_protocol_with_the_one_it_serves() {
+    let c = Case::new();
+    let mut server = rewire::mcp::Server::new(&c.brain);
+    let mut version = |asked: &str| {
+        server.handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": asked}})).unwrap()["result"]
+            ["protocolVersion"]
+            .clone()
+    };
+    assert_eq!(version("1999-01-01"), json!(rewire::mcp::PROTOCOL));
+    assert_eq!(version("2001-06-18"), json!(rewire::mcp::PROTOCOL));
+    assert_eq!(version(rewire::mcp::PROTOCOL), json!(rewire::mcp::PROTOCOL));
+}
+
+#[test]
+fn recall_k_is_clamped_to_the_advertised_maximum() {
+    let c = Case::new();
+    for i in 0..60 {
+        let change = m(json!({"action": "NEW", "type": "fact", "text": format!("Widget number {i} ships on friday"),
+                              "scope": "global", "importance": 3, "confidence": "explicit", "provenance": "user"}));
+        ops::apply_change(&c.brain, &change, None).unwrap();
+    }
+    let mut server = rewire::mcp::Server::new(&c.brain);
+    let res = server
+        .handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": "recall", "arguments": {"query": "widget", "k": 500, "scope": "all", "episodes": 0}}}))
+        .unwrap();
+    let text = res["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(text.matches("\"id\":").count(), 50, "{text}");
+}
+
+#[test]
+fn a_harness_without_a_parser_is_refused() {
+    use std::io::Write;
+    let mut child = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["hook", "session-start", "--harness", "omp"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(json!({"cwd": "/tmp"}).to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("claude-code") && err.contains("codex"), "{err}");
+    // and the parser itself says so rather than reading another harness's transcript as Claude Code's
+    let err = tx::read(&fix("claude_code.jsonl"), 0, Some("omp")).unwrap_err();
+    assert!(err.to_string().contains("claude-code") && err.to_string().contains("codex"), "{err}");
+    assert!(tx::read(&fix("claude_code.jsonl"), 0, Some("claude-code")).is_ok());
+    assert!(tx::read(&fix("rollout-2026-10-01T10-00-00-abc.jsonl"), 0, Some("codex")).is_ok());
 }
 
 #[test]
@@ -3260,7 +3419,7 @@ fn undo_and_remote_set_are_refused_in_agent_sessions() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
         as_user(cmd.arg("--brain").arg(&brain).args(args));
         if agent {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.output().unwrap()
     };

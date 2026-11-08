@@ -260,17 +260,25 @@ pub fn guess_harness(path: &Path) -> &'static str {
     }
 }
 
+/// The harnesses with a transcript parser here. A harness without one is refused, not read as Claude Code's.
+pub const HARNESSES: [&str; 2] = ["claude-code", "codex"];
+
 fn parse(harness: &str, lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) {
-    if harness == "codex" {
-        parse_codex(lines)
-    } else {
-        parse_claude_code(lines)
+    match harness {
+        "codex" => parse_codex(lines),
+        _ => parse_claude_code(lines), // claude-code, and the unlabelled default of a discovered transcript
     }
 }
 
 /// Parse lines after start_line. Returns (harness, meta, turns, last_line).
 pub fn read(path: &Path, start_line: usize, harness: Option<&str>) -> std::io::Result<(String, SessionMeta, Vec<Turn>, usize)> {
     let harness = harness.unwrap_or_else(|| guess_harness(path)).to_string();
+    if !HARNESSES.contains(&harness.as_str()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{}: no parser for the {harness:?} harness; these have one: {}", path.display(), HARNESSES.join(", ")),
+        ));
+    }
     let bytes = fs::read(path)?;
     let content = String::from_utf8_lossy(&bytes);
     let lines: Vec<(usize, String)> = content.split_inclusive('\n').enumerate().map(|(i, l)| (i + 1, l.to_string())).collect();

@@ -5,13 +5,16 @@
 set -euo pipefail
 
 REF="${1:-}"
+# install.sh reads the same variable; the release binary goes here
+INSTALL_DIR="${REWIRE_INSTALL_DIR:-$HOME/.local/bin}"
 
 say() { printf '\n==> %s\n' "$*"; }
 
 if [ -z "${REF}" ]; then
   say "Installing the latest rewire release"
+  export REWIRE_INSTALL_DIR="$INSTALL_DIR"
   curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh
-  export PATH="$HOME/.local/bin:$PATH"
+  export PATH="$INSTALL_DIR:$PATH"
 else
   command -v cargo >/dev/null 2>&1 || { echo "building from a git ref needs Rust: install it from https://rustup.rs first"; exit 1; }
   say "Building rewire from ${REF}"
@@ -45,7 +48,7 @@ if command -v codex >/dev/null 2>&1; then
 fi
 
 say "Health check"
-rewire doctor
+rewire doctor || echo "rewire doctor reported a problem: fix it before relying on memory"
 
 cat <<EOF
 

@@ -33,10 +33,10 @@ Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · Fi
 ## Installation
 
 The release binary (Linux x86_64, macOS arm64/x86_64; one file, SQLite bundled), checked against its SHA-256, into
-`~/.local/bin`:
+`~/.local/bin` (or `REWIRE_INSTALL_DIR`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh'
 rewire init                     # creates ~/brain (or set REWIRE_BRAIN)
 ```
 
@@ -73,10 +73,13 @@ codex mcp add rewire -- rewire mcp
 
 The agent proposes memories and you approve them. `install claude-code --write` adds Claude Code permission
 rules that deny the agent `rewire review approve`, `rewire remember --apply` and direct edits of the brain, and rewire
-itself refuses approving, `--apply`, `forget`, `undo`, `remote set` and `install cloud` inside an agent session (detected by the agent's environment
-variables or its process among the command's ancestors; test suites and benchmark harnesses started from an agent
-session set `REWIRE_NOT_AN_AGENT=1`). These raise the bar, they are not a sandbox: an agent that may run arbitrary
-shell commands acts as you, and could do the same.
+itself refuses approving, `--apply`, `forget`, `undo`, `remote set` and `install cloud` inside an agent session. It
+calls a session an agent's when one of `CLAUDECODE`, `AGENT`, `AI_AGENT`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED` or `REWIRE_INTERNAL` is set, or when a `claude` or `codex` process runs among the
+command's ancestors. A harness that sets none of these and starts under another name (omp, aider, cursor-agent) is not
+detected. `REWIRE_NOT_AN_AGENT=1` overrides the check, for a test or benchmark harness that runs inside an agent
+session. These raise the bar, they are not a sandbox: an agent that may run arbitrary shell commands acts as you, and
+could do the same.
 
 With sync, rules, preferences and skills that arrive from another device (or come with `rewire init --from`) are left
 out of the snapshot, recall and the per-prompt hook on this device until you approve them here (`rewire review`;
