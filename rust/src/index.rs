@@ -813,6 +813,17 @@ impl Index {
             .collect();
         subdirs.sort_by(|a, b| a.0.cmp(&b.0));
         let stamp = subdirs.iter().map(|(n, _, m)| format!("{n}:{m}")).collect::<Vec<_>>().join(",");
+        // The guard saves the per-file stat calls, not the listing: some filesystems (tmpfs) leave a directory's mtime
+        // alone when a file inside it is unlinked, so the number of notes on disk is part of what the guard compares.
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for (_, dir, _) in &subdirs {
+            for e in fs::read_dir(dir)?.flatten() {
+                if e.file_name().to_string_lossy().ends_with(".md") {
+                    paths.push(e.path());
+                }
+            }
+        }
+        let stamp = format!("{stamp}#{}", paths.len());
         let row: Option<String> = db.query_row("SELECT v FROM meta WHERE k='scan'", [], |r| r.get(0)).optional()?;
         if let Some(v) = row {
             if let Some((last_stamp, last_at)) = v.rsplit_once('@') {
@@ -822,14 +833,9 @@ impl Index {
             }
         }
         let mut seen: IndexMap<String, (i64, i64)> = IndexMap::new();
-        for (_, dir, _) in &subdirs {
-            for e in fs::read_dir(dir)?.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".md") {
-                    if let Ok(md) = e.metadata() {
-                        seen.insert(e.path().to_string_lossy().into_owned(), (mtime_ns(&md), md.len() as i64));
-                    }
-                }
+        for path in &paths {
+            if let Ok(md) = path.metadata() {
+                seen.insert(path.to_string_lossy().into_owned(), (mtime_ns(&md), md.len() as i64));
             }
         }
         db.execute("INSERT OR REPLACE INTO meta VALUES ('scan', ?)", [format!("{stamp}@{}", now_ts())])?;
