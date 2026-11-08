@@ -302,6 +302,13 @@ context ≈11.2k tokens out of ≈115k (≈10× smaller). A 120-question sample 
 estimated $1.30 with GPT-4o-mini. 1M, 140 questions (20 per type): context ≈12.7k tokens out of ≈925k
 (compression ≈92×), retrieval p50 42 ms / p99 277 ms, estimate for all 2,674 questions ≈$5.90.
 
+**Recall order changed on 2026-11-08, and its quality is unmeasured.** `bm25` used to be given three weights for a
+four-column table (`id UNINDEXED, title, body, keywords`), so SQLite gave the title weight 1 and the body weight 2;
+the intended weights are now passed (title 3, body 1, keywords 2). Every number in this document was produced with
+the old weights, so the order behind them is the old order. The new order has not been measured end to end
+(**tidak ada artefak**); a fixture test in `rust/tests/suite.rs` (`a_title_match_outranks_a_body_match`) only pins
+that a title match outranks a body match, which the old weights got backwards.
+
 **BEAM 100K (dry run, 20 questions):** all evidence present 52.9%, MRR 0.43, context ≈13.4k tokens (compression ≈11×),
 52 judge calls for 20 questions; information extraction and preference following had 0% evidence in this small sample.
 

@@ -207,6 +207,20 @@ fn a_note_that_does_not_parse_is_reported_instead_of_queued_as_a_rule() {
     assert!(ops::doctor(&t.b).iter().any(|l| l.starts_with("UNREADABLE")), "doctor must agree with the pull");
 }
 
+/// The title is the strongest precision signal for a short note: a note whose title matches must outrank one whose
+/// body repeats the query. The weights once reached `bm25` as a 3-value tuple for a 4-column table, which silently
+/// gave the title weight 1 and the body weight 2.
+#[test]
+fn a_title_match_outranks_a_body_match() {
+    let mut c = Case::new();
+    let by_title = c.brain.new_meta("fact", "Deploy region", Meta::new());
+    c.brain.write_node(&by_title, "we always run the pipeline here", None).unwrap();
+    let by_body = c.brain.new_meta("fact", "Unrelated note", Meta::new());
+    c.brain.write_node(&by_body, "deploy region is a deploy region thing", None).unwrap();
+    c.index.rebuild().unwrap();
+    assert_eq!(titles(&c.search("deploy region", &["global"])).first().map(String::as_str), Some("Deploy region"));
+}
+
 // ---- snapshot & recall ---------------------------------------------------
 
 #[test]
