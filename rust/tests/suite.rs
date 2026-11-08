@@ -173,6 +173,17 @@ fn doctor_reports_an_index_it_cannot_open() {
     assert!(ops::is_problem(line), "{line}");
 }
 
+/// `doctor` is a diagnostic: it must not build or repair the index behind the user's back.
+#[test]
+fn doctor_does_not_build_the_index() {
+    let c = Case::new();
+    let db = c.brain.path(&[".index", "brain.db"]);
+    std::fs::remove_file(&db).unwrap();
+    let report = ops::doctor(&c.brain);
+    assert!(!db.exists(), "doctor built the index");
+    assert!(!report.iter().any(|l| l.starts_with("index:")), "no index yet is not a problem: {report:#?}");
+}
+
 /// A recall query reads `fts`: an index whose search table is gone must not look healthy to `doctor`.
 #[test]
 fn doctor_reports_an_index_whose_search_table_is_gone() {
@@ -220,7 +231,10 @@ fn a_note_that_does_not_parse_is_reported_instead_of_queued_as_a_rule() {
     sync::push(&t.a, 30).unwrap();
     let notes = sync::pull(&t.b, 30).unwrap();
     assert!(notes.iter().any(|n| n.contains("could not be read")), "the pull must say the note is unreadable: {notes:?}");
-    assert!(!notes.iter().any(|n| n.contains("rule(s)")), "an unreadable note is not a rule to review: {notes:?}");
+    assert!(
+        !t.b.is_untrusted(&t.b.path(&["nodes", "constraint", "broken-note-01abcdef.md"])),
+        "an unreadable note is not queued for review"
+    );
     assert!(ops::doctor(&t.b).iter().any(|l| l.starts_with("UNREADABLE")), "doctor must agree with the pull");
 }
 
@@ -2271,6 +2285,8 @@ fn install_from_a_moved_binary_replaces_the_old_path() {
         read(&config.join("settings.json"))
     };
     run(&first);
+    // the binary moved: what it left behind points at a path that is no longer there
+    std::fs::remove_file(&first).unwrap();
     let after_second = run(&second);
     let v: Value = serde_json::from_str(&after_second).unwrap();
     let cmds: Vec<String> = v["hooks"]["SessionStart"]
@@ -2283,6 +2299,49 @@ fn install_from_a_moved_binary_replaces_the_old_path() {
     let deny = v["permissions"]["deny"].to_string();
     assert!(!deny.contains(&first.parent().unwrap().to_string_lossy().into_owned()), "{deny}");
     assert_eq!(run(&second), after_second); // the same path installs nothing twice
+}
+
+/// Installing rewire leaves a user's own hooks and deny rules alone, including ones that mention another copy.
+#[test]
+fn install_keeps_hooks_and_rules_that_are_not_rewire_this_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other_bin = other.join("rewire");
+    std::fs::copy(env!("CARGO_BIN_EXE_rewire"), &other_bin).unwrap();
+    let notify = tmp.path().join("rewire-scripts");
+    std::fs::create_dir_all(&notify).unwrap();
+    let notify = notify.join("notify.sh");
+    std::fs::write(&notify, "#!/bin/sh\nexit 0\n").unwrap();
+    let config = tmp.path().join("claude");
+    std::fs::create_dir_all(&config).unwrap();
+    let mine = format!("{} hook session-start", notify.display());
+    let theirs = format!("Bash({} review approve:*)", other_bin.display());
+    std::fs::write(
+        config.join("settings.json"),
+        json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": mine}]}]},
+               "permissions": {"deny": [theirs, "Bash(git push:*)".to_string()]}})
+        .to_string(),
+    )
+    .unwrap();
+    let out = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["install", "claude-code", "--write"])
+        .env("CLAUDE_CONFIG_DIR", &config)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_str(&read(&config.join("settings.json"))).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert!(cmds.contains(&mine), "a user hook in a rewire-named directory is untouched: {cmds:?}");
+    let deny = v["permissions"]["deny"].to_string();
+    assert!(deny.contains(&other_bin.display().to_string()), "a deny rule for a copy that still exists stays: {deny}");
+    assert!(deny.contains("Bash(git push:*)"), "{deny}");
 }
 
 #[test]
@@ -2378,7 +2437,9 @@ fn recall_k_is_clamped_to_the_advertised_maximum() {
                         "params": {"name": "recall", "arguments": {"query": "widget", "k": 500, "scope": "all", "episodes": 0}}}))
         .unwrap();
     let text = res["result"]["content"][0]["text"].as_str().unwrap();
-    assert_eq!(text.matches("\"id\":").count(), 50, "{text}");
+    // the payload is JSON inside the memory fence: count the hits themselves, not a key's spelling
+    let hits: Value = serde_json::from_str(&text[text.find('[').unwrap()..=text.rfind(']').unwrap()]).unwrap();
+    assert_eq!(hits.as_array().unwrap().len(), 50, "{text}");
 }
 
 #[test]
@@ -2391,7 +2452,8 @@ fn a_harness_without_a_parser_is_refused() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(json!({"cwd": "/tmp"}).to_string().as_bytes()).unwrap();
+    // the harness is refused before the hook payload is read, so the pipe may already be closed
+    let _ = child.stdin.take().unwrap().write_all(json!({"cwd": "/tmp"}).to_string().as_bytes());
     let out = child.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{err}");

@@ -63,8 +63,15 @@ impl From<std::io::Error> for Error {
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
-        // the index is derived: every failure that reaches the user says how to throw it away, as `doctor` does
-        Error::Other(format!("index: {e} (rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run)"))
+        // The index is derived, so a damaged one has a way out; a locked or read-only one does not need rebuilding,
+        // it needs whatever holds it to finish (or the directory to become writable).
+        let text = e.to_string();
+        let busy = text.contains("locked") || text.contains("readonly") || text.contains("read-only");
+        Error::Other(if busy {
+            format!("index: {text} (another rewire process may be writing it; check the permissions of .index)")
+        } else {
+            format!("index: {text} (rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run)")
+        })
     }
 }
 

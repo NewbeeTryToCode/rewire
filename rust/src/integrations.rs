@@ -373,20 +373,34 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
             let wanted_cmd = entries[0]["hooks"][0]["command"].as_str().unwrap_or_default().to_string();
             let suffix = wanted_cmd.split_once(" hook ").map(|(_, e)| format!(" hook {e}")).unwrap_or_default();
             // a rewire hook for this event that names another binary path (an older install, a binary that moved):
-            // point it here, or the event keeps running a path that no longer exists
-            let elsewhere = |c: &str| c != wanted_cmd && !suffix.is_empty() && c.ends_with(&suffix) && c.contains("rewire");
+            // point it here, or the event keeps running a path that no longer exists. Only the executable's own name
+            // counts: a user script in a directory called "rewire-scripts" is not this hook.
+            let runs_rewire = |c: &str| c.split_whitespace().next().unwrap_or_default().rsplit('/').next() == Some("rewire");
+            let elsewhere = |c: &str| c != wanted_cmd && runs_rewire(c) && c.ends_with(&suffix);
             for hook in existing.iter_mut().flat_map(|e| e.get_mut("hooks").and_then(Value::as_array_mut).into_iter().flatten()) {
                 if hook.get("command").and_then(Value::as_str).is_some_and(elsewhere) {
                     hook["command"] = json!(wanted_cmd);
                 }
             }
-            // already installed, by full path or (older installs) by bare name
+            // two stale entries rewritten above would both run the event: keep one of them
+            let mut kept = false;
+            existing.retain(|e| {
+                let ours = e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
+                    !hs.is_empty() && hs.iter().all(|h| h.get("command").and_then(Value::as_str) == Some(wanted_cmd.as_str()))
+                });
+                if !ours {
+                    return true;
+                }
+                let first = !kept;
+                kept = true;
+                first
+            });
+            // already installed, by full path or (older installs) by bare name; the rewrite above makes an old entry
+            // equal to this one, so it is not joined by a second entry that would run the event twice
             let present = existing.iter().any(|e| {
-                e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
-                    hs.iter()
-                        .filter_map(|h| h.get("command").and_then(Value::as_str))
-                        .any(|c| c == wanted_cmd || (c.ends_with(&suffix) && c.contains("rewire")))
-                })
+                e.get("hooks")
+                    .and_then(Value::as_array)
+                    .is_some_and(|hs| hs.iter().filter_map(|h| h.get("command").and_then(Value::as_str)).any(|c| c == wanted_cmd))
             });
             if !present {
                 existing.extend(entries.as_array().into_iter().flatten().cloned());
@@ -406,17 +420,17 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 deny.push(rule.clone());
             }
         }
-        // rules an older install wrote for another rewire binary path are dropped, whether or not that copy is still
-        // there (one install, one path). Another tool's rules and every bare `rewire` rule stay.
-        let wanted_rules: Vec<&str> = wanted["permissions"]["deny"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        // rules an older install wrote for a rewire binary that is no longer there are dropped: that is the growth the
+        // review found. A second copy the user still has keeps its rules, and so do another tool's rules and every
+        // bare `rewire` rule (no path to compare).
         deny.retain(|rule| {
             let Some(inner) = rule.as_str().and_then(|r| r.strip_prefix("Bash(")).and_then(|r| r.strip_suffix(')')) else {
                 return true;
             };
             let exe = inner.split_whitespace().next().unwrap_or_default();
-            // no "/" means the plain name: the rules `deny_rules` writes for it, and any the user wrote, stay
-            let moved = exe.contains('/') && exe.rsplit('/').next() == Some("rewire") && exe != command;
-            !moved || wanted_rules.iter().any(|w| rule.as_str() == Some(*w))
+            let gone =
+                exe.contains('/') && exe != command && exe.rsplit('/').next() == Some("rewire") && !std::path::Path::new(exe).is_file();
+            !gone
         });
         if let Some(dir) = settings_path.parent() {
             fs::create_dir_all(dir)?;

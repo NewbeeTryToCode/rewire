@@ -266,7 +266,7 @@ pub const HARNESSES: [&str; 2] = ["claude-code", "codex"];
 fn parse(harness: &str, lines: &[(usize, String)]) -> (SessionMeta, Vec<Turn>) {
     match harness {
         "codex" => parse_codex(lines),
-        _ => parse_claude_code(lines), // claude-code, and the unlabelled default of a discovered transcript
+        _ => parse_claude_code(lines), // "claude-code"; read() refuses every other name
     }
 }
 
@@ -276,7 +276,7 @@ pub fn read(path: &Path, start_line: usize, harness: Option<&str>) -> std::io::R
     if !HARNESSES.contains(&harness.as_str()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("{}: no parser for the {harness:?} harness; these have one: {}", path.display(), HARNESSES.join(", ")),
+            format!("no parser for the {harness:?} harness; these have one: {}", HARNESSES.join(", ")),
         ));
     }
     let bytes = fs::read(path)?;

@@ -224,10 +224,10 @@ static SECRETS: [Pattern; 19] = [
     // PEM and PGP private keys ("-----BEGIN PGP PRIVATE KEY BLOCK-----")
     Pattern::new(r"-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----", &["-----BEGIN "], false),
     // key: value, also quoted JSON keys ({"apiKey": "..."}); values that are paths ("pwd: /home/me") are left alone.
-    // A prefix runs into the name ("access_token", "DB_PASSWORD"): `_` is a word character, so `\b` before the name
-    // alone never fires inside one.
+    // A prefixed name separated by "_" or "-" ("access_token", "DB_PASSWORD") is caught: `_` is a word character, so
+    // `\b` alone never fires inside one. "csrftoken=" and "websocketsecret=" are names of things, not secrets.
     Pattern::new(
-        r#"(?i)\b\w*(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|auth[_-]?token)\b["']?\s*[:=]\s*["']?[^\s"'/~$,}][^\s"',}]{7,}"#,
+        r#"(?i)\b(?:\w+[_-])*(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|auth[_-]?token)\b["']?\s*[:=]\s*["']?[^\s"'/~$,}][^\s"',}]{7,}"#,
         &["passw", "pwd", "secret", "api", "token", "key"],
         true,
     ),

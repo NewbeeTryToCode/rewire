@@ -587,6 +587,20 @@ impl Index {
         self.refresh_max_age(ACT_MAX_AGE)
     }
 
+    /// Read the index as it is, for `doctor`: no scan, no repair, no write lock. `Ok(None)` when there is no index yet
+    /// (recall builds one); `Err` when it exists and cannot be opened or searched.
+    pub fn probe(brain: &Brain) -> Result<Option<(i64, i64)>> {
+        let path = brain.path(&[".index", "brain.db"]);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        db.busy_timeout(std::time::Duration::from_millis(500))?;
+        let search: i64 = db.query_row("SELECT count(*) FROM fts", [], |r| r.get(0))?;
+        let nodes: i64 = db.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?;
+        Ok(Some((nodes, search)))
+    }
+
     /// Node files the last full scan could not read. `rewire rebuild` prints them; `doctor` builds the same list from
     /// the same parser through `brain::broken_nodes`.
     pub fn broken(&mut self) -> Result<Vec<String>> {
@@ -798,7 +812,12 @@ impl Index {
     fn sync_nodes(&self, db: &Connection) -> Result<HashSet<String>> {
         let root = self.root.join("nodes");
         let mut changed = HashSet::new();
-        let mut broken: Vec<String> = Vec::new();
+        let mut broken: Vec<String> = db
+            .query_row("SELECT v FROM meta WHERE k='broken'", [], |r| r.get::<_, String>(0))
+            .optional()?
+            .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
+            .unwrap_or_default();
+        broken.retain(|p| Path::new(p).is_file());
         if !root.is_dir() {
             return Ok(changed);
         }
@@ -868,9 +887,15 @@ impl Index {
             }
             let parsed = fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| crate::brain::parse_node(&t));
             let Ok((meta, body)) = parsed else {
-                // on disk but not readable: reported by `doctor` (brain::broken_nodes), never indexed
-                broken.push(path.clone());
-                db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", params![path, mtime, size, None::<String>])?;
+                // on disk but not readable: out of recall (never a stale row), reported by `doctor` through
+                // brain::broken_nodes. The `files` row keeps its id and its old stat, so repairing the note replaces
+                // the row instead of leaving a phantom next to it.
+                if !broken.contains(path) {
+                    broken.push(path.clone());
+                }
+                if let Some((_, _, Some(old_id))) = old {
+                    Self::delete_node(db, old_id)?;
+                }
                 continue;
             };
             if let Some((_, _, Some(old_id))) = old {
@@ -969,6 +994,8 @@ impl Index {
             Self::delete_episodes(db, path)?;
             changed = true;
             let content = fs::read_to_string(path).unwrap_or_default();
+            // a Windows checkout writes transcripts with CRLF too; the separators below are LF
+            let content = if content.contains("\r\n") { content.replace("\r\n", "\n") } else { content };
             let folder = Path::new(path).parent().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().into_owned());
             let mut scope = String::from("global");
             for part in content.split("\n---\n") {

@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-/// Notes are read with either line ending, and checked out with LF on every platform: `core.autocrlf=true` (the Git
-/// for Windows default) must not rewrite every note, and a brain that is CRLF already still parses.
+/// A brain created by this version checks its notes out with LF on every platform, so `core.autocrlf=true` (the Git
+/// for Windows default) cannot rewrite every note. A brain from an earlier version keeps its own file, and its CRLF
+/// checkouts still parse (`fm::loads`).
 pub const GITATTRIBUTES: &str = "* text=auto eol=lf\nevents/**/*.jsonl merge=union\n";
 /// The derived index, device-local state and device-local settings never sync. A pulled `.gitignore` that drops
 /// any of them gets them back (and stops tracking what it let in). Returns notes for what was repaired.
