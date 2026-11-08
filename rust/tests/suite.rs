@@ -571,10 +571,11 @@ fn undo_takes_back_approved_changes_and_restores_what_they_replaced() {
 
 /// The command as the user runs it in their own terminal (the suite itself may run inside an agent session).
 fn as_user(cmd: &mut Command) -> &mut Command {
-    for k in ["CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"] {
+    for k in ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"] {
         cmd.env_remove(k);
     }
-    cmd.env("REWIRE_NOT_AN_AGENT", "1") // `cargo test` itself may run under an agent
+    // `cargo test` itself may run under an agent. A test that simulates an agent session removes this again.
+    cmd.env("REWIRE_NOT_AN_AGENT", "1")
 }
 
 #[test]
@@ -1525,7 +1526,7 @@ fn install_cloud_writes_settings_and_registers_mcp() {
         if user {
             as_user(&mut cmd);
         } else {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.output().unwrap()
     };
@@ -1895,6 +1896,7 @@ fn remember_apply_is_refused_inside_an_agent_shell() {
             .arg("--brain")
             .arg(tmp.path().join("b"))
             .args(args)
+            .env_remove("REWIRE_NOT_AN_AGENT")
             .env("CLAUDECODE", "1")
             .output()
             .unwrap()
@@ -2088,7 +2090,7 @@ fn review_approve_is_refused_inside_an_agent_shell() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
         as_user(cmd.arg("--brain").arg(tmp.path().join("b")).args(args));
         if agent {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.stdin(std::process::Stdio::null()).output().unwrap()
     };
@@ -2154,6 +2156,32 @@ fn install_from_a_moved_binary_replaces_the_old_path() {
     let deny = v["permissions"]["deny"].to_string();
     assert!(!deny.contains(&first.parent().unwrap().to_string_lossy().into_owned()), "{deny}");
     assert_eq!(run(&second), after_second); // the same path installs nothing twice
+}
+
+#[test]
+fn the_generic_agent_variable_is_detected_and_the_opt_out_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire = |args: &[&str], env: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+        cmd.arg("--brain").arg(&brain).args(args);
+        for k in
+            ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL", "REWIRE_NOT_AN_AGENT"]
+        {
+            cmd.env_remove(k);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
+    };
+    assert!(rewire(&["init"], &[]).status.success());
+    let out = rewire(&["remote", "set", "https://example.com/elsewhere/b.git"], &[("AGENT", "1")]);
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("agent session"), "{}", String::from_utf8_lossy(&out.stderr));
+    // the opt-out says "a test suite or a benchmark, not an agent": it beats a marker the harness left behind
+    let out = rewire(&["remote", "set", "https://example.com/me/b.git"], &[("CLAUDECODE", "1"), ("REWIRE_NOT_AN_AGENT", "1")]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
@@ -3139,7 +3167,7 @@ fn undo_and_remote_set_are_refused_in_agent_sessions() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
         as_user(cmd.arg("--brain").arg(&brain).args(args));
         if agent {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.output().unwrap()
     };
