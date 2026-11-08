@@ -838,8 +838,11 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     if let Err(e) = Index::probe(brain) {
         let e = e.to_string();
         let why = e.strip_prefix("index: ").unwrap_or(&e);
-        let remedy = "rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run";
-        report.push(if why.contains("rewire rebuild") { format!("index: {why}") } else { format!("index: {why} ({remedy})") });
+        // a lock means another rewire process is writing, which is not a problem the user has to fix
+        if !why.contains("locked") {
+            let remedy = "rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run";
+            report.push(if why.contains("rewire rebuild") { format!("index: {why}") } else { format!("index: {why} ({remedy})") });
+        }
     }
     let broken = brain.broken_nodes();
     for (path, why) in &broken {

@@ -595,6 +595,7 @@ impl Index {
             return Ok(None);
         }
         let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // half a second: a diagnostic must not hang behind a writer (a hook runs one per prompt)
         db.busy_timeout(std::time::Duration::from_millis(500))?;
         let search: i64 = db.query_row("SELECT count(*) FROM fts", [], |r| r.get(0))?;
         let nodes: i64 = db.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?;
