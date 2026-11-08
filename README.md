@@ -33,10 +33,10 @@ Architecture: [`docs/design/architecture.md`](docs/design/architecture.md) · Fi
 ## Installation
 
 The release binary (Linux x86_64, macOS arm64/x86_64; one file, SQLite bundled), checked against its SHA-256, into
-`~/.local/bin`:
+`~/.local/bin` (or `REWIRE_INSTALL_DIR`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh'
 rewire init                     # creates ~/brain (or set REWIRE_BRAIN)
 ```
 

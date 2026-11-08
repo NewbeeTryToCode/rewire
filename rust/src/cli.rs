@@ -119,7 +119,7 @@ pub enum Cmd {
         /// (default 600); the hooks start it, one per brain
         #[arg(long, conflicts_with_all = ["files", "pending", "retry"])]
         watch: bool,
-        #[arg(long, value_parser = ["claude-code", "codex"])]
+        #[arg(long, value_parser = crate::transcripts::HARNESSES)]
         harness: Option<String>,
         #[arg(long)]
         quiet: bool,
@@ -187,7 +187,8 @@ pub enum Cmd {
     Hook {
         #[arg(value_parser = ["session-start", "user-prompt", "session-end", "pre-compact"])]
         event: String,
-        #[arg(long, default_value = "claude-code")]
+        /// harness whose hook JSON and transcripts these are (the harnesses with a parser)
+        #[arg(long, default_value = "claude-code", value_parser = crate::transcripts::HARNESSES)]
         harness: String,
     },
     /// connect a harness

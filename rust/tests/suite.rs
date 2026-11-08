@@ -2185,6 +2185,98 @@ fn the_generic_agent_variable_is_detected_and_the_opt_out_wins() {
 }
 
 #[test]
+fn setup_local_reports_a_doctor_problem_and_installs_where_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let bin = tmp.path().join("bin");
+    let install = tmp.path().join("custom-bin");
+    for dir in [&home, &bin, &install] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let script = |path: &Path, body: String| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let seen = tmp.path().join("install-dir-seen-by-install-sh");
+    // the pipe's second half only has to exit 0; the first half records what the child installer is told
+    script(
+        &bin.join("curl"),
+        format!("#!/bin/sh\nprintf '%s' \"${{REWIRE_INSTALL_DIR:-unset}}\" > '{}'\nprintf 'exit 0\\n'\n", seen.display()),
+    );
+    for tool in ["sh", "cat"] {
+        std::os::unix::fs::symlink(format!("/bin/{tool}"), bin.join(tool)).unwrap();
+    }
+    let doctor_problem = "#!/bin/sh\nif [ \"$1\" = doctor ]; then echo 'doctor: claude is not installed'; exit 1; fi\nexit 0\n";
+    script(&install.join("rewire"), doctor_problem.into());
+    let out = Command::new("/bin/bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("scripts/setup-local.sh"))
+        .env("HOME", &home)
+        .env("PATH", &bin) // no claude, no codex, and the binary only in REWIRE_INSTALL_DIR
+        .env("REWIRE_INSTALL_DIR", &install)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("Done"), "{stdout}");
+    assert_eq!(read(&seen), install.to_string_lossy().into_owned());
+}
+
+#[test]
+fn mcp_answers_an_unsupported_protocol_with_the_one_it_serves() {
+    let c = Case::new();
+    let mut server = rewire::mcp::Server::new(&c.brain);
+    let mut version = |asked: &str| {
+        server.handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": asked}})).unwrap()["result"]
+            ["protocolVersion"]
+            .clone()
+    };
+    assert_eq!(version("1999-01-01"), json!(rewire::mcp::PROTOCOL));
+    assert_eq!(version("2001-06-18"), json!(rewire::mcp::PROTOCOL));
+    assert_eq!(version(rewire::mcp::PROTOCOL), json!(rewire::mcp::PROTOCOL));
+}
+
+#[test]
+fn recall_k_is_clamped_to_the_advertised_maximum() {
+    let c = Case::new();
+    for i in 0..60 {
+        let change = m(json!({"action": "NEW", "type": "fact", "text": format!("Widget number {i} ships on friday"),
+                              "scope": "global", "importance": 3, "confidence": "explicit", "provenance": "user"}));
+        ops::apply_change(&c.brain, &change, None).unwrap();
+    }
+    let mut server = rewire::mcp::Server::new(&c.brain);
+    let res = server
+        .handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": "recall", "arguments": {"query": "widget", "k": 500, "scope": "all", "episodes": 0}}}))
+        .unwrap();
+    let text = res["result"]["content"][0]["text"].as_str().unwrap();
+    assert_eq!(text.matches("\"id\":").count(), 50, "{text}");
+}
+
+#[test]
+fn a_harness_without_a_parser_is_refused() {
+    use std::io::Write;
+    let mut child = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["hook", "session-start", "--harness", "omp"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(json!({"cwd": "/tmp"}).to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("claude-code") && err.contains("codex"), "{err}");
+    // and the parser itself says so rather than reading another harness's transcript as Claude Code's
+    let err = tx::read(&fix("claude_code.jsonl"), 0, Some("omp")).unwrap_err();
+    assert!(err.to_string().contains("claude-code") && err.to_string().contains("codex"), "{err}");
+    assert!(tx::read(&fix("claude_code.jsonl"), 0, Some("claude-code")).is_ok());
+    assert!(tx::read(&fix("rollout-2026-10-01T10-00-00-abc.jsonl"), 0, Some("codex")).is_ok());
+}
+
+#[test]
 fn injection_phrasings_and_hidden_letters_are_flagged() {
     use rewire::security::{blocked, scan};
     for text in [
