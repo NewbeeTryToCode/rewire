@@ -6,7 +6,7 @@ Measures whether `recall` returns the right memory, not how fast it is (that is 
 
 ## Data
 
-- [`dataset.json`](dataset.json): created by a separate LLM ([`make_dataset.py`](make_dataset.py)) — the persona of an Indonesian developer who writes in a mix of Indonesian/English, 3 projects (Go, Flutter, Python), **70 memories**, 22 relations, 6 facts that have been superseded, and **60 questions** with known answers, 10 per category:
+- [`dataset.json`](dataset.json): created by a separate LLM (`make_dataset.py`, since removed) — the persona of an Indonesian developer who writes in a mix of Indonesian/English, 3 projects (Go, Flutter, Python), **70 memories**, 22 relations, 6 facts that have been superseded, and **60 questions** with known answers, 10 per category:
 
 | Category | What is tested |
 |---|---|
@@ -20,7 +20,7 @@ Measures whether `recall` returns the right memory, not how fast it is (that is 
 - [`keywords.json`](keywords.json): keywords per memory, created with **exactly the same** instructions as consolidation (`KEYWORDS_RULE`); the generator did not see the questions.
 - [`agent_queries.json`](agent_queries.json): queries written by an LLM agent for each question, following the guidance in the MCP tool description (`QUERY_GUIDE`); the generator did not see the memories.
 
-Run: `python experiments/retrieval/eval.py`
+Run: `python experiments/retrieval/eval.py` (the script was removed; the dataset and the numbers it produced are kept)
 
 ## Results (R@5 / MRR)
 

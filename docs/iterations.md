@@ -62,7 +62,7 @@ Implemented from the Mem0/Zep analysis: optional semantic search (WordLlama, off
 
 ## Iteration 7 — 2026-10-13: LoCoMo failure analysis
 
-A new metric without an LLM ([evidence.py](../experiments/locomo/evidence.py)): whether LoCoMo's evidence turns make it into the context. Diagnosis: 57% of wrong answers already had all the evidence, so the error is in the answerer. Implemented: facts pull in the transcript chunks they came from (required a bug fix: the session id in the claim source was truncated to 8 characters). All-evidence-in-context 75.5 → 79.5%, temporal 81 → 90%, but full J stayed at 94.0% (noise ±3). Tried and discarded: 2× chunks for counting questions (caused miscounting) and a per-session chunk limit (lowered recall). Timeline rules were added to extraction, not yet measured. Conclusion: LoCoMo is saturated; next is LongMemEval.
+A new metric without an LLM (`evidence.py`, since removed: no artifact is left for it): whether LoCoMo's evidence turns make it into the context. Diagnosis: 57% of wrong answers already had all the evidence, so the error is in the answerer. Implemented: facts pull in the transcript chunks they came from (required a bug fix: the session id in the claim source was truncated to 8 characters). All-evidence-in-context 75.5 → 79.5%, temporal 81 → 90%, but full J stayed at 94.0% (noise ±3). Tried and discarded: 2× chunks for counting questions (caused miscounting) and a per-session chunk limit (lowered recall). Timeline rules were added to extraction, not yet measured. Conclusion: LoCoMo is saturated; next is LongMemEval.
 
 ## Iteration 8 — 2026-10-13: LongMemEval
 

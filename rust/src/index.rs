@@ -33,6 +33,12 @@ const EP_WINDOW: usize = 6;
 const EP_STEP: usize = 4;
 pub const RRF_K: f64 = 60.0;
 
+/// BM25 column weights, one per `fts` column: id (UNINDEXED, so it never scores), title, body, keywords. The title is
+/// the strongest precision signal for a short note; keywords are words a person chose, the body is prose. This
+/// changes recall order: the ranking has not been re-measured end to end since (see docs/evaluation.md), and the
+/// fixture test `a_title_match_outranks_a_body_match` is what keeps the title weight alive.
+const BM25: &str = "bm25(fts, 1.0, 3.0, 1.0, 2.0)";
+
 fn rel_weight(rel: &str) -> f64 {
     match rel {
         "part_of" | "depends_on" => 0.8,
@@ -332,7 +338,9 @@ fn trim_excerpt(query: &str, excerpt: &str) -> String {
 
 /// Static word vectors (WordLlama) are a weak ranker: at equal weight in rank fusion, excerpts that sit mid-list
 /// in both rankings pushed out the best keyword match (LongMemEval single-session-user all evidence 100% -> 95%).
-/// At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16 results).
+/// At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16). The only record
+/// of that pair is `research_notes/CortexDB versus SQLite untuk rewire/local_backends.md:6`: no file in
+/// `experiments/eval/results` carries it.
 const EP_SEM_WEIGHT: f64 = 0.25;
 
 /// Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
@@ -475,7 +483,7 @@ impl Index {
             spread: brain.config.spread.clone(),
             db: None,
             // source-excerpt bonus for the top memory hit, as a share of the best excerpt score
-            // (tuned: experiments/locomo/evidence.py)
+            // (tuned with experiments/locomo/evidence.py, since removed: no artifact is left for 0.35)
             seed_weight: 0.35,
             mat: None,
             epmat: None,
@@ -564,11 +572,41 @@ impl Index {
         self.mat = None;
         self.epmat = None;
         self.refresh()?;
+        let broken = self.broken()?;
+        if !broken.is_empty() {
+            eprintln!(
+                "rewire: {} note(s) could not be read and are not in the index (run `rewire doctor`): {}",
+                broken.len(),
+                broken.join(", ")
+            );
+        }
         Ok(self.db()?.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?)
     }
 
     pub fn refresh(&mut self) -> Result<()> {
         self.refresh_max_age(ACT_MAX_AGE)
+    }
+
+    /// Read the index as it is, for `doctor`: no scan, no repair, no write lock. `Ok(None)` when there is no index yet
+    /// (recall builds one); `Err` when it exists and cannot be opened or searched.
+    pub fn probe(brain: &Brain) -> Result<Option<(i64, i64)>> {
+        let path = brain.path(&[".index", "brain.db"]);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // half a second: a diagnostic must not hang behind a writer (a hook runs one per prompt)
+        db.busy_timeout(std::time::Duration::from_millis(500))?;
+        let search: i64 = db.query_row("SELECT count(*) FROM fts", [], |r| r.get(0))?;
+        let nodes: i64 = db.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?;
+        Ok(Some((nodes, search)))
+    }
+
+    /// Node files the last full scan could not read. `rewire rebuild` prints them; `doctor` builds the same list from
+    /// the same parser through `brain::broken_nodes`.
+    pub fn broken(&mut self) -> Result<Vec<String>> {
+        let raw: Option<String> = self.db()?.query_row("SELECT v FROM meta WHERE k='broken'", [], |r| r.get(0)).optional()?;
+        Ok(raw.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
     }
 
     pub fn refresh_max_age(&mut self, max_age: f64) -> Result<()> {
@@ -775,6 +813,12 @@ impl Index {
     fn sync_nodes(&self, db: &Connection) -> Result<HashSet<String>> {
         let root = self.root.join("nodes");
         let mut changed = HashSet::new();
+        let mut broken: Vec<String> = db
+            .query_row("SELECT v FROM meta WHERE k='broken'", [], |r| r.get::<_, String>(0))
+            .optional()?
+            .and_then(|v| serde_json::from_str::<Vec<String>>(&v).ok())
+            .unwrap_or_default();
+        broken.retain(|p| Path::new(p).is_file());
         if !root.is_dir() {
             return Ok(changed);
         }
@@ -790,6 +834,18 @@ impl Index {
             .collect();
         subdirs.sort_by(|a, b| a.0.cmp(&b.0));
         let stamp = subdirs.iter().map(|(n, _, m)| format!("{n}:{m}")).collect::<Vec<_>>().join(",");
+        // The guard saves the per-file stat calls, not the listing. A directory's mtime can stay the same across a
+        // delete (the clock tick did not move, or the filesystem does not track the change), so the number of notes on
+        // disk is part of what the guard compares and a deletion is seen at once.
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for (_, dir, _) in &subdirs {
+            for e in fs::read_dir(dir)?.flatten() {
+                if e.file_name().to_string_lossy().ends_with(".md") {
+                    paths.push(e.path());
+                }
+            }
+        }
+        let stamp = format!("{stamp}#{}", paths.len());
         let row: Option<String> = db.query_row("SELECT v FROM meta WHERE k='scan'", [], |r| r.get(0)).optional()?;
         if let Some(v) = row {
             if let Some((last_stamp, last_at)) = v.rsplit_once('@') {
@@ -799,14 +855,9 @@ impl Index {
             }
         }
         let mut seen: IndexMap<String, (i64, i64)> = IndexMap::new();
-        for (_, dir, _) in &subdirs {
-            for e in fs::read_dir(dir)?.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".md") {
-                    if let Ok(md) = e.metadata() {
-                        seen.insert(e.path().to_string_lossy().into_owned(), (mtime_ns(&md), md.len() as i64));
-                    }
-                }
+        for path in &paths {
+            if let Ok(md) = path.metadata() {
+                seen.insert(path.to_string_lossy().into_owned(), (mtime_ns(&md), md.len() as i64));
             }
         }
         db.execute("INSERT OR REPLACE INTO meta VALUES ('scan', ?)", [format!("{stamp}@{}", now_ts())])?;
@@ -836,8 +887,19 @@ impl Index {
                     continue;
                 }
             }
-            let Ok(text) = fs::read_to_string(path) else { continue };
-            let Ok((meta, body)) = nodefmt::parse(&text) else { continue };
+            let parsed = fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| crate::brain::parse_node(&t));
+            let Ok((meta, body)) = parsed else {
+                // on disk but not readable: out of recall (never a stale row), reported by `doctor` through
+                // brain::broken_nodes. The `files` row keeps its id and its old stat, so repairing the note replaces
+                // the row instead of leaving a phantom next to it.
+                if !broken.contains(path) {
+                    broken.push(path.clone());
+                }
+                if let Some((_, _, Some(old_id))) = old {
+                    Self::delete_node(db, old_id)?;
+                }
+                continue;
+            };
             if let Some((_, _, Some(old_id))) = old {
                 Self::delete_node(db, old_id)?;
             }
@@ -882,6 +944,7 @@ impl Index {
             }
             db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", params![path, mtime, size, node_id])?;
         }
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('broken', ?)", [serde_json::to_string(&broken)?])?;
         Ok(changed)
     }
 
@@ -933,6 +996,8 @@ impl Index {
             Self::delete_episodes(db, path)?;
             changed = true;
             let content = fs::read_to_string(path).unwrap_or_default();
+            // a Windows checkout writes transcripts with CRLF too; the separators below are LF
+            let content = if content.contains("\r\n") { content.replace("\r\n", "\n") } else { content };
             let folder = Path::new(path).parent().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().into_owned());
             let mut scope = String::from("global");
             for part in content.split("\n---\n") {
@@ -1179,16 +1244,16 @@ impl Index {
         let mut info: HashMap<String, NodeRow> = HashMap::new();
         let mut ranks: HashMap<String, f64> = HashMap::new();
         if let Some(m) = text::match_expression(query) {
-            let mut sql = String::from(
-                "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0, 2.0) AS rank FROM fts \
-                 JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id WHERE fts MATCH ?",
+            let mut sql = format!(
+                "SELECT nodes.*, COALESCE(act.b,-20) AS b, {BM25} AS rank FROM fts \
+                 JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id WHERE fts MATCH ?"
             );
             let mut values = vec![m];
             if let Some(s) = &scopes {
                 sql.push_str(&format!(" AND nodes.scope IN ({})", marks(s.len())));
                 values.extend(s.iter().cloned());
             }
-            sql.push_str(" ORDER BY bm25(fts, 3.0, 1.0, 2.0), nodes.id LIMIT ?");
+            sql.push_str(&format!(" ORDER BY {BM25}, nodes.id LIMIT ?"));
             values.push(limit.to_string());
             let db = self.db()?;
             let mut st = db.prepare(&sql)?;

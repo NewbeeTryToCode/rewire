@@ -7,7 +7,7 @@ the contract: it is derived and rebuilt from the files below.
 <brain>/
   brain.toml            shared configuration (synced)
   README.md             generated home page (deterministic)
-  .gitattributes        events/**/*.jsonl merge=union
+  .gitattributes        * text=auto eol=lf  +  events/**/*.jsonl merge=union
   .gitignore            .index/  .state/  .obsidian/workspace*.json
   nodes/<type>/<slug>-<id8>.md     L2 claims and hubs
   events/<device>/<YYYY-MM>.jsonl  usage log, append-only
@@ -38,7 +38,10 @@ key: <JSON value>
 - One key per line; every value is JSON (also valid YAML), written like Python
   `json.dumps(value, ensure_ascii=False)`: separators `", "` and `": "`, non-ASCII kept, standard escapes.
 - Body follows the closing `---` line; the file ends with exactly one `\n`.
-- Readers also accept hand-written plain YAML scalars (a value that is not valid JSON is kept as a string).
+- Readers also accept hand-written plain YAML scalars (a value that is not valid JSON is kept as a string),
+  a list written as an Obsidian property (the key, then one `  - item` line per value), and both LF and CRLF line
+  endings. Any other line is a parse error: the note is reported as unreadable by `rewire doctor` and left out of
+  the index rather than dropped silently.
 
 ## Node file
 

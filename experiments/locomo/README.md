@@ -29,7 +29,7 @@ Per conversation (hybrid): 88.8% (conv-43) to 97.4% (conv-26, conv-41).
 
 ## Iteration 7: from failure analysis to retrieval improvements
 
-LoCoMo marks the evidence turns (`evidence`) for every question. [`evidence.py`](evidence.py) measures whether those turns make it into the context retrieved by rewire: **no LLM, ~20 seconds** for 1,540 questions. This is now the main iteration loop; the J score varies by ±3 points between runs (46 questions flip between correct/wrong with 87% identical context), which is too noisy for small changes.
+LoCoMo marks the evidence turns (`evidence`) for every question. `evidence.py` (since removed; no artifact is left) measured whether those turns make it into the context retrieved by rewire: **no LLM, ~20 seconds** for 1,540 questions. This is now the main iteration loop; the J score varies by ±3 points between runs (46 questions flip between correct/wrong with 87% identical context), which is too noisy for small changes.
 
 **Diagnosis of 90 wrong answers (hybrid run):** 57% already had *all* the evidence in context (the error is in the answerer), 21% had some of it (almost all multi-hop), and in 22% the evidence was not retrieved.
 

@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 
 fn private_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?si)<private>.*?</private>").unwrap())
+    // an unclosed tag (forgotten, or a turn cut off mid-way) runs to the end: the text after it is private too
+    R.get_or_init(|| Regex::new(r"(?si)<private>.*?(?:</private>|\z)").unwrap())
 }
 
 /// A pattern with the literals it cannot match without (any one of them, in the lowercased text for
@@ -210,26 +211,30 @@ impl<'a> Folded<'a> {
     }
 }
 
-static SECRETS: [Pattern; 18] = [
+static SECRETS: [Pattern; 19] = [
     Pattern::new(r"sk-ant-[A-Za-z0-9_\-]{20,}", &["sk-ant-"], false),
     Pattern::new(r"sk-[A-Za-z0-9]{32,}", &["sk-"], false),
     Pattern::new(r"gh[pousr]_[A-Za-z0-9]{30,}", &["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], false),
     Pattern::new(r"github_pat_[A-Za-z0-9_]{40,}", &["github_pat_"], false),
     Pattern::new(r"AKIA[0-9A-Z]{16}", &["AKIA"], false),
+    // the id of a temporary AWS access key
+    Pattern::new(r"ASIA[0-9A-Z]{16}", &["ASIA"], false),
     Pattern::new(r"xox[baprs]-[A-Za-z0-9-]{10,}", &["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"], false),
     Pattern::new(r"AIza[0-9A-Za-z_\-]{35}", &["AIza"], false),
     // PEM and PGP private keys ("-----BEGIN PGP PRIVATE KEY BLOCK-----")
     Pattern::new(r"-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----", &["-----BEGIN "], false),
-    // key: value, also quoted JSON keys ({"apiKey": "..."}); values that are paths ("pwd: /home/me") are left alone
+    // key: value, also quoted JSON keys ({"apiKey": "..."}); values that are paths ("pwd: /home/me") are left alone.
+    // A prefixed name separated by "_" or "-" ("access_token", "DB_PASSWORD") is caught: `_` is a word character, so
+    // `\b` alone never fires inside one. "csrftoken=" and "websocketsecret=" are names of things, not secrets.
     Pattern::new(
-        r#"(?i)\b(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|auth[_-]?token)\b["']?\s*[:=]\s*["']?[^\s"'/~$,}][^\s"',}]{7,}"#,
+        r#"(?i)\b(?:\w+[_-])*(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|auth[_-]?token)\b["']?\s*[:=]\s*["']?[^\s"'/~$,}][^\s"',}]{7,}"#,
         &["passw", "pwd", "secret", "api", "token", "key"],
         true,
     ),
     Pattern::new(r"glpat-[A-Za-z0-9_\-]{20,}", &["glpat-"], false),
     Pattern::new(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_\-]+", &["hooks.slack.com"], false),
-    // credentials in a URL: postgres://admin:S3cr3t@db.example
-    Pattern::new(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:[^\s@/]{3,}@", &["://"], false),
+    // credentials in a URL: postgres://admin:S3cr3t@db.example (a short password counts: mysql://root:pw@host)
+    Pattern::new(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:[^\s@/]{2,}@", &["://"], false),
     // env-style assignments: DB_PASS="...", STRIPE_SECRET_KEY=...
     Pattern::new(
         r"\b(?:[A-Z0-9]+_)*(?:[A-Z0-9]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_KEY)|PASS)(?:_[A-Z0-9]+)*\s*[:=]\s*[\x22']?[^\s\x22']{6,}",
@@ -397,7 +402,7 @@ pub fn strip_private(text: &str) -> String {
 /// rest of the turn as private too (2026-10-20, Haiku 5.5 skipped a stated decision in 1 of 2 runs).
 pub fn drop_private(text: &str) -> String {
     static R: OnceLock<Regex> = OnceLock::new();
-    let re = R.get_or_init(|| Regex::new(r"(?si)[ \t]*<private>.*?</private>[ \t]*").unwrap());
+    let re = R.get_or_init(|| Regex::new(r"(?si)[ \t]*<private>.*?(?:</private>[ \t]*|\z)").unwrap());
     re.replace_all(text, " ").trim().to_string()
 }
 
@@ -447,6 +452,14 @@ mod tests {
         let prose = redact("Our staging password is hunter2-XyZ9 and we use it daily");
         assert!(!prose.contains("hunter2") && prose.contains("we use it daily"), "{prose}");
         assert!(scan("a password is required for the admin page").is_empty());
+    }
+
+    #[test]
+    fn an_unclosed_private_span_runs_to_the_end() {
+        assert_eq!(strip_private("a <private>salary 42000 and bonus 9000"), "a [private]");
+        assert_eq!(drop_private("a <private>salary 42000 and bonus 9000"), "a");
+        assert_eq!(drop_private("<private>x</private> keep me <private>gone"), "keep me");
+        assert_eq!(strip_private("<private>x</private> keep me <private>gone"), "[private] keep me [private]");
     }
 
     #[test]

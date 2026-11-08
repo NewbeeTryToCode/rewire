@@ -269,26 +269,41 @@ The upper bound for runs with an LLM: if the evidence is not in the context, the
 2026-10-14, overlapping excerpts from the same session are merged (same evidence, context −11–12%; details in
 `experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md` §7).
 
-**LoCoMo, 1,540 questions (2026-10-14):**
+**LoCoMo, 1,540 questions (2026-10-14), all evidence in context by category** (keyword, no semantic search,
+k=30, 10 excerpts; the ablation table in
+[`experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md`](../experiments/eval/results/2026-10-14-locomo-nemotron-s20-analysis.md)
+§6 is the artifact):
 
-| Category | n | Evidence turns retrieved | All evidence present | MRR | Context / question |
-|---|---|---|---|---|---|
-| single-hop | 841 | 94.5% | 94.5% | 0.81 | ≈2.5k tokens |
-| temporal | 321 | 84.0% | 83.4% | 0.68 | ≈2.5k |
-| multi-hop | 282 | 54.9% | 32.3% | 0.55 | ≈2.6k |
-| open-domain | 96 | 39.9% | 40.2% | 0.40 | ≈2.4k |
-| **overall** | 1,540 | **73.2%** | **77.5%** | 0.71 | ≈2.5k (7.4× smaller than the full history); ≈2.2k after merging |
+| Category | n | All evidence present | Context / question |
+|---|---|---|---|
+| single-hop | 841 | 94.5% | ≈2.5k tokens |
+| temporal | 321 | 83.4% | ≈2.5k |
+| multi-hop | 282 | 32.3% | ≈2.6k |
+| open-domain | 96 | 40.2% | ≈2.4k |
+| **overall** | 1,540 | **77.5%** | ≈2.5k (7.4× smaller than the full history); ≈2.2k after merging |
 
-Retrieval p50 4 ms, p99 16 ms. Open-domain often needs general knowledge (not in the conversation); multi-hop
-is rewire's improvement target. Note: the 94% J score from iterations 6–7 used k=50.
+The per-category **evidence turns retrieved** column this table used to carry (94.5 / 84.0 / 54.9 / 39.9, overall
+73.2%) and its per-category MRR (0.81 / 0.68 / 0.55 / 0.40, overall 0.71): **tidak ada artefak**. The stored runs of
+that ablation record the all-evidence column only; the closest stored numbers for the same 1,540 questions at 10
+excerpts are evidence turns 73.1%, all evidence 77.3%, MRR 0.750
+([`2026-10-14-locomo-trim.md`](../experiments/eval/results/2026-10-14-locomo-trim.md), baseline row), and a later run
+with Haiku reports evidence turns 82.1% and all evidence 84.5%
+([`2026-10-15-locomo-haiku-full.md`](../experiments/eval/results/2026-10-15-locomo-haiku-full.md)).
+
+Retrieval p50 4 ms and p95 9 ms at 10 excerpts (same trim artifact); the p99 16 ms this paragraph used to quote has
+**tidak ada artefak**. Open-domain often needs general knowledge (not in the conversation); multi-hop is rewire's
+improvement target. Note: the 94% J score from iterations 6–7 used k=50.
 
 **LongMemEval_S after the 2026-10-16 recall changes:** all evidence 91.1% (98.3% with query expansion), evidence turns
-94.4% (98.1%), context ≈12.5k tokens (19.1k), retrieval p50 235 ms (1.1 s): condensing embeds sentences at recall
-time, to be cached in the index.
+94.4% (98.1%), context ≈12.5k tokens (19.1k), retrieval p50 235 ms (1.1 s). That latency is the cost of query-aware
+condensing: a long turn is cut down at recall time to the sentences that match the query, by keywords only, because
+embedding every sentence cost about 4× the latency for the same evidence (`index.rs`, `LINE_CHARS`).
 
 **LongMemEval_S, all 500 (2026-10-16, frozen clock):** evidence turns 86.2%, all evidence 85.7%, session found 97.0%,
-MRR 0.857, context precision 25.0%, context ≈8.8k tokens (13.8× smaller), retrieval p50 21 ms / p99 195 ms
-(`experiments/eval/results/2026-10-16-longmemeval-retrieval.md`).
+MRR 0.857, context precision 25.0%, context ≈8.8k tokens (13.8× smaller), retrieval p50 21 ms / p95 56 ms / p99 195 ms
+(`experiments/eval/results/2026-10-16-longmemeval-haiku55-ep10.md:12,22`, the run with an LLM answerer; the
+retrieval-only run of the same questions reports 108 / 167 ms p50 / p95 and 183 ms p99 in
+`2026-10-16-longmemeval-retrieval.md`).
 
 **LongMemEval_S, 470 non-abstention questions (iteration 8):** evidence session found 97.0%, all evidence sessions 87.9%,
 context ≈11.2k tokens out of ≈115k (≈10× smaller). A 120-question sample after merging: same evidence, context
@@ -300,7 +315,16 @@ context ≈11.2k tokens out of ≈115k (≈10× smaller). A 120-question sample 
 
 **PersonaMem (dry run):** 32k, all 589 questions: context ≈12.6k tokens, compression 2.8× (the histories are short),
 estimated $1.30 with GPT-4o-mini. 1M, 140 questions (20 per type): context ≈12.7k tokens out of ≈925k
-(compression ≈92×), retrieval p50 42 ms / p99 277 ms, estimate for all 2,674 questions ≈$5.90.
+(compression ≈92×), retrieval p50 42 ms / p99 277 ms (**tidak ada artefak** for this dry run: the stored 1M run gives
+p50 77 / p99 826 ms, `experiments/eval/results/2026-10-17-personamem-1M-s20-haiku55.md`), estimate for all 2,674
+questions ≈$5.90.
+
+**Recall order changed on 2026-11-08, and its quality is unmeasured.** `bm25` used to be given three weights for a
+four-column table (`id UNINDEXED, title, body, keywords`), so SQLite gave the title weight 1 and the body weight 2;
+the intended weights are now passed (title 3, body 1, keywords 2). Every number in this document was produced with
+the old weights, so the order behind them is the old order. The new order has not been measured end to end
+(**tidak ada artefak**); a fixture test in `rust/tests/suite.rs` (`a_title_match_outranks_a_body_match`) only pins
+that a title match outranks a body match, which the old weights got backwards.
 
 **BEAM 100K (dry run, 20 questions):** all evidence present 52.9%, MRR 0.43, context ≈13.4k tokens (compression ≈11×),
 52 judge calls for 20 questions; information extraction and preference following had 0% evidence in this small sample.

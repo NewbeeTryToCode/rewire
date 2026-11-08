@@ -372,13 +372,43 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 .ok_or_else(|| unexpected(&format!("\"hooks.{event}\" is not a list")))?;
             let wanted_cmd = entries[0]["hooks"][0]["command"].as_str().unwrap_or_default().to_string();
             let suffix = wanted_cmd.split_once(" hook ").map(|(_, e)| format!(" hook {e}")).unwrap_or_default();
-            // already installed, by full path or (older installs) by bare name
+            // A rewire hook for this event that names another binary path (an older install, a binary that moved):
+            // point it here, or the event keeps running a path that no longer exists. Only the plain form counts,
+            // `<path>/rewire hook <event>`: a hook with --brain or an env prefix is the user's own per-brain setup,
+            // and a script in a directory called "rewire-scripts" is not this hook at all.
+            let event_name = suffix.trim_start().strip_prefix("hook ").unwrap_or_default().to_string();
+            let plain_rewire_hook = |c: &str| {
+                let mut parts = c.split_whitespace();
+                parts.next().is_some_and(|exe| exe.rsplit('/').next() == Some("rewire"))
+                    && parts.next() == Some("hook")
+                    && parts.next() == Some(event_name.as_str())
+                    && parts.next().is_none()
+            };
+            let elsewhere = |c: &str| c != wanted_cmd && plain_rewire_hook(c);
+            for hook in existing.iter_mut().flat_map(|e| e.get_mut("hooks").and_then(Value::as_array_mut).into_iter().flatten()) {
+                if hook.get("command").and_then(Value::as_str).is_some_and(elsewhere) {
+                    hook["command"] = json!(wanted_cmd);
+                }
+            }
+            // two stale entries rewritten above would both run the event: keep one of them
+            let mut kept = false;
+            existing.retain(|e| {
+                let ours = e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
+                    !hs.is_empty() && hs.iter().all(|h| h.get("command").and_then(Value::as_str) == Some(wanted_cmd.as_str()))
+                });
+                if !ours {
+                    return true;
+                }
+                let first = !kept;
+                kept = true;
+                first
+            });
+            // already installed, by full path or (older installs) by bare name; the rewrite above makes an old entry
+            // equal to this one, so it is not joined by a second entry that would run the event twice
             let present = existing.iter().any(|e| {
-                e.get("hooks").and_then(Value::as_array).is_some_and(|hs| {
-                    hs.iter()
-                        .filter_map(|h| h.get("command").and_then(Value::as_str))
-                        .any(|c| c == wanted_cmd || (c.ends_with(&suffix) && c.contains("rewire")))
-                })
+                e.get("hooks")
+                    .and_then(Value::as_array)
+                    .is_some_and(|hs| hs.iter().filter_map(|h| h.get("command").and_then(Value::as_str)).any(|c| c == wanted_cmd))
             });
             if !present {
                 existing.extend(entries.as_array().into_iter().flatten().cloned());
@@ -398,6 +428,18 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 deny.push(rule.clone());
             }
         }
+        // rules an older install wrote for a rewire binary that is no longer there are dropped: that is the growth the
+        // review found. A second copy the user still has keeps its rules, and so do another tool's rules and every
+        // bare `rewire` rule (no path to compare).
+        deny.retain(|rule| {
+            let Some(inner) = rule.as_str().and_then(|r| r.strip_prefix("Bash(")).and_then(|r| r.strip_suffix(')')) else {
+                return true;
+            };
+            let exe = inner.split_whitespace().next().unwrap_or_default();
+            let gone =
+                exe.contains('/') && exe != command && exe.rsplit('/').next() == Some("rewire") && !std::path::Path::new(exe).is_file();
+            !gone
+        });
         if let Some(dir) = settings_path.parent() {
             fs::create_dir_all(dir)?;
         }

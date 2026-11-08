@@ -111,6 +111,167 @@ fn schema_rejects_bad_type_and_long_claim() {
     assert!(schema::validate(&meta, "ok").is_ok());
 }
 
+/// A brain this version creates pins the line endings git writes, so a Windows checkout cannot rewrite every note.
+#[test]
+fn a_new_brain_pins_lf_checkouts() {
+    let c = Case::new();
+    let attrs = read(&c.brain.path(&[".gitattributes"]));
+    assert!(attrs.contains("* text=auto eol=lf"), "{attrs}");
+    assert!(attrs.contains("events/**/*.jsonl merge=union"), "{attrs}");
+}
+
+/// A note file as git on Windows checks it out (`core.autocrlf=true`): every line ends CRLF.
+#[test]
+fn notes_checked_out_with_crlf_are_still_recalled() {
+    let mut c = Case::new();
+    let n = c.add("fact", "Deploys run from the release branch", json!({}));
+    std::fs::write(&n.path, read(&n.path).replace('\n', "\r\n")).unwrap();
+    // as a fresh checkout from that machine would index it
+    let mut index = Index::new(&c.brain);
+    index.rebuild().unwrap();
+    let opts = SearchOpts { scopes: Some(vec!["global".into()]), ..Default::default() };
+    assert_eq!(titles(&index.search("release branch", &opts).unwrap()), vec!["Deploys run from the release branch"]);
+    assert!(c.brain.get_node(n.id()).is_some());
+}
+
+/// Obsidian writes a list property as a block under the key, and those notes must stay visible.
+#[test]
+fn obsidian_block_list_properties_are_read() {
+    let mut c = Case::new();
+    let path = c.brain.path(&["nodes", "fact", "rollout-plan-01blockl.md"]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "---\nid: \"01BLOCKLIST000000000000001\"\ntype: \"fact\"\ntitle: \"Rollout plan\"\nscope: \"global\"\n\
+         importance: 3\nkeywords:\n  - deploy\n  - region\n---\nThe rollout plan ships on Thursday\n",
+    )
+    .unwrap();
+    c.index.rebuild().unwrap();
+    assert!(c.brain.get_node("01BLOCKLIST000000000000001").is_some());
+    assert_eq!(c.brain.get_node("01BLOCKLIST000000000000001").unwrap().meta["keywords"], json!(["deploy", "region"]));
+    // plain YAML also allows the items at the key's own column
+    std::fs::write(
+        c.brain.path(&["nodes", "fact", "plain-yaml-01blockl2.md"]),
+        "---\nid: \"01BLOCKLIST200000000000002\"\ntype: \"fact\"\ntitle: \"Plain YAML list\"\nscope: \"global\"\n\
+         importance: 3\nkeywords:\n- rollout\n- schedule\n---\nbody\n",
+    )
+    .unwrap();
+    c.index.rebuild().unwrap();
+    assert_eq!(c.brain.get_node("01BLOCKLIST200000000000002").unwrap().meta["keywords"], json!(["rollout", "schedule"]));
+    assert_eq!(titles(&c.search("deploy region", &["global"])), vec!["Rollout plan"]);
+}
+
+/// A note on disk that cannot be read is reported, not silently missing from the index.
+#[test]
+fn doctor_reports_a_note_it_cannot_read() {
+    let c = Case::new();
+    let path = c.brain.path(&["nodes", "fact", "broken-01broken1.md"]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "---\nid: \"01BROKEN00000000000000001\"\ntype: \"fact\"\nthis line has no colon\n---\nbody\n").unwrap();
+    let report = ops::doctor(&c.brain);
+    assert!(
+        report.iter().any(|l| l.starts_with("UNREADABLE") && l.contains("broken-01broken1.md")),
+        "doctor must name the note it cannot read: {report:#?}"
+    );
+    let line = report.iter().find(|l| l.starts_with("UNREADABLE")).unwrap();
+    assert!(ops::is_problem(line), "the unreadable line is what makes doctor exit non-zero: {line}");
+    assert!(report.iter().any(|l| l.starts_with("nodes valid: NO")), "the verdict counts it: {report:#?}");
+}
+
+/// `doctor` is what a snapshot error tells the user to run: it must see a broken index and name the way out.
+#[test]
+fn doctor_reports_an_index_it_cannot_open() {
+    let c = Case::new();
+    let db = c.brain.path(&[".index", "brain.db"]);
+    Index::new(&c.brain).rebuild().unwrap();
+    std::fs::rename(&db, c.dir.join("brain.db.aside")).unwrap();
+    std::fs::create_dir(&db).unwrap(); // an index directory nobody can open as a database
+    let report = ops::doctor(&c.brain);
+    let line = report.iter().find(|l| l.starts_with("index:")).unwrap_or_else(|| panic!("doctor must report the index: {report:#?}"));
+    assert!(line.contains("rewire rebuild") && line.contains(".index/brain.db"), "{line}");
+    assert!(!line.contains("index: index:"), "the index is named once: {line}");
+    assert!(ops::is_problem(line), "{line}");
+}
+
+/// `doctor` is a diagnostic: it must not build or repair the index behind the user's back.
+#[test]
+fn doctor_does_not_build_the_index() {
+    let c = Case::new();
+    let db = c.brain.path(&[".index", "brain.db"]);
+    std::fs::remove_file(&db).unwrap();
+    let report = ops::doctor(&c.brain);
+    assert!(!db.exists(), "doctor built the index");
+    assert!(!report.iter().any(|l| l.starts_with("index:")), "no index yet is not a problem: {report:#?}");
+}
+
+/// A recall query reads `fts`: an index whose search table is gone must not look healthy to `doctor`.
+#[test]
+fn doctor_reports_an_index_whose_search_table_is_gone() {
+    let c = Case::new();
+    Index::new(&c.brain).rebuild().unwrap();
+    let db = c.brain.path(&[".index", "brain.db"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE fts").unwrap();
+    drop(conn);
+    let report = ops::doctor(&c.brain);
+    let line = report.iter().find(|l| l.starts_with("index:")).unwrap_or_else(|| panic!("doctor must report the index: {report:#?}"));
+    assert!(ops::is_problem(line), "{line}");
+    assert!(line.contains("rewire rebuild"), "{line}");
+}
+
+/// The error a command prints for an unreadable index names the same way out `doctor` does.
+#[test]
+fn an_unreadable_index_names_the_way_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+        as_user(cmd.arg("--brain").arg(&brain).args(args));
+        cmd.output().unwrap()
+    };
+    assert!(rewire(&["init"]).status.success());
+    let db = brain.join(".index").join("brain.db");
+    std::fs::rename(&db, tmp.path().join("brain.db.aside")).unwrap();
+    std::fs::create_dir(&db).unwrap();
+    let out = rewire(&["recall", "probe"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("rewire rebuild") && stderr.contains(".index/brain.db"), "{stderr}");
+}
+
+/// Another device's note that does not parse is reported as unreadable, not reviewed as an active rule.
+#[test]
+fn a_note_that_does_not_parse_is_reported_instead_of_queued_as_a_rule() {
+    let t = two();
+    let path = t.a.path(&["nodes", "constraint", "broken-note-01abcdef.md"]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "---\nid: \"01ABCDEF000000000000000000\"\ntype: \"constraint\"\nnot a yaml line\n---\nNever deploy on Friday\n")
+        .unwrap();
+    t.a.commit("broken note");
+    sync::push(&t.a, 30).unwrap();
+    let notes = sync::pull(&t.b, 30).unwrap();
+    assert!(notes.iter().any(|n| n.contains("could not be read")), "the pull must say the note is unreadable: {notes:?}");
+    assert!(
+        !t.b.is_untrusted(&t.b.path(&["nodes", "constraint", "broken-note-01abcdef.md"])),
+        "an unreadable note is not queued for review"
+    );
+    assert!(ops::doctor(&t.b).iter().any(|l| l.starts_with("UNREADABLE")), "doctor must agree with the pull");
+}
+
+/// The title is the strongest precision signal for a short note: a note whose title matches must outrank one whose
+/// body repeats the query. The weights once reached `bm25` as a 3-value tuple for a 4-column table, which silently
+/// gave the title weight 1 and the body weight 2.
+#[test]
+fn a_title_match_outranks_a_body_match() {
+    let mut c = Case::new();
+    let by_title = c.brain.new_meta("fact", "Deploy region", Meta::new());
+    c.brain.write_node(&by_title, "we always run the pipeline here", None).unwrap();
+    let by_body = c.brain.new_meta("fact", "Unrelated note", Meta::new());
+    c.brain.write_node(&by_body, "deploy region is a deploy region thing", None).unwrap();
+    c.index.rebuild().unwrap();
+    assert_eq!(titles(&c.search("deploy region", &["global"])).first().map(String::as_str), Some("Deploy region"));
+}
+
 // ---- snapshot & recall ---------------------------------------------------
 
 #[test]
@@ -571,10 +732,11 @@ fn undo_takes_back_approved_changes_and_restores_what_they_replaced() {
 
 /// The command as the user runs it in their own terminal (the suite itself may run inside an agent session).
 fn as_user(cmd: &mut Command) -> &mut Command {
-    for k in ["CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"] {
+    for k in ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"] {
         cmd.env_remove(k);
     }
-    cmd.env("REWIRE_NOT_AN_AGENT", "1") // `cargo test` itself may run under an agent
+    // `cargo test` itself may run under an agent. A test that simulates an agent session removes this again.
+    cmd.env("REWIRE_NOT_AN_AGENT", "1")
 }
 
 #[test]
@@ -1525,7 +1687,7 @@ fn install_cloud_writes_settings_and_registers_mcp() {
         if user {
             as_user(&mut cmd);
         } else {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.output().unwrap()
     };
@@ -1895,6 +2057,7 @@ fn remember_apply_is_refused_inside_an_agent_shell() {
             .arg("--brain")
             .arg(tmp.path().join("b"))
             .args(args)
+            .env_remove("REWIRE_NOT_AN_AGENT")
             .env("CLAUDECODE", "1")
             .output()
             .unwrap()
@@ -2088,7 +2251,7 @@ fn review_approve_is_refused_inside_an_agent_shell() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
         as_user(cmd.arg("--brain").arg(tmp.path().join("b")).args(args));
         if agent {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.stdin(std::process::Stdio::null()).output().unwrap()
     };
@@ -2115,6 +2278,256 @@ fn install_denies_the_agent_approving_or_editing_memory() {
     let edit = format!("Edit(//{}/**)", c.brain.root.to_string_lossy().trim_start_matches('/'));
     assert!(deny.contains(&edit.as_str()), "{deny:?}");
     assert_eq!(deny.iter().filter(|r| **r == edit).count(), 1); // idempotent
+}
+
+#[test]
+fn install_from_a_moved_binary_replaces_the_old_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let install = |name: &str| {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("rewire");
+        std::fs::copy(env!("CARGO_BIN_EXE_rewire"), &bin).unwrap();
+        bin.canonicalize().unwrap()
+    };
+    let first = install("a");
+    let second = install("b");
+    let config = tmp.path().join("claude");
+    let run = |exe: &Path| {
+        let mut cmd = Command::new(exe);
+        let out = as_user(&mut cmd)
+            .args(["install", "claude-code", "--write"])
+            .env("CLAUDE_CONFIG_DIR", &config)
+            .env("REWIRE_BRAIN", tmp.path().join("brain"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        read(&config.join("settings.json"))
+    };
+    run(&first);
+    // the binary moved: what it left behind points at a path that is no longer there
+    std::fs::remove_file(&first).unwrap();
+    let after_second = run(&second);
+    let v: Value = serde_json::from_str(&after_second).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(cmds, [format!("{} hook session-start", second.display())]);
+    let deny = v["permissions"]["deny"].to_string();
+    assert!(!deny.contains(&first.parent().unwrap().to_string_lossy().into_owned()), "{deny}");
+    assert_eq!(run(&second), after_second); // the same path installs nothing twice
+}
+
+/// Installing rewire leaves a user's own hooks and deny rules alone, including ones that mention another copy.
+#[test]
+fn install_keeps_hooks_and_rules_that_are_not_rewire_this_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other_bin = other.join("rewire");
+    std::fs::copy(env!("CARGO_BIN_EXE_rewire"), &other_bin).unwrap();
+    let notify = tmp.path().join("rewire-scripts");
+    std::fs::create_dir_all(&notify).unwrap();
+    let notify = notify.join("notify.sh");
+    std::fs::write(&notify, "#!/bin/sh\nexit 0\n").unwrap();
+    let config = tmp.path().join("claude");
+    std::fs::create_dir_all(&config).unwrap();
+    let mine = format!("{} hook session-start", notify.display());
+    let theirs = format!("Bash({} review approve:*)", other_bin.display());
+    std::fs::write(
+        config.join("settings.json"),
+        json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": mine}]}]},
+               "permissions": {"deny": [theirs, "Bash(git push:*)".to_string()]}})
+        .to_string(),
+    )
+    .unwrap();
+    let out = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["install", "claude-code", "--write"])
+        .env("CLAUDE_CONFIG_DIR", &config)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_str(&read(&config.join("settings.json"))).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert!(cmds.contains(&mine), "a user hook in a rewire-named directory is untouched: {cmds:?}");
+    let deny = v["permissions"]["deny"].to_string();
+    assert!(deny.contains(&other_bin.display().to_string()), "a deny rule for a copy that still exists stays: {deny}");
+    assert!(deny.contains("Bash(git push:*)"), "{deny}");
+}
+
+/// A hook that names a brain or carries its own flags is the user's setup, not a stale install, and two stale
+/// entries must not become two identical hooks.
+#[test]
+fn install_leaves_per_brain_hooks_alone_and_collapses_stale_duplicates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("claude");
+    std::fs::create_dir_all(&config).unwrap();
+    let work = format!("REWIRE_BRAIN={} rewire hook session-start", tmp.path().join("work-brain").display());
+    let side = format!("{} --brain {} hook session-start", env!("CARGO_BIN_EXE_rewire"), tmp.path().join("side-brain").display());
+    let stale = |p: &str| format!("{}/rewire hook session-start", p);
+    std::fs::write(
+        config.join("settings.json"),
+        json!({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": work}]},
+            {"hooks": [{"type": "command", "command": side}]},
+            {"hooks": [{"type": "command", "command": stale("/old/place")}]},
+            {"hooks": [{"type": "command", "command": stale("/older/place")}]}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    let out = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["install", "claude-code", "--write"])
+        .env("CLAUDE_CONFIG_DIR", &config)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_str(&read(&config.join("settings.json"))).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert!(cmds.contains(&work), "the per-brain hook with an env prefix stays: {cmds:?}");
+    assert!(cmds.contains(&side), "the per-brain hook with --brain stays: {cmds:?}");
+    assert!(!cmds.iter().any(|c| c.contains("/old/place") || c.contains("/older/place")), "{cmds:?}");
+    assert_eq!(
+        cmds.iter().filter(|c| c.contains(" hook session-start") && !c.contains("--brain") && !c.contains('=')).count(),
+        1,
+        "{cmds:?}"
+    );
+}
+
+#[test]
+fn the_generic_agent_variable_is_detected_and_the_opt_out_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire = |args: &[&str], env: &[(&str, &str)]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+        cmd.arg("--brain").arg(&brain).args(args);
+        for k in
+            ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL", "REWIRE_NOT_AN_AGENT"]
+        {
+            cmd.env_remove(k);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
+    };
+    assert!(rewire(&["init"], &[]).status.success());
+    let out = rewire(&["remote", "set", "https://example.com/elsewhere/b.git"], &[("AGENT", "1")]);
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("agent session"), "{}", String::from_utf8_lossy(&out.stderr));
+    // the opt-out says "a test suite or a benchmark, not an agent": it beats a marker the harness left behind
+    let out = rewire(&["remote", "set", "https://example.com/me/b.git"], &[("CLAUDECODE", "1"), ("REWIRE_NOT_AN_AGENT", "1")]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn setup_local_reports_a_doctor_problem_and_installs_where_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let bin = tmp.path().join("bin");
+    let install = tmp.path().join("custom-bin");
+    for dir in [&home, &bin, &install] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let script = |path: &Path, body: String| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let seen = tmp.path().join("install-dir-seen-by-install-sh");
+    // the pipe's second half only has to exit 0; the first half records what the child installer is told
+    script(
+        &bin.join("curl"),
+        format!("#!/bin/sh\nprintf '%s' \"${{REWIRE_INSTALL_DIR:-unset}}\" > '{}'\nprintf 'exit 0\\n'\n", seen.display()),
+    );
+    for tool in ["sh", "cat"] {
+        std::os::unix::fs::symlink(format!("/bin/{tool}"), bin.join(tool)).unwrap();
+    }
+    let doctor_problem = "#!/bin/sh\nif [ \"$1\" = doctor ]; then echo 'doctor: claude is not installed'; exit 1; fi\nexit 0\n";
+    script(&install.join("rewire"), doctor_problem.into());
+    let out = Command::new("/bin/bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("scripts/setup-local.sh"))
+        .env("HOME", &home)
+        .env("PATH", &bin) // no claude, no codex, and the binary only in REWIRE_INSTALL_DIR
+        .env("REWIRE_INSTALL_DIR", &install)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("Done"), "{stdout}");
+    assert_eq!(read(&seen), install.to_string_lossy().into_owned());
+}
+
+#[test]
+fn mcp_answers_an_unsupported_protocol_with_the_one_it_serves() {
+    let c = Case::new();
+    let mut server = rewire::mcp::Server::new(&c.brain);
+    let mut version = |asked: &str| {
+        server.handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": asked}})).unwrap()["result"]
+            ["protocolVersion"]
+            .clone()
+    };
+    assert_eq!(version("1999-01-01"), json!(rewire::mcp::PROTOCOL));
+    assert_eq!(version("2001-06-18"), json!(rewire::mcp::PROTOCOL));
+    assert_eq!(version(rewire::mcp::PROTOCOL), json!(rewire::mcp::PROTOCOL));
+}
+
+#[test]
+fn recall_k_is_clamped_to_the_advertised_maximum() {
+    let c = Case::new();
+    for i in 0..60 {
+        let change = m(json!({"action": "NEW", "type": "fact", "text": format!("Widget number {i} ships on friday"),
+                              "scope": "global", "importance": 3, "confidence": "explicit", "provenance": "user"}));
+        ops::apply_change(&c.brain, &change, None).unwrap();
+    }
+    let mut server = rewire::mcp::Server::new(&c.brain);
+    let res = server
+        .handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": {"name": "recall", "arguments": {"query": "widget", "k": 500, "scope": "all", "episodes": 0}}}))
+        .unwrap();
+    let text = res["result"]["content"][0]["text"].as_str().unwrap();
+    // the payload is JSON inside the memory fence: count the hits themselves, not a key's spelling
+    let hits: Value = serde_json::from_str(&text[text.find('[').unwrap()..=text.rfind(']').unwrap()]).unwrap();
+    assert_eq!(hits.as_array().unwrap().len(), 50, "{text}");
+}
+
+#[test]
+fn a_harness_without_a_parser_is_refused() {
+    use std::io::Write;
+    let mut child = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["hook", "session-start", "--harness", "omp"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // the harness is refused before the hook payload is read, so the pipe may already be closed
+    let _ = child.stdin.take().unwrap().write_all(json!({"cwd": "/tmp"}).to_string().as_bytes());
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("claude-code") && err.contains("codex"), "{err}");
+    // and the parser itself says so rather than reading another harness's transcript as Claude Code's
+    let err = tx::read(&fix("claude_code.jsonl"), 0, Some("omp")).unwrap_err();
+    assert!(err.to_string().contains("claude-code") && err.to_string().contains("codex"), "{err}");
+    assert!(tx::read(&fix("claude_code.jsonl"), 0, Some("claude-code")).is_ok());
+    assert!(tx::read(&fix("rollout-2026-10-01T10-00-00-abc.jsonl"), 0, Some("codex")).is_ok());
 }
 
 #[test]
@@ -2186,6 +2599,55 @@ fn more_secret_shapes_are_caught_and_ordinary_text_is_not() {
     ] {
         assert!(scan(text).contains(&"secret".to_string()), "{text:?}");
     }
+}
+
+#[test]
+fn an_unclosed_private_span_never_reaches_the_llm_or_the_session_file() {
+    let mut c = Case::new();
+    let path = c.dir.join("private.jsonl");
+    std::fs::write(
+        &path,
+        read(&fix("claude_code.jsonl"))
+            .replace("Please keep answers concise.", "keep this quiet: my salary is <private>42000 EUR and my bonus 9000"),
+    )
+    .unwrap();
+    c.brain.config.transcripts = "all".into();
+    let mut con = Consolidator::new(&c.brain, Some(Fake::new(vec![extraction(vec![], vec![])])), Box::new(|_| {})).unwrap();
+    con.run_file(&path, None).unwrap();
+    let prompts = PROMPTS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(prompts.iter().any(|p| p.contains("keep this quiet")), "the turn was never extracted: {prompts:?}");
+    assert!(prompts.iter().all(|p| !p.contains("42000") && !p.contains("9000")), "{prompts:?}");
+    let day = c.brain.path(&["sessions", "2026-10-01"]);
+    let content = read(&std::fs::read_dir(&day).unwrap().next().unwrap().unwrap().path());
+    assert!(content.contains("[private]") && content.contains("keep this quiet"), "{content}");
+    assert!(!content.contains("42000") && !content.contains("9000"), "{content}");
+}
+
+#[test]
+fn narrow_secret_shapes_are_redacted_and_their_neighbours_are_not() {
+    let missed: Vec<&str> = [
+        "access_token=abc123def456",
+        "ASIAIOSFODNN7EXAMPLE",
+        "DATABASE_URL=mysql://root:pw@127.0.0.1:3306/db",
+        "postgres://admin:S3cr3tPw@db.example/app",
+    ]
+    .into_iter()
+    .filter(|text| !security::redact(text).contains("[redacted]"))
+    .collect();
+    assert!(missed.is_empty(), "not redacted: {missed:?}");
+    let touched: Vec<&str> = [
+        "https://user@host/path",
+        "https://example.com:8080/x",
+        "the token bucket refills",
+        "password is required for the admin page",
+        "BYPASS=yes",
+        "COMPASS=north",
+        "the API key stays in the vault and the tokens are rotated",
+    ]
+    .into_iter()
+    .filter(|text| security::redact(text) != *text)
+    .collect();
+    assert!(touched.is_empty(), "false positive on: {touched:?}");
 }
 
 #[test]
@@ -3100,13 +3562,18 @@ fn undo_and_remote_set_are_refused_in_agent_sessions() {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
         as_user(cmd.arg("--brain").arg(&brain).args(args));
         if agent {
-            cmd.env("CLAUDECODE", "1");
+            cmd.env_remove("REWIRE_NOT_AN_AGENT").env("CLAUDECODE", "1");
         }
         cmd.output().unwrap()
     };
     assert!(rewire(&["init"], false).status.success());
     assert!(String::from_utf8_lossy(&rewire(&["undo", "s1"], true).stderr).contains("agent session"));
     assert!(String::from_utf8_lossy(&rewire(&["remote", "set", "https://evil.example/b.git"], true).stderr).contains("agent session"));
+    // the marker rewire sets on the processes it starts is not overridable by the opt-out
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+    as_user(cmd.arg("--brain").arg(&brain).args(["remote", "set", "https://evil.example/b.git"]));
+    let out = cmd.env("REWIRE_INTERNAL", "1").env("REWIRE_NOT_AN_AGENT", "1").output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("REWIRE_INTERNAL"), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
