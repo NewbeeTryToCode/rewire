@@ -63,7 +63,8 @@ impl From<std::io::Error> for Error {
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
-        Error::Other(format!("index: {e}"))
+        // the index is derived: every failure that reaches the user says how to throw it away, as `doctor` does
+        Error::Other(format!("index: {e} (rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run)"))
     }
 }
 

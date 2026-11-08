@@ -157,6 +157,40 @@ fn doctor_reports_a_note_it_cannot_read() {
     assert!(report.iter().any(|l| ops::is_problem(l)), "a note recall cannot show is a problem: {report:#?}");
 }
 
+/// `doctor` is what a snapshot error tells the user to run: it must see a broken index and name the way out.
+#[test]
+fn doctor_reports_an_index_it_cannot_open() {
+    let c = Case::new();
+    let db = c.brain.path(&[".index", "brain.db"]);
+    Index::new(&c.brain).rebuild().unwrap();
+    std::fs::rename(&db, c.dir.join("brain.db.aside")).unwrap();
+    std::fs::create_dir(&db).unwrap(); // an index directory nobody can open as a database
+    let report = ops::doctor(&c.brain);
+    let line = report.iter().find(|l| l.starts_with("index:")).unwrap_or_else(|| panic!("doctor must report the index: {report:#?}"));
+    assert!(line.contains("rewire rebuild") && line.contains(".index/brain.db"), "{line}");
+    assert!(ops::is_problem(line), "{line}");
+}
+
+/// The error a command prints for an unreadable index names the same way out `doctor` does.
+#[test]
+fn an_unreadable_index_names_the_way_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+        as_user(cmd.arg("--brain").arg(&brain).args(args));
+        cmd.output().unwrap()
+    };
+    assert!(rewire(&["init"]).status.success());
+    let db = brain.join(".index").join("brain.db");
+    std::fs::rename(&db, tmp.path().join("brain.db.aside")).unwrap();
+    std::fs::create_dir(&db).unwrap();
+    let out = rewire(&["recall", "probe"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("rewire rebuild") && stderr.contains(".index/brain.db"), "{stderr}");
+}
+
 /// Another device's note that does not parse is reported as unreadable, not reviewed as an active rule.
 #[test]
 fn a_note_that_does_not_parse_is_reported_instead_of_queued_as_a_rule() {

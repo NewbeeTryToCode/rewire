@@ -810,6 +810,7 @@ pub fn is_problem(line: &str) -> bool {
         "UNSAFE",
         "IGNORED",
         "nodes valid: NO",
+        "index:",
         "failed consolidations",
         "consolidation:",
         "unresolved git conflicts",
@@ -831,6 +832,18 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         if !why.is_empty() {
             report.push(format!("BLOCKED ({why}) {}: hidden from sessions until edited", node.path.display()));
         }
+    }
+    // The index is what recall answers from. A snapshot error sends the user here, so this report must see the same
+    // failure recall sees; it opens the database without a full scan (that is `rewire rebuild`'s job).
+    let mut index = Index::new(brain);
+    let probed = index.db().and_then(|db| Ok(db.query_row("SELECT count(*) FROM nodes", [], |r| r.get::<_, i64>(0))?));
+    if let Err(e) = probed {
+        let e = e.to_string();
+        report.push(if e.contains("rewire rebuild") {
+            format!("index: {e}")
+        } else {
+            format!("index: {e} (rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run)")
+        });
     }
     let broken = brain.broken_nodes();
     for (path, why) in &broken {
