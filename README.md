@@ -78,7 +78,7 @@ calls a session an agent's when one of `CLAUDECODE`, `AGENT`, `AI_AGENT`, `CODEX
 `CODEX_SANDBOX_NETWORK_DISABLED` or `REWIRE_INTERNAL` is set, or when a `claude` or `codex` process runs among the
 command's ancestors. A harness that sets none of these and starts under another name (omp, aider, cursor-agent) is not
 detected. `REWIRE_NOT_AN_AGENT=1` overrides the check, for a test or benchmark harness that runs inside an agent
-session. These raise the bar, they are not a sandbox: an agent that may run arbitrary shell commands acts as you, and
+session; it does not override `REWIRE_INTERNAL`, the marker rewire sets on the processes it starts itself. These raise the bar, they are not a sandbox: an agent that may run arbitrary shell commands acts as you, and
 could do the same.
 
 With sync, rules, preferences and skills that arrive from another device (or come with `rewire init --from`) are left

@@ -111,6 +111,15 @@ fn schema_rejects_bad_type_and_long_claim() {
     assert!(schema::validate(&meta, "ok").is_ok());
 }
 
+/// A brain this version creates pins the line endings git writes, so a Windows checkout cannot rewrite every note.
+#[test]
+fn a_new_brain_pins_lf_checkouts() {
+    let c = Case::new();
+    let attrs = read(&c.brain.path(&[".gitattributes"]));
+    assert!(attrs.contains("* text=auto eol=lf"), "{attrs}");
+    assert!(attrs.contains("events/**/*.jsonl merge=union"), "{attrs}");
+}
+
 /// A note file as git on Windows checks it out (`core.autocrlf=true`): every line ends CRLF.
 #[test]
 fn notes_checked_out_with_crlf_are_still_recalled() {
@@ -140,6 +149,15 @@ fn obsidian_block_list_properties_are_read() {
     c.index.rebuild().unwrap();
     assert!(c.brain.get_node("01BLOCKLIST000000000000001").is_some());
     assert_eq!(c.brain.get_node("01BLOCKLIST000000000000001").unwrap().meta["keywords"], json!(["deploy", "region"]));
+    // plain YAML also allows the items at the key's own column
+    std::fs::write(
+        c.brain.path(&["nodes", "fact", "plain-yaml-01blockl2.md"]),
+        "---\nid: \"01BLOCKLIST200000000000002\"\ntype: \"fact\"\ntitle: \"Plain YAML list\"\nscope: \"global\"\n\
+         importance: 3\nkeywords:\n- rollout\n- schedule\n---\nbody\n",
+    )
+    .unwrap();
+    c.index.rebuild().unwrap();
+    assert_eq!(c.brain.get_node("01BLOCKLIST200000000000002").unwrap().meta["keywords"], json!(["rollout", "schedule"]));
     assert_eq!(titles(&c.search("deploy region", &["global"])), vec!["Rollout plan"]);
 }
 
@@ -155,7 +173,9 @@ fn doctor_reports_a_note_it_cannot_read() {
         report.iter().any(|l| l.starts_with("UNREADABLE") && l.contains("broken-01broken1.md")),
         "doctor must name the note it cannot read: {report:#?}"
     );
-    assert!(report.iter().any(|l| ops::is_problem(l)), "a note recall cannot show is a problem: {report:#?}");
+    let line = report.iter().find(|l| l.starts_with("UNREADABLE")).unwrap();
+    assert!(ops::is_problem(line), "the unreadable line is what makes doctor exit non-zero: {line}");
+    assert!(report.iter().any(|l| l.starts_with("nodes valid: NO")), "the verdict counts it: {report:#?}");
 }
 
 /// `doctor` is what a snapshot error tells the user to run: it must see a broken index and name the way out.
@@ -2344,6 +2364,51 @@ fn install_keeps_hooks_and_rules_that_are_not_rewire_this_install() {
     assert!(deny.contains("Bash(git push:*)"), "{deny}");
 }
 
+/// A hook that names a brain or carries its own flags is the user's setup, not a stale install, and two stale
+/// entries must not become two identical hooks.
+#[test]
+fn install_leaves_per_brain_hooks_alone_and_collapses_stale_duplicates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("claude");
+    std::fs::create_dir_all(&config).unwrap();
+    let work = format!("REWIRE_BRAIN={} rewire hook session-start", tmp.path().join("work-brain").display());
+    let side = format!("{} --brain {} hook session-start", env!("CARGO_BIN_EXE_rewire"), tmp.path().join("side-brain").display());
+    let stale = |p: &str| format!("{}/rewire hook session-start", p);
+    std::fs::write(
+        config.join("settings.json"),
+        json!({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": work}]},
+            {"hooks": [{"type": "command", "command": side}]},
+            {"hooks": [{"type": "command", "command": stale("/old/place")}]},
+            {"hooks": [{"type": "command", "command": stale("/older/place")}]}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    let out = as_user(&mut Command::new(env!("CARGO_BIN_EXE_rewire")))
+        .args(["install", "claude-code", "--write"])
+        .env("CLAUDE_CONFIG_DIR", &config)
+        .env("REWIRE_BRAIN", tmp.path().join("brain"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_str(&read(&config.join("settings.json"))).unwrap();
+    let cmds: Vec<String> = v["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e["hooks"].as_array().unwrap().iter().map(|h| h["command"].as_str().unwrap().to_string()))
+        .collect();
+    assert!(cmds.contains(&work), "the per-brain hook with an env prefix stays: {cmds:?}");
+    assert!(cmds.contains(&side), "the per-brain hook with --brain stays: {cmds:?}");
+    assert!(!cmds.iter().any(|c| c.contains("/old/place") || c.contains("/older/place")), "{cmds:?}");
+    assert_eq!(
+        cmds.iter().filter(|c| c.contains(" hook session-start") && !c.contains("--brain") && !c.contains('=')).count(),
+        1,
+        "{cmds:?}"
+    );
+}
+
 #[test]
 fn the_generic_agent_variable_is_detected_and_the_opt_out_wins() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3504,6 +3569,11 @@ fn undo_and_remote_set_are_refused_in_agent_sessions() {
     assert!(rewire(&["init"], false).status.success());
     assert!(String::from_utf8_lossy(&rewire(&["undo", "s1"], true).stderr).contains("agent session"));
     assert!(String::from_utf8_lossy(&rewire(&["remote", "set", "https://evil.example/b.git"], true).stderr).contains("agent session"));
+    // the marker rewire sets on the processes it starts is not overridable by the opt-out
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rewire"));
+    as_user(cmd.arg("--brain").arg(&brain).args(["remote", "set", "https://evil.example/b.git"]));
+    let out = cmd.env("REWIRE_INTERNAL", "1").env("REWIRE_NOT_AN_AGENT", "1").output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stderr).contains("REWIRE_INTERNAL"), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]

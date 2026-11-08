@@ -833,8 +833,9 @@ impl Index {
             .collect();
         subdirs.sort_by(|a, b| a.0.cmp(&b.0));
         let stamp = subdirs.iter().map(|(n, _, m)| format!("{n}:{m}")).collect::<Vec<_>>().join(",");
-        // The guard saves the per-file stat calls, not the listing: some filesystems (tmpfs) leave a directory's mtime
-        // alone when a file inside it is unlinked, so the number of notes on disk is part of what the guard compares.
+        // The guard saves the per-file stat calls, not the listing. A directory's mtime can stay the same across a
+        // delete (the clock tick did not move, or the filesystem does not track the change), so the number of notes on
+        // disk is part of what the guard compares and a deletion is seen at once.
         let mut paths: Vec<PathBuf> = Vec::new();
         for (_, dir, _) in &subdirs {
             for e in fs::read_dir(dir)?.flatten() {

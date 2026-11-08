@@ -12,7 +12,7 @@ say() { printf '\n==> %s\n' "$*"; }
 
 if [ -z "${REF}" ]; then
   say "Installing the latest rewire release"
-  export REWIRE_INSTALL_DIR="$INSTALL_DIR"
+  # install.sh installs where REWIRE_INSTALL_DIR says, and inherits it from here
   curl -fsSL https://raw.githubusercontent.com/NewbeeTryToCode/rewire/main/scripts/install.sh | sh
   export PATH="$INSTALL_DIR:$PATH"
 else

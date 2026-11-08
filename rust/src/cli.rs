@@ -230,12 +230,17 @@ fn shell_id() -> u32 {
 /// sets, or (when that was removed with `env -u`) a Claude Code or Codex process among this process's ancestors.
 /// Neither stops an agent that detaches itself first; they keep honest agents and simple tricks out.
 fn agent_shell() -> Option<String> {
+    // rewire marks the children it starts itself; no opt-out may open that gate, since it is the process rewire
+    // already trusts (consolidation runs the provider's command).
+    if std::env::var("REWIRE_INTERNAL").is_ok_and(|v| !v.is_empty()) {
+        return Some("REWIRE_INTERNAL is set".into());
+    }
     // test suites and benchmark harnesses started from inside an agent session say so (an agent could too: this is
-    // a speed bump, not a sandbox). It wins over every marker the session left behind, and over the ancestors.
+    // a speed bump, not a sandbox). It wins over the markers the session left behind, and over the ancestors.
     if std::env::var("REWIRE_NOT_AN_AGENT").is_ok_and(|v| v == "1") {
         return None;
     }
-    let var = ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "REWIRE_INTERNAL"]
+    let var = ["CLAUDECODE", "AGENT", "AI_AGENT", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"]
         .into_iter()
         .find(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
     var.map(|k| format!("{k} is set")).or_else(|| agent_ancestor().map(|p| format!("it runs under {p}")))

@@ -372,11 +372,19 @@ pub fn install_claude_code(write: bool, settings_path: Option<&Path>, brain: Opt
                 .ok_or_else(|| unexpected(&format!("\"hooks.{event}\" is not a list")))?;
             let wanted_cmd = entries[0]["hooks"][0]["command"].as_str().unwrap_or_default().to_string();
             let suffix = wanted_cmd.split_once(" hook ").map(|(_, e)| format!(" hook {e}")).unwrap_or_default();
-            // a rewire hook for this event that names another binary path (an older install, a binary that moved):
-            // point it here, or the event keeps running a path that no longer exists. Only the executable's own name
-            // counts: a user script in a directory called "rewire-scripts" is not this hook.
-            let runs_rewire = |c: &str| c.split_whitespace().next().unwrap_or_default().rsplit('/').next() == Some("rewire");
-            let elsewhere = |c: &str| c != wanted_cmd && runs_rewire(c) && c.ends_with(&suffix);
+            // A rewire hook for this event that names another binary path (an older install, a binary that moved):
+            // point it here, or the event keeps running a path that no longer exists. Only the plain form counts,
+            // `<path>/rewire hook <event>`: a hook with --brain or an env prefix is the user's own per-brain setup,
+            // and a script in a directory called "rewire-scripts" is not this hook at all.
+            let event_name = suffix.trim_start().strip_prefix("hook ").unwrap_or_default().to_string();
+            let plain_rewire_hook = |c: &str| {
+                let mut parts = c.split_whitespace();
+                parts.next().is_some_and(|exe| exe.rsplit('/').next() == Some("rewire"))
+                    && parts.next() == Some("hook")
+                    && parts.next() == Some(event_name.as_str())
+                    && parts.next().is_none()
+            };
+            let elsewhere = |c: &str| c != wanted_cmd && plain_rewire_hook(c);
             for hook in existing.iter_mut().flat_map(|e| e.get_mut("hooks").and_then(Value::as_array_mut).into_iter().flatten()) {
                 if hook.get("command").and_then(Value::as_str).is_some_and(elsewhere) {
                     hook["command"] = json!(wanted_cmd);
