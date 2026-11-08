@@ -169,6 +169,7 @@ fn doctor_reports_an_index_it_cannot_open() {
     let report = ops::doctor(&c.brain);
     let line = report.iter().find(|l| l.starts_with("index:")).unwrap_or_else(|| panic!("doctor must report the index: {report:#?}"));
     assert!(line.contains("rewire rebuild") && line.contains(".index/brain.db"), "{line}");
+    assert!(!line.contains("index: index:"), "the index is named once: {line}");
     assert!(ops::is_problem(line), "{line}");
 }
 

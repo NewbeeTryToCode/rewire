@@ -839,11 +839,9 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     let probed = index.db().and_then(|db| Ok(db.query_row("SELECT count(*) FROM nodes", [], |r| r.get::<_, i64>(0))?));
     if let Err(e) = probed {
         let e = e.to_string();
-        report.push(if e.contains("rewire rebuild") {
-            format!("index: {e}")
-        } else {
-            format!("index: {e} (rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run)")
-        });
+        let why = e.strip_prefix("index: ").unwrap_or(&e);
+        let remedy = "rebuild it: `rewire rebuild`, or delete .index/brain.db and re-run";
+        report.push(if why.contains("rewire rebuild") { format!("index: {why}") } else { format!("index: {why} ({remedy})") });
     }
     let broken = brain.broken_nodes();
     for (path, why) in &broken {
