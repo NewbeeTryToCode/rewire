@@ -328,10 +328,11 @@ fn blobs(brain: &Brain, rev: &str, paths: &[String]) -> Result<Vec<Option<String
 }
 
 /// What a version of a note is, read with the same parser the index uses: (is a rule or preference, is active,
-/// title). A file that does not parse counts as an active rule (fail closed).
+/// title). A file that does not parse is not a rule: the index cannot show it either, so calling it active here would
+/// only hide the real problem. It is reported as unreadable, by the pull notes and by `doctor`.
 fn rule_status(text: &str) -> (bool, bool, String) {
-    match nodefmt::parse(text) {
-        Err(_) => (true, true, String::new()),
+    match crate::brain::parse_node(text) {
+        Err(_) => (false, false, String::new()),
         Ok((meta, _)) => {
             let type_ = meta.get("type").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
             let active = !crate::brain::is_set(meta.get("retracted_at")) && !crate::brain::is_set(meta.get("valid_to"));
@@ -355,12 +356,13 @@ fn diff_names(brain: &Brain, filter: &str, range: &[&str]) -> Result<Vec<String>
 
 /// Mark the rules, preferences, skills and inbox proposals among `paths` (as they are at `rev`) unreviewed on this
 /// device; notes on what arrived and what was retracted.
-fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Result<(usize, usize, Vec<String>)> {
+fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Result<(usize, usize, Vec<String>, Vec<String>)> {
     let notes_at: Vec<String> = paths.iter().filter(|p| p.to_lowercase().starts_with("nodes/")).cloned().collect();
     let texts = blobs(brain, rev, &notes_at)?;
     let before = blobs(brain, old_rev, &notes_at)?;
     let mut keys = Vec::new();
     let mut retracted = Vec::new();
+    let mut unreadable = Vec::new();
     let trusted_before: std::collections::HashSet<String> = brain.untrusted().keys().cloned().collect();
     let mut previous: Vec<(String, String)> = Vec::new();
     for ((path, text), old) in notes_at.iter().zip(texts).zip(before) {
@@ -377,6 +379,10 @@ fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Re
             keys.extend(brain.review_key(&brain.root.join(path)));
             continue;
         };
+        if crate::brain::parse_node(&text).is_err() {
+            unreadable.push(path.clone());
+            continue;
+        }
         match rule_status(&text) {
             (true, true, _) => keys.extend(brain.review_key(&brain.root.join(path))),
             (true, false, title) => retracted.push(if title.is_empty() { path.clone() } else { title }),
@@ -397,7 +403,7 @@ fn mark_changed(brain: &Brain, old_rev: &str, rev: &str, paths: &[String]) -> Re
     for (key, old) in previous.iter().filter(|(k, _)| keys.contains(k)) {
         brain.keep_previous(key, old)?;
     }
-    Ok((keys.len() - proposals, proposals, retracted))
+    Ok((keys.len() - proposals, proposals, retracted, unreadable))
 }
 
 /// A note that arrives with the id of a different note here would hide it (the index keeps one note per id):
@@ -447,8 +453,16 @@ fn mark_incoming(brain: &Brain, theirs: &str, trusted: bool) -> Result<Vec<Strin
     let range = format!("HEAD...{theirs}");
     let incoming = diff_names(brain, "--diff-filter=AMR", &[&range])?;
     refuse_shared_ids(brain, theirs, &incoming)?;
-    let (rules, proposals, retracted) = mark_changed(brain, "HEAD", theirs, &incoming)?;
+    let (rules, proposals, retracted, unreadable) = mark_changed(brain, "HEAD", theirs, &incoming)?;
     let mut notes = Vec::new();
+    if !unreadable.is_empty() {
+        notes.push(format!(
+            "{} note(s) from another device could not be read, so they stay out of recall until their frontmatter is \
+             fixed (see `rewire doctor`): {}",
+            unreadable.len(),
+            unreadable.join(", ")
+        ));
+    }
     if rules > 0 && !trusted {
         notes.push(format!(
             "{rules} rule(s), preference(s) or skill(s) arrived from another device; they are shown to agents on this \

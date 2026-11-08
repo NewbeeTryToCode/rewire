@@ -805,6 +805,7 @@ pub fn remote_is_public(url: &str) -> Option<bool> {
 pub fn is_problem(line: &str) -> bool {
     [
         "INVALID",
+        "UNREADABLE",
         "BLOCKED",
         "UNSAFE",
         "IGNORED",
@@ -830,6 +831,10 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
         if !why.is_empty() {
             report.push(format!("BLOCKED ({why}) {}: hidden from sessions until edited", node.path.display()));
         }
+    }
+    let broken = brain.broken_nodes();
+    for (path, why) in &broken {
+        report.push(format!("UNREADABLE {}: {why} (fix its frontmatter: until then recall cannot show it)", path.display()));
     }
     for skill in skills::all_skills(brain) {
         let why = skills::blocked(&skill);
@@ -929,7 +934,15 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     if !conflicts.is_empty() {
         report.push(format!("unresolved git conflicts:\n  {}", conflicts.replace('\n', "\n  ")));
     }
-    report.insert(0, format!("nodes valid: {}", if bad == 0 { "yes".to_string() } else { format!("NO ({bad} invalid)") }));
+    let mut verdict = Vec::new();
+    if bad > 0 {
+        verdict.push(format!("{bad} invalid"));
+    }
+    if !broken.is_empty() {
+        verdict.push(format!("{} unreadable", broken.len()));
+    }
+    report
+        .insert(0, format!("nodes valid: {}", if verdict.is_empty() { "yes".to_string() } else { format!("NO ({})", verdict.join(", ")) }));
     report
 }
 

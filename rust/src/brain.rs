@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-pub const GITATTRIBUTES: &str = "events/**/*.jsonl merge=union\n";
+/// Notes are read with either line ending, and checked out with LF on every platform: `core.autocrlf=true` (the Git
+/// for Windows default) must not rewrite every note, and a brain that is CRLF already still parses.
+pub const GITATTRIBUTES: &str = "* text=auto eol=lf\nevents/**/*.jsonl merge=union\n";
 /// The derived index, device-local state and device-local settings never sync. A pulled `.gitignore` that drops
 /// any of them gets them back (and stops tracking what it let in). Returns notes for what was repaired.
 /// Device-local paths: ignored by git, never synced. A tracked local.toml would choose the command every device
@@ -199,6 +201,16 @@ impl Node {
     pub fn active(&self) -> bool {
         !is_set(self.meta.get("retracted_at")) && !is_set(self.meta.get("valid_to"))
     }
+}
+
+/// A node file's text as a node. The one place a note becomes a note, so the index, `doctor` and sync agree on
+/// which files they cannot read.
+pub fn parse_node(text: &str) -> std::result::Result<(Meta, String), String> {
+    let (meta, body) = nodefmt::parse(text)?;
+    if !is_set(meta.get("id")) {
+        return Err("no id in the frontmatter".into());
+    }
+    Ok((meta, body))
 }
 
 pub fn is_set(v: Option<&Value>) -> bool {
@@ -551,11 +563,20 @@ impl Brain {
 
     pub fn read_node(&self, path: &Path) -> Option<Node> {
         let text = fs::read_to_string(path).ok()?;
-        let (meta, body) = nodefmt::parse(&text).ok()?;
-        if !is_set(meta.get("id")) {
-            return None;
-        }
+        let (meta, body) = parse_node(&text).ok()?;
         Some(Node { meta, body, path: path.to_path_buf() })
+    }
+
+    /// Node files that are on disk but cannot be read. One definition for the index, `doctor` and sync: a note the
+    /// index skips is reported here instead of disappearing with no trace.
+    pub fn broken_nodes(&self) -> Vec<(PathBuf, String)> {
+        self.node_files(None)
+            .into_iter()
+            .filter_map(|path| match fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| parse_node(&t)) {
+                Ok(_) => None,
+                Err(why) => Some((path, why)),
+            })
+            .collect()
     }
 
     pub fn node_files(&self, suffix: Option<&str>) -> Vec<PathBuf> {

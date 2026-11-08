@@ -564,11 +564,25 @@ impl Index {
         self.mat = None;
         self.epmat = None;
         self.refresh()?;
+        let broken = self.broken()?;
+        if !broken.is_empty() {
+            eprintln!(
+                "rewire: {} note(s) could not be read and are not in the index (run `rewire doctor`): {}",
+                broken.len(),
+                broken.join(", ")
+            );
+        }
         Ok(self.db()?.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?)
     }
 
     pub fn refresh(&mut self) -> Result<()> {
         self.refresh_max_age(ACT_MAX_AGE)
+    }
+
+    /// Node files the last full scan could not read (the list `doctor` reports, from the same parser).
+    pub fn broken(&mut self) -> Result<Vec<String>> {
+        let raw: Option<String> = self.db()?.query_row("SELECT v FROM meta WHERE k='broken'", [], |r| r.get(0)).optional()?;
+        Ok(raw.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
     }
 
     pub fn refresh_max_age(&mut self, max_age: f64) -> Result<()> {
@@ -775,6 +789,7 @@ impl Index {
     fn sync_nodes(&self, db: &Connection) -> Result<HashSet<String>> {
         let root = self.root.join("nodes");
         let mut changed = HashSet::new();
+        let mut broken: Vec<String> = Vec::new();
         if !root.is_dir() {
             return Ok(changed);
         }
@@ -836,8 +851,13 @@ impl Index {
                     continue;
                 }
             }
-            let Ok(text) = fs::read_to_string(path) else { continue };
-            let Ok((meta, body)) = nodefmt::parse(&text) else { continue };
+            let parsed = fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| crate::brain::parse_node(&t));
+            let Ok((meta, body)) = parsed else {
+                // on disk but not readable: reported by `doctor` (brain::broken_nodes), never indexed
+                broken.push(path.clone());
+                db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", params![path, mtime, size, None::<String>])?;
+                continue;
+            };
             if let Some((_, _, Some(old_id))) = old {
                 Self::delete_node(db, old_id)?;
             }
@@ -882,6 +902,7 @@ impl Index {
             }
             db.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)", params![path, mtime, size, node_id])?;
         }
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('broken', ?)", [serde_json::to_string(&broken)?])?;
         Ok(changed)
     }
 

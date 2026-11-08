@@ -111,6 +111,68 @@ fn schema_rejects_bad_type_and_long_claim() {
     assert!(schema::validate(&meta, "ok").is_ok());
 }
 
+/// A note file as git on Windows checks it out (`core.autocrlf=true`): every line ends CRLF.
+#[test]
+fn notes_checked_out_with_crlf_are_still_recalled() {
+    let mut c = Case::new();
+    let n = c.add("fact", "Deploys run from the release branch", json!({}));
+    std::fs::write(&n.path, read(&n.path).replace('\n', "\r\n")).unwrap();
+    // as a fresh checkout from that machine would index it
+    let mut index = Index::new(&c.brain);
+    index.rebuild().unwrap();
+    let opts = SearchOpts { scopes: Some(vec!["global".into()]), ..Default::default() };
+    assert_eq!(titles(&index.search("release branch", &opts).unwrap()), vec!["Deploys run from the release branch"]);
+    assert!(c.brain.get_node(n.id()).is_some());
+}
+
+/// Obsidian writes a list property as a block under the key, and those notes must stay visible.
+#[test]
+fn obsidian_block_list_properties_are_read() {
+    let mut c = Case::new();
+    let path = c.brain.path(&["nodes", "fact", "rollout-plan-01blockl.md"]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "---\nid: \"01BLOCKLIST000000000000001\"\ntype: \"fact\"\ntitle: \"Rollout plan\"\nscope: \"global\"\n\
+         importance: 3\nkeywords:\n  - deploy\n  - region\n---\nThe rollout plan ships on Thursday\n",
+    )
+    .unwrap();
+    c.index.rebuild().unwrap();
+    assert!(c.brain.get_node("01BLOCKLIST000000000000001").is_some());
+    assert_eq!(titles(&c.search("deploy region", &["global"])), vec!["Rollout plan"]);
+}
+
+/// A note on disk that cannot be read is reported, not silently missing from the index.
+#[test]
+fn doctor_reports_a_note_it_cannot_read() {
+    let c = Case::new();
+    let path = c.brain.path(&["nodes", "fact", "broken-01broken1.md"]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "---\nid: \"01BROKEN00000000000000001\"\ntype: \"fact\"\nthis line has no colon\n---\nbody\n").unwrap();
+    let report = ops::doctor(&c.brain);
+    assert!(
+        report.iter().any(|l| l.starts_with("UNREADABLE") && l.contains("broken-01broken1.md")),
+        "doctor must name the note it cannot read: {report:#?}"
+    );
+    assert!(report.iter().any(|l| ops::is_problem(l)), "a note recall cannot show is a problem: {report:#?}");
+}
+
+/// Another device's note that does not parse is reported as unreadable, not reviewed as an active rule.
+#[test]
+fn a_note_that_does_not_parse_is_reported_instead_of_queued_as_a_rule() {
+    let t = two();
+    let path = t.a.path(&["nodes", "constraint", "broken-note-01abcdef.md"]);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "---\nid: \"01ABCDEF000000000000000000\"\ntype: \"constraint\"\nnot a yaml line\n---\nNever deploy on Friday\n")
+        .unwrap();
+    t.a.commit("broken note");
+    sync::push(&t.a, 30).unwrap();
+    let notes = sync::pull(&t.b, 30).unwrap();
+    assert!(notes.iter().any(|n| n.contains("could not be read")), "the pull must say the note is unreadable: {notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("rule(s)")), "an unreadable note is not a rule to review: {notes:?}");
+    assert!(ops::doctor(&t.b).iter().any(|l| l.starts_with("UNREADABLE")), "doctor must agree with the pull");
+}
+
 // ---- snapshot & recall ---------------------------------------------------
 
 #[test]
