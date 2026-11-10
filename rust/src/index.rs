@@ -71,6 +71,11 @@ CREATE TABLE epvec(rid INTEGER PRIMARY KEY, v BLOB);
 pub const SEM_WEIGHT: f64 = 0.15;
 pub const SEM_TOP: usize = 10;
 
+/// Column weights of the keyword rank, in the order the `fts` table declares them (see DDL): `id` is UNINDEXED and
+/// still takes the first weight, so `0.0` keeps `title` 3, `body` 1 and `keywords` 2 aligned. Weights shifted by one
+/// column put the title boost on an empty column, and the body then outranks the title.
+pub const BM25_WEIGHTS: &str = "0.0, 3.0, 1.0, 2.0";
+
 fn sem_flag() -> &'static str {
     if semantic::available() {
         "1"
@@ -1179,16 +1184,16 @@ impl Index {
         let mut info: HashMap<String, NodeRow> = HashMap::new();
         let mut ranks: HashMap<String, f64> = HashMap::new();
         if let Some(m) = text::match_expression(query) {
-            let mut sql = String::from(
-                "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, 3.0, 1.0, 2.0) AS rank FROM fts \
-                 JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id WHERE fts MATCH ?",
+            let mut sql = format!(
+                "SELECT nodes.*, COALESCE(act.b,-20) AS b, bm25(fts, {BM25_WEIGHTS}) AS rank FROM fts \
+                 JOIN nodes ON nodes.rowid = fts.rowid LEFT JOIN act ON act.id = nodes.id WHERE fts MATCH ?"
             );
             let mut values = vec![m];
             if let Some(s) = &scopes {
                 sql.push_str(&format!(" AND nodes.scope IN ({})", marks(s.len())));
                 values.extend(s.iter().cloned());
             }
-            sql.push_str(" ORDER BY bm25(fts, 3.0, 1.0, 2.0), nodes.id LIMIT ?");
+            sql.push_str(&format!(" ORDER BY bm25(fts, {BM25_WEIGHTS}), nodes.id LIMIT ?"));
             values.push(limit.to_string());
             let db = self.db()?;
             let mut st = db.prepare(&sql)?;

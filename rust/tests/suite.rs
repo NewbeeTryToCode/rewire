@@ -2025,6 +2025,17 @@ fn snapshot_tells_the_user_about_failed_consolidations() {
 }
 
 #[test]
+fn a_word_in_the_title_outranks_the_same_word_in_a_body() {
+    let mut c = Case::new();
+    // the same term twice: once only in a title, once only in a body. The title carries the weight (3 against 1),
+    // and the leading 0.0 of the bm25 weights is what keeps those weights on the columns they name.
+    c.add("fact", "nobody watered the garden this week", json!({"title": "deployment window"}));
+    c.add("fact", "the deployment window moved to Tuesday", json!({"title": "schedule notes"}));
+    let hits = c.search("deployment", &["global"]);
+    assert_eq!(titles(&hits).first().map(String::as_str), Some("deployment window"), "{:?}", titles(&hits));
+}
+
+#[test]
 fn weak_matches_are_flagged() {
     let hits = json!([{"type": "episode", "text": "[1 user] we talked about the garden and tomatoes"}]);
     assert!(ops::weak_match("which database did we pick for atlas", &hits));
