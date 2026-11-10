@@ -515,6 +515,23 @@ fn secrets_never_reach_the_llm_or_session_files() {
 }
 
 #[test]
+fn a_secret_in_keywords_is_refused_on_write_and_flagged_by_extraction() {
+    // the write path scans everything a change carries, not only its text and title
+    let c = Case::new();
+    let change = m(json!({"action": "NEW", "type": "fact", "text": "the signing key rotates monthly",
+                          "keywords": ["sk-ant-kwkeywordsabcdefghij0123"], "scope": "global"}));
+    assert!(ops::apply_change(&c.brain, &change, None).unwrap_err().to_string().contains("secret"));
+    // extraction flags it too, so a claim that hides a key in its keywords is rejected at once, not applied
+    let mut hidden = claim("The signing key rotates monthly", 2, "fact");
+    hidden["keywords"] = json!(["sk-ant-kwkeywordsabcdefghij0123"]);
+    let r = run_fixture(&c.brain, Fake::new(vec![extraction(vec![hidden], vec![])]));
+    assert!(list_titles(&r["applied"]).is_empty(), "{:?}", r["applied"]);
+    assert!(list_titles(&r["queued"]).is_empty(), "{:?}", r["queued"]);
+    assert_eq!(list_titles(&r["rejected"]), vec!["The signing key rotates monthly"]);
+    assert_eq!(r["rejected"][0]["why"], "secret");
+}
+
+#[test]
 fn secret_claim_rejected_and_undo() {
     let c = Case::new();
     let r = run_fixture(

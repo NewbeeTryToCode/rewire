@@ -912,7 +912,8 @@ impl<'a> Consolidator<'a> {
         let title_raw = c.get("title").map(crate::util::value_text).filter(|t| !t.is_empty()).unwrap_or_else(|| text.clone());
         let title = take(title_raw.trim(), 160);
         let keywords = normalize_keywords(c.get("keywords"));
-        let flags = security::scan(&format!("{text} {title}"));
+        // the keywords are written to the frontmatter and committed like the claim, so they are scanned with it
+        let flags = security::scan(&format!("{text} {title} {}", keywords.join(" ")));
         Some(obj(&[
             ("text", sv(&text)),
             ("title", sv(&title)),

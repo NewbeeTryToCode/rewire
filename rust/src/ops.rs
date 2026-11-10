@@ -301,8 +301,14 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
     }
     let text = s("text").trim().to_string();
     let title = take(&if truthy(change.get("title")) { s("title") } else { text.clone() }, 160);
-    // every write path, reviewed or not: a secret never becomes a note
-    if security::scan(&format!("{title} {text}")).iter().any(|p| p == "secret") {
+    // every write path, reviewed or not: a secret never becomes a note, wherever in the change it sits. Keywords are
+    // copied into the frontmatter and committed, so a key hidden there would leak just as a key in the body would.
+    let kw_text = change
+        .get("keywords")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(crate::util::value_text).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    if security::scan(&format!("{title} {text} {kw_text}")).iter().any(|p| p == "secret") {
         return op("refused: text looks like it contains a secret");
     }
     let scope = if truthy(change.get("scope")) { s("scope") } else { "global".into() };
