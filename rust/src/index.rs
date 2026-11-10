@@ -505,10 +505,22 @@ impl Index {
                 open(&self.path)?
             }
         };
-        let ok: Option<String> = db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get(0)).optional().unwrap_or(None);
-        if ok.as_deref() != Some(SCHEMA) {
+        // A database that opens but cannot answer the schema question is not this index: a malformed page (a killed
+        // write, a restored backup) fails here, and DROP inside reset fails too, so recall and rebuild both died with
+        // "database disk image is malformed" until the file was deleted by hand.
+        let stale = match db.query_row("SELECT v FROM meta WHERE k='schema'", [], |r| r.get::<_, String>(0)).optional() {
+            Ok(v) => v.as_deref() != Some(SCHEMA),
+            Err(_) => true,
+        };
+        if stale {
             // missing or older schema: rebuilt from the files inside the same database file (see reset)
-            Self::reset(&db)?;
+            if Self::reset(&db).is_err() {
+                drop(db);
+                self.remove_files();
+                let fresh = open(&self.path)?;
+                Self::reset(&fresh)?;
+                return Ok(fresh);
+            }
         }
         Ok(db)
     }

@@ -1991,6 +1991,28 @@ fn subprocess_output_larger_than_a_pipe_does_not_hang() {
 }
 
 #[test]
+fn a_damaged_index_page_does_not_break_recall_or_rebuild() {
+    let tmp = tempfile::tempdir().unwrap();
+    let brain = tmp.path().join("b");
+    let rewire =
+        |args: &[&str]| as_user(Command::new(env!("CARGO_BIN_EXE_rewire")).arg("--brain").arg(&brain).args(args)).output().unwrap();
+    assert!(rewire(&["init"]).status.success());
+    assert!(rewire(&["rebuild"]).status.success());
+    // page 2 of a freshly rebuilt index: the file opens and the journal mode is set, but the schema query and every
+    // DROP inside reset fail, so recall and rebuild both died with "database disk image is malformed" for good
+    let db = brain.join(".index").join("brain.db");
+    let mut bytes = std::fs::read(&db).unwrap();
+    assert!(bytes.len() > 8192, "the index is {} bytes", bytes.len());
+    for b in &mut bytes[4096..8192] {
+        *b = 0xde;
+    }
+    std::fs::write(&db, bytes).unwrap();
+    let out = rewire(&["recall", "--json", "redis"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(rewire(&["rebuild"]).status.success());
+}
+
+#[test]
 fn index_rebuild_keeps_open_handles_valid() {
     let mut c = Case::new();
     c.add("decision", "Use SQLite FTS5 for recall", json!({}));
