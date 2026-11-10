@@ -45,6 +45,20 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
     if ignore.lines().any(|l| l.trim().starts_with('!')) && unignores_local(&ignore) {
         found.push(".gitignore (it un-ignores device-local files)".into());
     }
+    // A .gitattributes from another device can hand notes to a merge driver, and git would then resolve those files
+    // itself: the "newest version wins, the other one goes to the inbox" rule in sync::resolve never runs and a note
+    // comes out of the merge with two frontmatters. Only events may carry merge= (the default file does).
+    let attrs = match rev {
+        Some(r) => out_str(&brain.git(&["show", &format!("{r}:.gitattributes")])),
+        None => fs::read_to_string(brain.path(&[".gitattributes"])).unwrap_or_default(),
+    };
+    for line in attrs.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let mut parts = line.split_whitespace();
+        let pattern = parts.next().unwrap_or("");
+        if parts.any(|a| a.starts_with("merge=")) && !pattern.starts_with("events/") {
+            found.push(format!(".gitattributes gives {pattern} a merge driver (notes would merge as text)"));
+        }
+    }
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
         let Some((info, path)) = entry.split_once('\t') else { continue };

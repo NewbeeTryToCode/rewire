@@ -2868,6 +2868,16 @@ fn round_three_import_and_cli_details() {
 }
 
 #[test]
+fn a_remote_gitattributes_cannot_turn_notes_into_a_text_merge() {
+    let t = two();
+    push_from(&t, &[(".gitattributes", "events/**/*.jsonl merge=union\nnodes/** merge=union\n")], &[]);
+    let err = sync::pull(&t.b, 30).unwrap_err().to_string();
+    assert!(err.contains("merge driver"), "{err}");
+    // the default file, which only names events, still passes the same check
+    assert!(rewire::brain::unsafe_paths(&t.a, None).is_empty(), "{:?}", rewire::brain::unsafe_paths(&t.a, None));
+}
+
+#[test]
 fn a_wildcard_unignore_is_refused_and_retractions_are_reported() {
     let t = two();
     push_from(&t, &[(".gitignore", ".index/\n.state/\nlocal.toml\n!l?cal.toml\n")], &[]);
