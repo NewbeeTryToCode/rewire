@@ -691,6 +691,17 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Consolidate { mut files, pending, retry, watch, harness, quiet, json: as_json } => {
             let brain = open_brain(bp);
+            // A transcript named on the command line is extracted and auto-applied with no review. A person may do
+            // that for a file they own, but an agent that writes a JSONL with user-role turns would install memory
+            // the user never said: its provenance comes from the turn, not from the file. The hooks consolidate the
+            // queue (--pending, --watch) and stay allowed.
+            if !files.is_empty() {
+                if let Some(marker) = agent_shell() {
+                    fail(format!(
+                        "consolidate <file> is refused inside an agent session ({marker}): agents consolidate the queue with `rewire consolidate --pending`, the user runs a single file from their own terminal"
+                    ));
+                }
+            }
             if watch {
                 return integrations::watch(&brain, || {
                     let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
