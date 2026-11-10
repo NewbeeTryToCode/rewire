@@ -321,6 +321,10 @@ fn merge_excerpts(best: &[i64], rows: &HashMap<i64, EpRow>) -> Vec<(i64, String)
 /// excerpts) +1 point of evidence recall (experiments/eval/results/2026-10-14-locomo-trim.md).
 const EP_WHOLE: usize = 2;
 const EP_CONTEXT: usize = 1;
+/// Weight of the query-coverage term in episodic ranking, in units of one rank step (1 / (RRF_K + 1)).
+/// Strictly below one step: at a full step the term outranks the seed bonus, which is what pulls an excerpt in
+/// behind the memory extracted from it, so a chunk that merely shares more query words displaced it.
+const COVERAGE_WEIGHT: f64 = 0.5;
 
 fn trim_excerpt(query: &str, excerpt: &str) -> String {
     static SPEAKER: OnceLock<Regex> = OnceLock::new();
@@ -1425,6 +1429,16 @@ impl Index {
             }
         }
         fused.retain(|rid, _| rows.contains_key(rid)); // seeds may point out of scope
+
+        // A multi-hop question names two things that live in different sessions, and bm25 can spend every candidate slot
+        // on the one session that repeats a rare term. A chunk that covers more of the question's distinct words earns
+        // a bonus the size of one rank step, so coverage can reorder near-ties but not overturn a strong match.
+        let ask = text::content_words(query).len().max(1) as f64;
+        for (rid, score) in fused.iter_mut() {
+            if let Some((_, _, body, _, _)) = rows.get(rid) {
+                *score += COVERAGE_WEIGHT * (text::overlap(query, body) as f64 / ask) / (RRF_K + 1.0);
+            }
+        }
         if let Some((start, end)) = &window {
             for (rid, (_, date, _, _, _)) in &rows {
                 let d: String = date.chars().take(10).collect();

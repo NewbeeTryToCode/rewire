@@ -1078,6 +1078,24 @@ fn session_summaries_are_searchable_and_bookend_the_top_excerpt() {
     assert_eq!(eps[0].summary.as_deref(), Some("Summary: Migrated the billing service to Kubernetes."));
 }
 
+#[test]
+fn an_excerpt_that_covers_more_of_the_question_outranks_a_repeater() {
+    let mut c = Case::new();
+    // the repeater wins on bm25 alone: it says the rare word eight times in one chunk. The coverer says it once
+    // and the second thing the question names once, which is what a multi-hop question actually needs.
+    write_session(
+        &c,
+        "repeater",
+        "p",
+        &["[1 user] kubernetes kubernetes kubernetes kubernetes", "[2 user] kubernetes kubernetes kubernetes kubernetes"],
+    );
+    write_session(&c, "coverer", "p", &["[3 user] we moved to kubernetes", "[4 user] the billing page moved too"]);
+    c.index.refresh().unwrap();
+    let eps = c.index.search_episodes("kubernetes billing", 2, &[], None, None).unwrap();
+    let texts: Vec<&str> = eps.iter().map(|h| h.text.as_str()).collect();
+    assert!(texts[0].contains("billing"), "{texts:?}");
+}
+
 fn write_session(c: &Case, name: &str, project: &str, lines: &[&str]) {
     let path = c.brain.path(&["sessions", "2023-05-08", &format!("claude-code-{name}.md")]);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
