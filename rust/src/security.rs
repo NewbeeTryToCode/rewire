@@ -210,7 +210,7 @@ impl<'a> Folded<'a> {
     }
 }
 
-static SECRETS: [Pattern; 18] = [
+static SECRETS: [Pattern; 19] = [
     Pattern::new(r"sk-ant-[A-Za-z0-9_\-]{20,}", &["sk-ant-"], false),
     Pattern::new(r"sk-[A-Za-z0-9]{32,}", &["sk-"], false),
     Pattern::new(r"gh[pousr]_[A-Za-z0-9]{30,}", &["ghp_", "gho_", "ghu_", "ghs_", "ghr_"], false),
@@ -218,8 +218,15 @@ static SECRETS: [Pattern; 18] = [
     Pattern::new(r"AKIA[0-9A-Z]{16}", &["AKIA"], false),
     Pattern::new(r"xox[baprs]-[A-Za-z0-9-]{10,}", &["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"], false),
     Pattern::new(r"AIza[0-9A-Za-z_\-]{35}", &["AIza"], false),
-    // PEM and PGP private keys ("-----BEGIN PGP PRIVATE KEY BLOCK-----")
-    Pattern::new(r"-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----", &["-----BEGIN "], false),
+    // PEM and PGP private keys, header and body: redacting the header alone left the base64 key material in place
+    Pattern::new(
+        r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----[\s\S]{0,8000}?(?:-----END [A-Z ]*PRIVATE KEY( BLOCK)?-----|\z)",
+        &["-----BEGIN "],
+        false,
+    ),
+    // a JWT, header.payload.signature in base64url. Its signature can be short or weak, which the entropy check
+    // misses, so this is a pattern of its own ("eyJ" is base64 for "{" at the start of the header)
+    Pattern::new(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]*", &["eyJ"], false),
     // key: value, also quoted JSON keys ({"apiKey": "..."}); values that are paths ("pwd: /home/me") are left alone
     Pattern::new(
         r#"(?i)\b(password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|auth[_-]?token)\b["']?\s*[:=]\s*["']?[^\s"'/~$,}][^\s"',}]{7,}"#,
@@ -447,6 +454,17 @@ mod tests {
         let prose = redact("Our staging password is hunter2-XyZ9 and we use it daily");
         assert!(!prose.contains("hunter2") && prose.contains("we use it daily"), "{prose}");
         assert!(scan("a password is required for the admin page").is_empty());
+    }
+
+    #[test]
+    fn a_key_block_and_a_weak_jwt_are_redacted_whole() {
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----";
+        let out = redact(pem);
+        assert!(!out.contains("b3BlbnNzaC1rZXkt"), "the body is the key material, not just the header: {out}");
+        // a short, low-entropy signature that the entropy check cannot see
+        let weak = "auth eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abcdefghijklmnopqrstuvwxyz";
+        assert!(!redact(weak).contains("eyJzdWIiOiIxMjMifQ"), "{}", redact(weak));
+        assert_eq!(scan(weak), vec!["secret"]);
     }
 
     #[test]
