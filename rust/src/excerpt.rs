@@ -228,8 +228,7 @@ mod merge_tests {
 
     #[test]
     fn adjacent_windows_of_one_session_merge_without_repeating_a_turn() {
-        let rows: HashMap<i64, Chunk> =
-            [(1, chunk("sessions/a.md", 1..=6)), (2, chunk("sessions/a.md", 5..=10))].into_iter().collect();
+        let rows: HashMap<i64, Chunk> = [(1, chunk("sessions/a.md", 1..=6)), (2, chunk("sessions/a.md", 5..=10))].into_iter().collect();
         let merged = merge(&[1, 2], &rows);
         assert_eq!(merged.len(), 1, "two overlapping windows are one excerpt");
         assert_eq!(merged[0].0, 1, "the excerpt keeps the rank of the better window");
@@ -238,15 +237,13 @@ mod merge_tests {
 
     #[test]
     fn windows_of_different_sessions_stay_apart() {
-        let rows: HashMap<i64, Chunk> =
-            [(1, chunk("sessions/a.md", 1..=6)), (2, chunk("sessions/b.md", 5..=10))].into_iter().collect();
+        let rows: HashMap<i64, Chunk> = [(1, chunk("sessions/a.md", 1..=6)), (2, chunk("sessions/b.md", 5..=10))].into_iter().collect();
         assert_eq!(merge(&[1, 2], &rows).len(), 2, "sessions are never joined");
     }
 
     #[test]
     fn windows_with_a_gap_stay_apart() {
-        let rows: HashMap<i64, Chunk> =
-            [(1, chunk("sessions/a.md", 1..=3)), (2, chunk("sessions/a.md", 9..=11))].into_iter().collect();
+        let rows: HashMap<i64, Chunk> = [(1, chunk("sessions/a.md", 1..=3)), (2, chunk("sessions/a.md", 9..=11))].into_iter().collect();
         assert_eq!(merge(&[1, 2], &rows).len(), 2, "a gap means the missing turns would look present");
     }
 
