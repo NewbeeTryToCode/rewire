@@ -210,3 +210,58 @@ mod trim_tests {
         assert_eq!(trim("kubernetes", ex), ex); // nothing to anchor on: kept whole
     }
 }
+
+#[cfg(test)]
+mod merge_tests {
+    use super::{merge, Chunk};
+    use std::collections::HashMap;
+
+    fn chunk(path: &str, turns: std::ops::RangeInclusive<i64>) -> Chunk {
+        let (lo, hi) = (*turns.start(), *turns.end());
+        let text = turns.map(|n| format!("[{n} user] turn {n}")).collect::<Vec<_>>().join("\n");
+        Chunk { path: path.into(), date: "2026-01-01".into(), text, lo, hi }
+    }
+
+    fn turns(text: &str) -> Vec<i64> {
+        text.lines().map(|l| super::turn_re().captures(l).unwrap()[1].parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn adjacent_windows_of_one_session_merge_without_repeating_a_turn() {
+        let rows: HashMap<i64, Chunk> =
+            [(1, chunk("sessions/a.md", 1..=6)), (2, chunk("sessions/a.md", 5..=10))].into_iter().collect();
+        let merged = merge(&[1, 2], &rows);
+        assert_eq!(merged.len(), 1, "two overlapping windows are one excerpt");
+        assert_eq!(merged[0].0, 1, "the excerpt keeps the rank of the better window");
+        assert_eq!(turns(&merged[0].1), (1..=10).collect::<Vec<_>>(), "each turn once, in order");
+    }
+
+    #[test]
+    fn windows_of_different_sessions_stay_apart() {
+        let rows: HashMap<i64, Chunk> =
+            [(1, chunk("sessions/a.md", 1..=6)), (2, chunk("sessions/b.md", 5..=10))].into_iter().collect();
+        assert_eq!(merge(&[1, 2], &rows).len(), 2, "sessions are never joined");
+    }
+
+    #[test]
+    fn windows_with_a_gap_stay_apart() {
+        let rows: HashMap<i64, Chunk> =
+            [(1, chunk("sessions/a.md", 1..=3)), (2, chunk("sessions/a.md", 9..=11))].into_iter().collect();
+        assert_eq!(merge(&[1, 2], &rows).len(), 2, "a gap means the missing turns would look present");
+    }
+
+    #[test]
+    fn a_session_summary_is_never_folded_into_an_excerpt() {
+        let summary = Chunk { path: "sessions/a.md".into(), date: "2026-01-01".into(), text: "done: shipped".into(), lo: 0, hi: 0 };
+        let rows: HashMap<i64, Chunk> = [(1, summary), (2, chunk("sessions/a.md", 1..=6))].into_iter().collect();
+        assert_eq!(merge(&[1, 2], &rows).len(), 2, "turn 0 means no transcript, so no line order to merge by");
+    }
+
+    #[test]
+    fn runs_that_reuse_turn_numbers_are_not_merged() {
+        let mut other = chunk("sessions/a.md", 3..=5);
+        other.text = other.text.replace("turn", "second pass");
+        let rows: HashMap<i64, Chunk> = [(1, chunk("sessions/a.md", 1..=6)), (2, other)].into_iter().collect();
+        assert_eq!(merge(&[1, 2], &rows).len(), 2, "the same turn number with different text is a different run");
+    }
+}
