@@ -63,7 +63,7 @@ pub enum Cmd {
         #[arg(short = 'k', default_value_t = 8)]
         k: usize,
         /// raw transcript excerpts to include (0 = none)
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 20)]
         episodes: usize,
         /// global | project:<slug> | all
         #[arg(long)]

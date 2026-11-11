@@ -28,8 +28,8 @@ pub fn tools() -> Value {
                 "properties": {
                     "query": {"type": "string", "description": format!("What you want to remember. {QUERY_GUIDE}")},
                     "k": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8},
-                    "episodes": {"type": "integer", "minimum": 0, "maximum": 30, "default": 3,
-                                 "description": "Also return this many raw excerpts from past session transcripts. Use ~20 when the answer spans sessions: counting ('how many times'), totals, timelines and 'how long between' questions (measured: experiments/longmemeval)."},
+                    "episodes": {"type": "integer", "minimum": 0, "maximum": 30, "default": 20,
+                                 "description": "Also return this many raw excerpts from past session transcripts. 20 is enough for counting ('how many times'), totals, timelines and 'how long between' questions; pass a small number (or 0) for a single specific fact, where 20 excerpts only add context to read over."},
                     "scope": {"type": "string", "description": "'global', 'project:<slug>' or 'all'. Default: global + the project of the current directory."},
                     "refers_to": {"type": "object", "description": REFERS_TO_GUIDE,
                                   "properties": {"from": {"type": "string"}, "to": {"type": "string"}},
@@ -101,7 +101,7 @@ impl<'a> Server<'a> {
                 let query = args.get("query").and_then(Value::as_str).ok_or_else(|| Error::Op("missing argument: query".into()))?;
                 self.index.refresh()?;
                 let k = int_arg(args, "k", 8)?.max(1) as usize;
-                let episodes = int_arg(args, "episodes", 3)?.clamp(0, 30) as usize;
+                let episodes = int_arg(args, "episodes", 20)?.clamp(0, 30) as usize;
                 let scope = args.get("scope").and_then(Value::as_str);
                 let also: Vec<String> = match args.get("also") {
                     None | Some(Value::Null) => Vec::new(),
