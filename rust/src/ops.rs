@@ -824,6 +824,26 @@ pub fn is_problem(line: &str) -> bool {
     .any(|p| line.starts_with(p))
 }
 
+/// Session transcripts under sessions/. `doctor` reads them to report a secret that arrived without passing
+/// ingest: a hand-written file, or one pulled from another device.
+fn session_paths(brain: &Brain) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![brain.path(&["sessions"])];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn doctor(brain: &Brain) -> Vec<String> {
     let mut report = Vec::new();
     let mut bad = 0;
@@ -845,6 +865,16 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     }
     for (name, days) in skills::stale(brain, None) {
         report.push(format!("STALE skill {name}: not used for {days} days (delete skills/{name}/ to retire it)"));
+    }
+    for path in session_paths(brain) {
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let why = security::blocked(&text);
+        if !why.is_empty() {
+            report.push(format!(
+                "BLOCKED ({why}) {}: recall hides this transcript until the text is edited out",
+                relpath(&path, &brain.root)
+            ));
+        }
     }
     report.push(format!("inbox: {} item(s) awaiting review", brain.iter_inbox().len()));
     let remotes = out_str(&brain.git(&["remote", "-v"]));

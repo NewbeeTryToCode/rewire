@@ -342,3 +342,12 @@ fn undo_and_remote_set_are_refused_in_agent_sessions() {
     assert!(String::from_utf8_lossy(&rewire(&["undo", "s1"], true).stderr).contains("agent session"));
     assert!(String::from_utf8_lossy(&rewire(&["remote", "set", "https://evil.example/b.git"], true).stderr).contains("agent session"));
 }
+
+#[test]
+fn doctor_reports_a_transcript_that_arrived_with_a_secret() {
+    let c = Case::new();
+    write_session(&c, "leaky", "app", &["[1 user] my key is sk-ant-api03-ZZZZabcdefghijklmnopqrstuvwxyz012345"]);
+    let report = ops::doctor(&c.brain).join("\n");
+    assert!(report.contains("BLOCKED (secret)"), "{report}");
+    assert!(report.contains("claude-code-leaky.md"), "{report}");
+}
