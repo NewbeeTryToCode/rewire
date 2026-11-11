@@ -7,7 +7,7 @@ use crate::{integrations, ops, pyjson, snapshot, sync, Error, Meta, Result, VERS
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Python `str(value)` for JSON values (strings unquoted, null -> None).
@@ -534,14 +534,35 @@ fn cmd_recall(
 
 fn cmd_import(bp: &Option<PathBuf>, file: PathBuf, use_llm: bool) -> Result<()> {
     let brain = open_brain(bp);
+    let sessions = read_import_records(&file)?;
+    let usage = crate::llm::Usage::default();
+    let provider: Box<dyn crate::llm::Provider> =
+        if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
+    let mut con = Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
+    con.review_all = true; // an import file says who spoke: what it claims the user said is reviewed
+    let _g = writing(&brain);
+    let mut written = 0;
+    for s in &sessions {
+        if import_record(&brain, &mut con, use_llm, &usage, s, written)? {
+            written += 1;
+        }
+    }
+    if !use_llm && written > 0 {
+        brain.commit(&format!("import {written} session(s)"));
+    }
+    Ok(())
+}
+
+/// The records of an import file, every line checked before anything is written: a bad line never
+/// leaves half an import behind.
+fn read_import_records(file: &Path) -> Result<Vec<Value>> {
     let text = if file.as_os_str() == "-" {
         let mut t = String::new();
         std::io::stdin().read_to_string(&mut t)?;
         t
     } else {
-        std::fs::read_to_string(&file)?
+        std::fs::read_to_string(file)?
     };
-    // every line is checked before anything is written: a bad line never leaves half an import behind
     let mut sessions = Vec::new();
     let mut problems = Vec::new();
     for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
@@ -557,117 +578,111 @@ fn cmd_import(bp: &Option<PathBuf>, file: PathBuf, use_llm: bool) -> Result<()> 
     if !problems.is_empty() {
         fail(format!("nothing imported; fix these records first:\n  {}", problems.join("\n  ")));
     }
-    let usage = crate::llm::Usage::default();
-    let provider: Box<dyn crate::llm::Provider> =
-        if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
-    let mut con = Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
-    con.review_all = true; // an import file says who spoke: what it claims the user said is reviewed
-    let _g = writing(&brain);
-    let mut written = 0;
-    for s in sessions {
-        let harness_slug = crate::util::slugify(s.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
-        let session_id = s.get("session").and_then(Value::as_str).unwrap_or("");
-        // a transcript-only record (the LLM step failed before) is consolidated again, not skipped
-        let done = ops::session_consolidated(&brain, &harness_slug, session_id);
-        if done == Some(true) || (!use_llm && done.is_some()) {
-            println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
-            continue;
-        }
-        let field = |k: &str| s.get(k).and_then(|v| v.as_str()).map(String::from);
-        let harness = field("harness").unwrap_or_else(|| "import".into());
-        let session = field("session").unwrap_or_else(|| "unknown".into());
-        let turns: Vec<crate::transcripts::Turn> = s["turns"]
-            .as_array()
-            .map(|a| a.as_slice())
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-            .map(|(i, t)| crate::transcripts::Turn {
-                n: t["n"].as_u64().map(|n| n as usize).unwrap_or(i + 1),
-                role: t["role"].as_str().unwrap_or("user").into(),
-                text: t["text"].as_str().unwrap_or("").into(),
-                ts: t["ts"].as_str().unwrap_or("").into(),
-            })
-            .collect();
-        let meta = crate::transcripts::SessionMeta {
-            session: Some(session.clone()),
-            cwd: field("cwd"),
-            date: field("date"),
-            ..Default::default()
-        };
-        let before = (usage.calls.get(), usage.prompt_chars.get(), usage.completion_chars.get(), usage.seconds.get());
-        let start = std::time::Instant::now();
-        let mut rec = json!({"session": session, "turns": turns.len()});
-        let outcome = if use_llm {
-            let r = con.consolidate(&harness, &meta, &turns).map(|r| {
-                for key in ["applied", "queued", "rejected"] {
-                    rec[key] = json!(r.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()));
-                }
-            });
-            if r.is_err() {
-                // the transcript is kept and searchable even when the LLM part failed (rerun the import to retry)
-                let date = meta.date.clone().unwrap_or_default();
-                let transcript = con.transcript(&turns);
-                let fallback = [crate::consolidate::FALLBACK_SUMMARY.to_string()];
-                let project = con.project_of(meta.cwd.as_deref());
-                con.write_session(
-                    &harness,
-                    &session,
-                    project.as_deref(),
-                    &fallback,
-                    &meta.outputs,
-                    &[],
-                    &[],
-                    &[],
-                    0,
-                    &Default::default(),
-                    &date,
-                    &transcript,
-                    &[],
-                )?;
-            }
-            r
-        } else {
-            let date = meta.date.clone().unwrap_or_default();
-            let project = con.project_of(meta.cwd.as_deref());
-            con.write_session(
-                &harness,
-                &session,
-                project.as_deref(),
-                &[],
-                &meta.outputs,
-                &[],
-                &[],
-                &[],
-                0,
-                &Default::default(),
-                &date,
-                &con.transcript(&turns),
-                &[],
-            )
-        };
-        rec["ok"] = json!(outcome.is_ok());
-        rec["seconds"] = json!(crate::util::round_to(start.elapsed().as_secs_f64(), 2));
-        rec["llm_calls"] = json!(usage.calls.get() - before.0);
-        rec["prompt_chars"] = json!(usage.prompt_chars.get() - before.1);
-        rec["completion_chars"] = json!(usage.completion_chars.get() - before.2);
-        rec["llm_seconds"] = json!(crate::util::round_to(usage.seconds.get() - before.3, 2));
-        if let Err(e) = &outcome {
-            rec["error"] = json!(e.to_string().chars().take(300).collect::<String>());
-        }
-        println!("{}", pyjson::dumps_utf8(&rec));
-        if outcome.is_err() {
-            if !use_llm && written > 0 {
-                brain.commit(&format!("import {written} session(s)"));
-            }
-            std::process::exit(1); // sessions build on each other: stop at the first failure, a rerun resumes
-        }
-        written += 1;
+    Ok(sessions)
+}
+
+/// One record, printed as its JSON line. Returns whether it wrote a session: a skipped record does not
+/// count. A failing record commits the sessions before it and stops the run, so the caller passes its
+/// count so far.
+fn import_record(
+    brain: &Brain,
+    con: &mut Consolidator<'_>,
+    use_llm: bool,
+    usage: &crate::llm::Usage,
+    record: &Value,
+    written: usize,
+) -> Result<bool> {
+    let harness_slug = crate::util::slugify(record.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
+    let session_id = record.get("session").and_then(Value::as_str).unwrap_or("");
+    // a transcript-only record (the LLM step failed before) is consolidated again, not skipped
+    let done = ops::session_consolidated(brain, &harness_slug, session_id);
+    if done == Some(true) || (!use_llm && done.is_some()) {
+        println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
+        return Ok(false);
     }
-    if !use_llm && written > 0 {
-        brain.commit(&format!("import {written} session(s)"));
+    let field = |k: &str| record.get(k).and_then(|v| v.as_str()).map(String::from);
+    let harness = field("harness").unwrap_or_else(|| "import".into());
+    let session = field("session").unwrap_or_else(|| "unknown".into());
+    let turns: Vec<crate::transcripts::Turn> = record["turns"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, t)| crate::transcripts::Turn {
+            n: t["n"].as_u64().map(|n| n as usize).unwrap_or(i + 1),
+            role: t["role"].as_str().unwrap_or("user").into(),
+            text: t["text"].as_str().unwrap_or("").into(),
+            ts: t["ts"].as_str().unwrap_or("").into(),
+        })
+        .collect();
+    let meta =
+        crate::transcripts::SessionMeta { session: Some(session.clone()), cwd: field("cwd"), date: field("date"), ..Default::default() };
+    let before = (usage.calls.get(), usage.prompt_chars.get(), usage.completion_chars.get(), usage.seconds.get());
+    let start = std::time::Instant::now();
+    let mut rec = json!({"session": session, "turns": turns.len()});
+    let outcome = if use_llm {
+        let r = con.consolidate(&harness, &meta, &turns).map(|r| {
+            for key in ["applied", "queued", "rejected"] {
+                rec[key] = json!(r.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()));
+            }
+        });
+        if r.is_err() {
+            // the transcript is kept and searchable even when the LLM part failed (rerun the import to retry)
+            let fallback = [crate::consolidate::FALLBACK_SUMMARY.to_string()];
+            write_import_session(con, &harness, &session, &meta, &turns, &fallback)?;
+        }
+        r
+    } else {
+        write_import_session(con, &harness, &session, &meta, &turns, &[])
+    };
+    rec["ok"] = json!(outcome.is_ok());
+    rec["seconds"] = json!(crate::util::round_to(start.elapsed().as_secs_f64(), 2));
+    rec["llm_calls"] = json!(usage.calls.get() - before.0);
+    rec["prompt_chars"] = json!(usage.prompt_chars.get() - before.1);
+    rec["completion_chars"] = json!(usage.completion_chars.get() - before.2);
+    rec["llm_seconds"] = json!(crate::util::round_to(usage.seconds.get() - before.3, 2));
+    if let Err(e) = &outcome {
+        rec["error"] = json!(e.to_string().chars().take(300).collect::<String>());
     }
-    Ok(())
+    println!("{}", pyjson::dumps_utf8(&rec));
+    if outcome.is_err() {
+        if !use_llm && written > 0 {
+            brain.commit(&format!("import {written} session(s)"));
+        }
+        std::process::exit(1); // sessions build on each other: stop at the first failure, a rerun resumes
+    }
+    Ok(true)
+}
+
+/// An imported session with no items of its own, just its summaries and its transcript: enough to keep a
+/// record searchable when its LLM step failed.
+fn write_import_session(
+    con: &mut Consolidator<'_>,
+    harness: &str,
+    session: &str,
+    meta: &crate::transcripts::SessionMeta,
+    turns: &[crate::transcripts::Turn],
+    summaries: &[String],
+) -> Result<()> {
+    let date = meta.date.clone().unwrap_or_default();
+    let project = con.project_of(meta.cwd.as_deref());
+    let transcript = con.transcript(turns);
+    con.write_session(
+        harness,
+        session,
+        project.as_deref(),
+        summaries,
+        &meta.outputs,
+        &[],
+        &[],
+        &[],
+        0,
+        &Default::default(),
+        &date,
+        &transcript,
+        &[],
+    )
 }
 
 fn cmd_get(bp: &Option<PathBuf>, ids: Vec<String>, session: Option<String>, as_json: bool) -> Result<()> {
@@ -850,53 +865,61 @@ fn cmd_consolidate(
 fn cmd_review(bp: &Option<PathBuf>, action: String, force: bool, ids: Vec<String>) -> Result<()> {
     let brain = open_brain(bp);
     if action == "list" {
-        let items = brain.iter_inbox();
-        if items.is_empty() {
-            println!("inbox empty");
-        }
-        for item in items {
-            let m = &item.meta;
-            let g = |k: &str| crate::snapshot::printable(&m.get(k).map(py_str).unwrap_or_default());
-            let target = m
-                .get("target")
-                .filter(|t| crate::brain::is_set(Some(t)))
-                .map(|t| format!(" → {}", crate::snapshot::printable(&py_str(t))))
-                .unwrap_or_default();
-            let action = crate::snapshot::printable(&m.get("action").map(py_str).unwrap_or_else(|| "NEW".into()));
-            let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
-            let remote = if brain.is_untrusted(&item.path) { "  FROM ANOTHER DEVICE (its reason and labels are its own)" } else { "" };
-            println!(
-                "{}  {action}{target}  [{} · {} · {}/{}]{remote}\n    {}\n    reason: {}{}",
-                g("inbox_id"),
-                g("type"),
-                g("scope"),
-                g("confidence"),
-                g("provenance"),
-                crate::snapshot::printable(item.body.trim()).replace('\n', "\n    "),
-                g("reason"),
-                flags.map(|f| format!("  flags: {}", crate::snapshot::printable(&python_list(f)))).unwrap_or_default()
-            );
-        }
-        let waiting = ops::unreviewed(&brain);
-        if !waiting.is_empty() {
-            println!("\nFrom other devices (shown to agents on this device once you approve them):");
-            for (key, text, why) in waiting {
-                let flag = if why.is_empty() { String::new() } else { format!("  flags: ['{why}']") };
-                // the id to approve or reject it by: a note's short id, a skill's name
-                let id = key
-                    .strip_prefix("skills/")
-                    .map(|n| format!("skill:{}", n.trim_end_matches('/')))
-                    .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
-                    .unwrap_or_else(|| key.clone());
-                // remote text: no terminal escape codes that could hide part of it
-                // in full: what is approved is exactly what was shown
-                let shown = crate::snapshot::printable(&text).replace('\n', "\n    ");
-                println!("{}  ({}){flag}\n    {shown}", crate::snapshot::printable(&id), crate::snapshot::printable(&key));
-            }
-            println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
-        }
-        return Ok(());
+        return review_list(&brain);
     }
+    review_apply(&brain, &action, force, ids)
+}
+
+fn review_list(brain: &Brain) -> Result<()> {
+    let items = brain.iter_inbox();
+    if items.is_empty() {
+        println!("inbox empty");
+    }
+    for item in items {
+        let m = &item.meta;
+        let g = |k: &str| crate::snapshot::printable(&m.get(k).map(py_str).unwrap_or_default());
+        let target = m
+            .get("target")
+            .filter(|t| crate::brain::is_set(Some(t)))
+            .map(|t| format!(" → {}", crate::snapshot::printable(&py_str(t))))
+            .unwrap_or_default();
+        let action = crate::snapshot::printable(&m.get("action").map(py_str).unwrap_or_else(|| "NEW".into()));
+        let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
+        let remote = if brain.is_untrusted(&item.path) { "  FROM ANOTHER DEVICE (its reason and labels are its own)" } else { "" };
+        println!(
+            "{}  {action}{target}  [{} · {} · {}/{}]{remote}\n    {}\n    reason: {}{}",
+            g("inbox_id"),
+            g("type"),
+            g("scope"),
+            g("confidence"),
+            g("provenance"),
+            crate::snapshot::printable(item.body.trim()).replace('\n', "\n    "),
+            g("reason"),
+            flags.map(|f| format!("  flags: {}", crate::snapshot::printable(&python_list(f)))).unwrap_or_default()
+        );
+    }
+    let waiting = ops::unreviewed(brain);
+    if !waiting.is_empty() {
+        println!("\nFrom other devices (shown to agents on this device once you approve them):");
+        for (key, text, why) in waiting {
+            let flag = if why.is_empty() { String::new() } else { format!("  flags: ['{why}']") };
+            // the id to approve or reject it by: a note's short id, a skill's name
+            let id = key
+                .strip_prefix("skills/")
+                .map(|n| format!("skill:{}", n.trim_end_matches('/')))
+                .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
+                .unwrap_or_else(|| key.clone());
+            // remote text: no terminal escape codes that could hide part of it
+            // in full: what is approved is exactly what was shown
+            let shown = crate::snapshot::printable(&text).replace('\n', "\n    ");
+            println!("{}  ({}){flag}\n    {shown}", crate::snapshot::printable(&id), crate::snapshot::printable(&key));
+        }
+        println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
+    }
+    Ok(())
+}
+
+fn review_apply(brain: &Brain, action: &str, force: bool, ids: Vec<String>) -> Result<()> {
     if ids.is_empty() {
         fail("give inbox ids, or `all`");
     }
@@ -909,75 +932,25 @@ fn cmd_review(bp: &Option<PathBuf>, action: String, force: bool, ids: Vec<String
             fail(format!("review {action} is refused inside an agent session ({marker}): run `rewire review` in your own terminal"));
         }
     }
-    let _g = writing(&brain);
-    let mut errors = 0;
-    // rules, preferences and skills from other devices: approving shows them here, rejecting is not offered
-    // (it would delete them on every device; edit or delete the file instead)
+    let _g = writing(brain);
     let all = ids == ["all"];
-    let mut inbox_ids = Vec::new();
-    for id in &ids {
-        if let Some(key) = (!all).then(|| ops::unreviewed_key(&brain, id)).flatten() {
-            if action == "approve" {
-                ops::trust(&brain, &key)?;
-                println!("approved {key} (from another device)");
-            } else if key.starts_with("nodes/") {
-                // rejecting a rule that came from another device forgets it, on every device once synced
-                match ops::forget_unreviewed(&brain, &key, "rejected on review") {
-                    Ok(msg) => println!("rejected {key}: {msg}"),
-                    Err(e) => {
-                        eprintln!("! {key}: {e}");
-                        errors += 1;
-                    }
-                }
-            } else {
-                eprintln!("! {key} is a skill from another device: delete its folder to reject it everywhere");
-                errors += 1;
-            }
-        } else {
-            inbox_ids.push(id.clone());
-        }
-    }
+    let (inbox_ids, mut errors) = review_remote_ids(brain, action, all, &ids)?;
     if all && action == "approve" {
-        for (key, _, why) in ops::unreviewed(&brain) {
+        for (key, _, why) in ops::unreviewed(brain) {
             if why.is_empty() || force {
-                ops::trust(&brain, &key)?;
+                ops::trust(brain, &key)?;
                 println!("approved {key} (from another device)");
             } else {
                 eprintln!("skipped flagged item {key} (['{why}']): check it, then approve it by name");
             }
         }
     }
-    let ids = inbox_ids;
-    let ids: Vec<String> = if all {
-        // "all" never approves items the scan flagged (injection, secret): those need a look and their id
-        // nor proposals that arrived from another device: what they say about themselves is not checked
-        let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
-            action == "approve"
-                && !force
-                && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
-                    || !crate::security::scan(&i.body).is_empty()
-                    || brain.is_untrusted(&i.path))
-        });
-        for item in &flagged {
-            eprintln!(
-                "skipped {} ({}): check it, then approve it by id",
-                item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
-                if brain.is_untrusted(&item.path) {
-                    "from another device".to_string()
-                } else {
-                    format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
-                }
-            );
-        }
-        clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
-    } else {
-        ids
-    };
+    let ids = if all { review_all_ids(brain, action, force) } else { inbox_ids };
     for id in &ids {
         let r = if action == "approve" {
-            ops::approve(&brain, id, force).map(|what| println!("approved {id} → {what}"))
+            ops::approve(brain, id, force).map(|what| println!("approved {id} → {what}"))
         } else {
-            ops::reject(&brain, id).map(|_| println!("rejected {id}"))
+            ops::reject(brain, id).map(|_| println!("rejected {id}"))
         };
         match r {
             Err(Error::Op(e)) | Err(Error::Schema(e)) => {
@@ -987,12 +960,75 @@ fn cmd_review(bp: &Option<PathBuf>, action: String, force: bool, ids: Vec<String
             other => other?,
         }
     }
-    ops::write_home(&brain, &mut Index::new(&brain))?;
+    ops::write_home(brain, &mut Index::new(brain))?;
     brain.commit(&format!("review {action} {} item(s)", ids.len()));
     if errors > 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Acts on the ids that name proposals from another device, returning the ids left for the inbox and
+/// the errors it reported. Rules, preferences and skills from other devices: approving shows them here,
+/// rejecting is not offered (it would delete them on every device; edit or delete the file instead).
+fn review_remote_ids(brain: &Brain, action: &str, all: bool, ids: &[String]) -> Result<(Vec<String>, usize)> {
+    let mut errors = 0;
+    let mut inbox_ids = Vec::new();
+    for id in ids {
+        match (!all).then(|| ops::unreviewed_key(brain, id)).flatten() {
+            Some(key) => errors += review_remote(brain, action, &key)?,
+            None => inbox_ids.push(id.clone()),
+        }
+    }
+    Ok((inbox_ids, errors))
+}
+
+/// Trusts or forgets one proposal from another device, returning the errors it reported.
+fn review_remote(brain: &Brain, action: &str, key: &str) -> Result<usize> {
+    if action == "approve" {
+        ops::trust(brain, key)?;
+        println!("approved {key} (from another device)");
+        return Ok(0);
+    }
+    if !key.starts_with("nodes/") {
+        eprintln!("! {key} is a skill from another device: delete its folder to reject it everywhere");
+        return Ok(1);
+    }
+    // rejecting a rule that came from another device forgets it, on every device once synced
+    match ops::forget_unreviewed(brain, key, "rejected on review") {
+        Ok(msg) => {
+            println!("rejected {key}: {msg}");
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!("! {key}: {e}");
+            Ok(1)
+        }
+    }
+}
+
+/// "all" never approves items the scan flagged (injection, secret): those need a look and their id, nor
+/// proposals that arrived from another device: what they say about themselves is not checked.
+fn review_all_ids(brain: &Brain, action: &str, force: bool) -> Vec<String> {
+    let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
+        action == "approve"
+            && !force
+            && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                || !crate::security::scan(&i.body).is_empty()
+                || brain.is_untrusted(&i.path))
+    });
+    for item in &flagged {
+        eprintln!(
+            "skipped {} ({}): check it, then approve it by id",
+            item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
+            if brain.is_untrusted(&item.path) {
+                "from another device".to_string()
+            } else {
+                format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
+            }
+        );
+    }
+    clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
 }
 
 fn cmd_rebuild(bp: &Option<PathBuf>) -> Result<()> {
