@@ -43,33 +43,51 @@ pub enum Error {
     Llm(String),
     Sync(String),
     Other(String),
+    /// A filesystem or network failure, kept typed so a caller can tell it from a bad argument.
+    Io(std::io::Error),
+    /// The SQLite index failed.
+    Db(rusqlite::Error),
+    /// A file, an LLM reply or a command line held something other than the schema expects.
+    Json(serde_json::Error),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Locked(m) | Error::Op(m) | Error::Schema(m) | Error::Llm(m) | Error::Sync(m) | Error::Other(m) => f.write_str(m),
+            Error::Io(e) => e.fmt(f),
+            Error::Db(e) => write!(f, "index: {e}"),
+            Error::Json(e) => write!(f, "json: {e}"),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io(e) => Some(e),
+            Error::Db(e) => Some(e),
+            Error::Json(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
-        Error::Other(e.to_string())
+        Error::Io(e)
     }
 }
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
-        Error::Other(format!("index: {e}"))
+        Error::Db(e)
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
-        Error::Other(format!("json: {e}"))
+        Error::Json(e)
     }
 }
 
