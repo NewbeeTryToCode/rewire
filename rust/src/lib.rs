@@ -9,6 +9,7 @@ pub mod brain;
 pub mod cli;
 pub mod config;
 pub mod consolidate;
+pub mod excerpt;
 pub mod fm;
 pub mod index;
 pub mod integrations;

@@ -7,13 +7,14 @@
 
 use crate::activation::{self, FLOOR, MIN_AGE_H};
 use crate::brain::Brain;
-use crate::util::{now_ts, parse_iso, relpath, round_to, short_of, slugify, take};
+use crate::excerpt::{self, Chunk};
+use crate::util::{now_ts, parse_iso, relpath, round_to, short_of, slugify};
 use crate::{nodefmt, semantic, text, Error, Meta, Result};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -273,198 +274,15 @@ fn mtime_ns(md: &fs::Metadata) -> i64 {
 /// Excerpt rowid with its first and last turn.
 type TurnSpan = (i64, Option<i64>, Option<i64>);
 
-/// Episode row: path, date, text, first turn, last turn.
-type EpRow = (String, String, String, i64, i64);
-
-/// Excerpts of one session whose turn ranges overlap or touch become one excerpt (no line twice), at the
-/// rank of the best of them. Windows overlap by two turns, so without this the same lines are sent twice:
-/// 11-12% of the excerpt tokens on LoCoMo, with the same evidence (experiments/eval/results).
-fn merge_excerpts(best: &[i64], rows: &HashMap<i64, EpRow>) -> Vec<(i64, String)> {
-    struct Group<'a> {
-        rid: i64,
-        path: &'a str,
-        lo: i64,
-        hi: i64,
-        lines: BTreeMap<i64, &'a str>,
-    }
-    let mut groups: Vec<Group> = Vec::new();
-    for rid in best {
-        let Some((path, _, text, lo, hi)) = rows.get(rid) else { continue };
-        let mut lines: BTreeMap<i64, &str> = BTreeMap::new();
-        for line in text.lines() {
-            let n = turn_re().captures(line).and_then(|c| c[1].parse().ok()).unwrap_or(-(lines.len() as i64) - 1);
-            lines.insert(n, line);
-        }
-        // a session summary (turn 0) is never merged; neither are runs that reuse turn numbers
-        let target = groups.iter_mut().find(|g| {
-            *lo > 0
-                && g.lo > 0
-                && g.path == path
-                && *lo <= g.hi + 1
-                && *hi >= g.lo - 1
-                && lines.iter().all(|(n, l)| g.lines.get(n).is_none_or(|x| x == l))
-        });
-        match target {
-            Some(g) => {
-                g.lo = g.lo.min(*lo);
-                g.hi = g.hi.max(*hi);
-                g.lines.extend(lines);
-            }
-            None => groups.push(Group { rid: *rid, path, lo: *lo, hi: *hi, lines }),
-        }
-    }
-    groups.into_iter().map(|g| (g.rid, g.lines.into_values().collect::<Vec<_>>().join("\n"))).collect()
-}
-
-/// Excerpts below the top EP_WHOLE keep only the turns that share a content word with the query, plus
-/// EP_CONTEXT turns either side: 11% fewer excerpt tokens on LoCoMo, and at the same token budget (more
-/// excerpts) +1 point of evidence recall (experiments/eval/results/2026-10-14-locomo-trim.md).
-const EP_WHOLE: usize = 2;
-const EP_CONTEXT: usize = 1;
 /// Weight of the query-coverage term in episodic ranking, in units of one rank step (1 / (RRF_K + 1)).
 /// Strictly below one step: at a full step the term outranks the seed bonus, which is what pulls an excerpt in
 /// behind the memory extracted from it, so a chunk that merely shares more query words displaced it.
 const COVERAGE_WEIGHT: f64 = 0.5;
 
-fn trim_excerpt(query: &str, excerpt: &str) -> String {
-    static SPEAKER: OnceLock<Regex> = OnceLock::new();
-    let speaker = SPEAKER.get_or_init(|| Regex::new(r"^\[[^\]]*\] (?:\w+: )?").unwrap());
-    let lines: Vec<&str> = excerpt.lines().collect();
-    let hits: Vec<usize> = (0..lines.len()).filter(|&i| text::overlap(query, &speaker.replace(lines[i], "")) > 0).collect();
-    if hits.is_empty() {
-        return excerpt.to_string(); // matched through vectors or a time window: no word to anchor on, keep it whole
-    }
-    let keep: std::collections::BTreeSet<usize> =
-        hits.iter().flat_map(|&i| i.saturating_sub(EP_CONTEXT)..=(i + EP_CONTEXT).min(lines.len() - 1)).collect();
-    keep.into_iter().map(|j| lines[j]).collect::<Vec<_>>().join("\n")
-}
-
 /// Static word vectors (WordLlama) are a weak ranker: at equal weight in rank fusion, excerpts that sit mid-list
 /// in both rankings pushed out the best keyword match (LongMemEval single-session-user all evidence 100% -> 95%).
 /// At 0.25 they still find paraphrases (preference questions 77% -> 87%) without that (2026-10-16 results).
 const EP_SEM_WEIGHT: f64 = 0.25;
-
-/// Transcripts keep long turns whole (a detail late in a long assistant reply is still findable); an excerpt
-/// line longer than LINE_CHARS is shown condensed to the sentences that best match the query, plus its opening.
-/// Keywords only: embedding every sentence at recall time cost ~4x the latency for the same evidence.
-const LINE_CHARS: usize = 1500;
-/// The user's opening message states their situation, and facts are often said there in passing; an excerpt
-/// from later in the session would lose it. On LongMemEval_S, 34 of the 45 evidence turns missing from
-/// recalled sessions were turn 1. Shown condensed with every excerpt after it.
-const OPENER_CHARS: usize = 700;
-
-fn condense(query: &str, excerpt: &str) -> String {
-    excerpt
-        .lines()
-        .map(|l| if l.chars().count() > LINE_CHARS { condense_line(query, l, LINE_CHARS) } else { l.to_string() })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Sentences and list items of a turn: split after . ! ? : and before "12. " / "3) " / "- " / "* " / "• ".
-fn segments(body: &str) -> Vec<&str> {
-    static WS: OnceLock<Regex> = OnceLock::new();
-    static ITEM: OnceLock<Regex> = OnceLock::new();
-    let ws = WS.get_or_init(|| Regex::new(r"\s+").unwrap());
-    let item = ITEM.get_or_init(|| Regex::new(r"^(\d{1,2}[.)]\s|[-*•]\s)").unwrap());
-    let (mut out, mut start) = (Vec::new(), 0);
-    for m in ws.find_iter(body) {
-        let after_punct = body[..m.start()].chars().last().is_some_and(|c| ".!?:".contains(c));
-        if after_punct || item.is_match(&body[m.end()..]) {
-            out.push(&body[start..m.start()]);
-            start = m.end();
-        }
-    }
-    out.push(&body[start..]);
-    out.into_iter().filter(|s| !s.trim().is_empty()).collect()
-}
-
-fn condense_line(query: &str, line: &str, limit: usize) -> String {
-    static SPEAKER: OnceLock<Regex> = OnceLock::new();
-    static ORDINAL: OnceLock<Regex> = OnceLock::new();
-    static QUANTITY: OnceLock<Regex> = OnceLock::new();
-    let speaker = SPEAKER.get_or_init(|| Regex::new(r"^\[[^\]]*\] (?:\w+: )?").unwrap());
-    let (head, body) = match speaker.find(line) {
-        Some(m) => (&line[..m.end()], &line[m.end()..]),
-        None => ("", line),
-    };
-    if body.chars().count() <= limit {
-        return line.to_string();
-    }
-    let segs: Vec<String> = segments(body).into_iter().map(|s| take(s, limit)).collect();
-    if segs.len() < 2 {
-        return format!("{head}{} …[condensed]", take(body, limit));
-    }
-    // query words weighted by how rare they are among the segments: a word in every sentence of the reply
-    // ("marketing" in a marketing plan) says nothing about which sentence answers; "27th" also finds "27."
-    let ordinal = ORDINAL.get_or_init(|| Regex::new(r"^(\d+)(?:st|nd|rd|th)$").unwrap());
-    let mut words = text::content_words(query);
-    let numbers: Vec<String> = words.iter().filter_map(|w| ordinal.captures(w).map(|c| c[1].to_string())).collect();
-    for n in numbers {
-        if !words.contains(&n) {
-            words.push(n);
-        }
-    }
-    let n = segs.len();
-    let mut scores = vec![0.0f64; n];
-    for w in &words {
-        let hits: Vec<bool> = segs.iter().map(|s| text::overlap(w, s) > 0).collect();
-        let df = hits.iter().filter(|&&h| h).count() as f64;
-        let idf = ((n as f64 + 1.0) / (df + 0.5)).ln();
-        for (i, h) in hits.iter().enumerate() {
-            if *h {
-                scores[i] += idf;
-            }
-        }
-    }
-    let quantity = QUANTITY
-        .get_or_init(|| {
-            Regex::new(r"(?i)\bhow (much|many|long|old|far|often)\b|\bwhat (time|date|year|day|price|percentage)\b|\bwhen\b").unwrap()
-        })
-        .is_match(query);
-    for (i, s) in segs.iter().enumerate() {
-        // a numbered item asked for by its position
-        let numbered = words.iter().filter(|w| w.chars().all(|c| c.is_ascii_digit())).any(|w| {
-            s.strip_prefix(w.as_str())
-                .is_some_and(|r| (r.starts_with('.') || r.starts_with(')')) && r[1..].starts_with(char::is_whitespace))
-        });
-        if numbered {
-            scores[i] += 5.0;
-        }
-        if quantity && s.chars().any(|c| c.is_ascii_digit()) {
-            scores[i] += 1.0; // "how much / when ...": the sentences holding numbers
-        }
-    }
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
-    let len = |s: &String| s.chars().count();
-    let (mut keep, mut size) = (std::collections::BTreeSet::from([0usize]), len(&segs[0])); // the opening says what it is about
-    for i in order {
-        for j in [Some(i), i.checked_add(1), i.checked_sub(1)].into_iter().flatten() {
-            if j < n && !keep.contains(&j) && size + len(&segs[j]) <= limit {
-                keep.insert(j);
-                size += len(&segs[j]) + 1;
-            }
-        }
-        if size as f64 >= limit as f64 * 0.9 {
-            break;
-        }
-    }
-    let mut out: Vec<String> = Vec::new();
-    let mut prev: Option<usize> = None;
-    for &j in &keep {
-        let gap = prev.map_or(j != 0, |p| j != p + 1);
-        out.push(if gap { format!("… {}", segs[j]) } else { segs[j].clone() });
-        prev = Some(j);
-    }
-    let cut = prev != Some(n - 1) || keep.len() < n;
-    format!("{head}{}{}", out.join(" "), if cut { " …[condensed]" } else { "" })
-}
-
-fn turn_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^\[(\d+) ").unwrap())
-}
 
 fn by_energy(a: &(String, f64), b: &(String, f64)) -> std::cmp::Ordering {
     b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.0.cmp(&b.0))
@@ -977,7 +795,7 @@ impl Index {
                     let chunk = part_lines.join("\n");
                     if !chunk.is_empty() {
                         let turns: Vec<i64> =
-                            part_lines.iter().filter_map(|l| turn_re().captures(l).and_then(|c| c[1].parse().ok())).collect();
+                            part_lines.iter().filter_map(|l| excerpt::turn_re().captures(l).and_then(|c| c[1].parse().ok())).collect();
                         let (first, last) = (turns.iter().min().copied().unwrap_or(0), turns.iter().max().copied().unwrap_or(0));
                         db.execute("INSERT INTO episodes VALUES (?,?,?,?,?,?)", params![path, date, chunk, first, last, scope])?;
                         let rid = db.last_insert_rowid();
@@ -1401,7 +1219,7 @@ impl Index {
             *fused.entry(*rid).or_insert(0.0) += bonus * scale;
         }
         let window = window.cloned().or_else(|| text::time_window(query));
-        let mut rows: HashMap<i64, EpRow> = HashMap::new();
+        let mut rows: HashMap<i64, Chunk> = HashMap::new();
         if !fused.is_empty() {
             let ids: Vec<i64> = fused.keys().cloned().collect();
             let db = self.db()?;
@@ -1414,13 +1232,13 @@ impl Index {
                 for r in st.query_map(params_from_iter(p), |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
-                        (
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                            r.get::<_, String>(3)?,
-                            r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                            r.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                        ),
+                        Chunk {
+                            path: r.get::<_, String>(1)?,
+                            date: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                            text: r.get::<_, String>(3)?,
+                            lo: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                            hi: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        },
                     ))
                 })? {
                     let (rid, v) = r?;
@@ -1435,26 +1253,26 @@ impl Index {
         // a bonus the size of one rank step, so coverage can reorder near-ties but not overturn a strong match.
         let ask = text::content_words(query).len().max(1) as f64;
         for (rid, score) in fused.iter_mut() {
-            if let Some((_, _, body, _, _)) = rows.get(rid) {
-                *score += COVERAGE_WEIGHT * (text::overlap(query, body) as f64 / ask) / (RRF_K + 1.0);
+            if let Some(chunk) = rows.get(rid) {
+                *score += COVERAGE_WEIGHT * (text::overlap(query, &chunk.text) as f64 / ask) / (RRF_K + 1.0);
             }
         }
         if let Some((start, end)) = &window {
-            for (rid, (_, date, _, _, _)) in &rows {
-                let d: String = date.chars().take(10).collect();
+            for (rid, chunk) in &rows {
+                let d: String = chunk.date.chars().take(10).collect();
                 if start.as_str() <= d.as_str() && d.as_str() <= end.as_str() {
                     *fused.get_mut(rid).unwrap() += 1.0 / RRF_K;
                 }
             }
         }
         let mut order: Vec<(i64, f64)> = fused.into_iter().collect();
-        let tie = |rid: &i64| rows.get(rid).map(|r| (r.0.clone(), r.3)).unwrap_or_default();
+        let tie = |rid: &i64| rows.get(rid).map(|r| (r.path.clone(), r.lo)).unwrap_or_default();
         order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then_with(|| tie(&a.0).cmp(&tie(&b.0))));
         order.truncate(k);
         let root = self.root.clone();
         // the top excerpt carries its session's goal and outcome (bookends), unless it is the summary itself
         let mut bookend = None;
-        if let Some((path, _, _, first, _)) = order.first().and_then(|(rid, _)| rows.get(rid)) {
+        if let Some(Chunk { path, lo: first, .. }) = order.first().and_then(|(rid, _)| rows.get(rid)) {
             if *first != 0 {
                 let db = self.db()?;
                 let mut st = db.prepare("SELECT text FROM episodes WHERE path = ? AND first = 0 AND last = 0 ORDER BY rowid")?;
@@ -1464,19 +1282,19 @@ impl Index {
                 }
             }
         }
-        let mut merged = merge_excerpts(&order.iter().map(|(rid, _)| *rid).collect::<Vec<_>>(), &rows);
+        let mut merged = excerpt::merge(&order.iter().map(|(rid, _)| *rid).collect::<Vec<_>>(), &rows);
         let mut opened: HashSet<String> = HashSet::new();
         for (pos, (rid, text)) in merged.iter_mut().enumerate() {
-            let first = rows.get(rid).map(|r| r.3).unwrap_or(0);
-            if pos >= EP_WHOLE && first != 0 && !seeded.contains_key(rid) {
-                *text = trim_excerpt(query, text);
+            let first = rows.get(rid).map(|r| r.lo).unwrap_or(0);
+            if pos >= excerpt::EP_WHOLE && first != 0 && !seeded.contains_key(rid) {
+                *text = excerpt::trim(query, text);
             }
-            *text = condense(query, text);
-            let path = rows.get(rid).map(|r| r.0.clone()).unwrap_or_default();
+            *text = excerpt::condense(query, text);
+            let path = rows.get(rid).map(|r| r.path.clone()).unwrap_or_default();
             if first > 1 && !opened.contains(&path) {
                 // the session's opening user message, once per session
                 if let Some(opener) = self.opener(&path)? {
-                    *text = format!("{}\n{}", condense_line(query, &opener, OPENER_CHARS), text);
+                    *text = format!("{}\n{}", excerpt::condense_line(query, &opener, excerpt::OPENER_CHARS), text);
                 }
             }
             opened.insert(path);
@@ -1484,7 +1302,7 @@ impl Index {
         let mut out: Vec<Hit> = merged
             .into_iter()
             .filter_map(|(rid, text)| {
-                let (path, date, _, _, _) = rows.get(&rid)?;
+                let Chunk { path, date, .. } = rows.get(&rid)?;
                 Some(Hit {
                     id: format!("ep:{rid}"),
                     type_: "episode".into(),
@@ -1574,21 +1392,5 @@ impl Index {
 impl From<Stale> for Error {
     fn from(_: Stale) -> Self {
         Error::Other("stale index".into())
-    }
-}
-
-#[cfg(test)]
-mod trim_tests {
-    use super::trim_excerpt;
-
-    #[test]
-    fn trim_keeps_matching_turns_and_their_neighbours() {
-        let ex = "[1 user] Ann: hello there\n[2 user] Bob: the weather is nice\n[3 user] Ann: I adopted a dog\n\
-                  [4 user] Bob: what is its name\n[5 user] Ann: we went hiking\n[6 user] Bob: sounds fun";
-        assert_eq!(
-            trim_excerpt("Ann dog", ex),
-            "[2 user] Bob: the weather is nice\n[3 user] Ann: I adopted a dog\n[4 user] Bob: what is its name"
-        );
-        assert_eq!(trim_excerpt("kubernetes", ex), ex); // nothing to anchor on: kept whole
     }
 }

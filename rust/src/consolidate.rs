@@ -240,7 +240,7 @@ fn forged_turns() -> &'static regex::Regex {
 }
 
 /// `limit` condenses long assistant turns (the extraction prompt); the stored transcript keeps them whole and
-/// recall condenses them around the query instead (index::condense), so a detail late in a long reply survives.
+/// recall condenses them around the query instead (excerpt::condense), so a detail late in a long reply survives.
 pub fn format_turns(turns: &[Turn], limit: Option<usize>) -> Vec<String> {
     turns
         .iter()
