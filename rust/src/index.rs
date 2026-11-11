@@ -271,6 +271,12 @@ fn mtime_ns(md: &fs::Metadata) -> i64 {
     md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos() as i64).unwrap_or(0)
 }
 
+/// Notes (`.md` files, counted as the scan counts them) in one node folder. A folder that cannot be
+/// listed gives a count no stamp can hold, so the next refresh scans it and reports the error itself.
+fn note_count(dir: &Path) -> usize {
+    fs::read_dir(dir).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".md")).count()).unwrap_or(usize::MAX)
+}
+
 /// Excerpt rowid with its first and last turn.
 type TurnSpan = (i64, Option<i64>, Option<i64>);
 
@@ -618,17 +624,21 @@ impl Index {
             return Ok(changed);
         }
         // rewire writes atomically (rename), which bumps the directory mtime; so if no directory
-        // changed and a full scan ran recently, nothing needs re-reading.
-        let mut subdirs: Vec<(String, PathBuf, i64)> = fs::read_dir(&root)?
+        // changed and a full scan ran recently, nothing needs re-reading. The mtime alone cannot say
+        // that: the kernel takes it from a coarse clock, so a note deleted (or added) within about a
+        // millisecond of the previous change leaves it equal, and the stale row would survive until
+        // the scan aged out. The note count in the stamp moves for every create and delete.
+        let mut subdirs: Vec<(String, PathBuf, i64, usize)> = fs::read_dir(&root)?
             .flatten()
             .filter(|e| e.path().is_dir())
             .map(|e| {
                 let md = e.metadata().ok();
-                (e.file_name().to_string_lossy().into_owned(), e.path(), md.map(|m| mtime_ns(&m)).unwrap_or(0))
+                let mtime = md.map(|m| mtime_ns(&m)).unwrap_or(0);
+                (e.file_name().to_string_lossy().into_owned(), e.path(), mtime, note_count(&e.path()))
             })
             .collect();
         subdirs.sort_by(|a, b| a.0.cmp(&b.0));
-        let stamp = subdirs.iter().map(|(n, _, m)| format!("{n}:{m}")).collect::<Vec<_>>().join(",");
+        let stamp = subdirs.iter().map(|(n, _, m, c)| format!("{n}:{m}:{c}")).collect::<Vec<_>>().join(",");
         let row: Option<String> = db.query_row("SELECT v FROM meta WHERE k='scan'", [], |r| r.get(0)).optional()?;
         if let Some(v) = row {
             if let Some((last_stamp, last_at)) = v.rsplit_once('@') {
@@ -638,7 +648,7 @@ impl Index {
             }
         }
         let mut seen: IndexMap<String, (i64, i64)> = IndexMap::new();
-        for (_, dir, _) in &subdirs {
+        for (_, dir, _, _) in &subdirs {
             for e in fs::read_dir(dir)?.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if name.ends_with(".md") {
