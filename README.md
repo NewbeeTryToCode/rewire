@@ -20,7 +20,9 @@ repo of markdown files you own, and that you can read, edit, review, sync and un
   append-only event log; the index is derived and rebuilt from the files at any time.
 - **Safe by default.** Provenance comes from the transcript and the cited turn must share the claim's content words (a word-overlap
   check, not entailment); tool
-  output never becomes a rule on its own; secrets are refused; memory is fenced as data and re-scanned when shown;
+  output never becomes a rule on its own; secrets are refused and redacted before a transcript is stored or sent to the model
+  (credentials only: an email or a home address is kept as written, so keep the brain repository private); memory is fenced as data
+  and re-scanned when shown;
   every session can be taken back with `rewire undo`. What runs the LLM is set per device, never synced.
 - **Experimental, off by default:** ordering by usage (ACT-R decay over the event log) for recall (`recall_beta`) and the
   session-start snapshot (`snapshot_use`), never measured, and spreading activation over every note link

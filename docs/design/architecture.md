@@ -54,6 +54,22 @@ The SQLite index in `.index/` is derived from L1 and L2 and can be deleted at an
   scope as notes, and session start says when memory is unavailable (no brain, failed clone, skipped sync)
   instead of injecting nothing. Transcripts are secret-redacted before they reach the LLM or `sessions/`.
 
+## What redaction covers, and what it does not
+
+Three points scan. Ingest runs `redact` before a transcript is written or sent to the model. Write runs `scan`
+and refuses a note that holds a secret. Display runs `blocked` every time a note, skill or excerpt is shown, so
+a secret that arrived from another device is withheld instead of injected.
+
+The patterns know credentials: provider keys, forge tokens, cloud keys, private key blocks with their body, JWTs,
+credentials in a URL or an env-style assignment, and any 32-character-or-longer high-entropy token that mixes
+letters and digits. They do not know personal data. An email address, a phone number, a name or a home address is
+kept as written, because that is the content this memory exists to keep; the protection there is that the brain
+repository is private, which `remote set` and `doctor` both state.
+
+A miss is permanent where the repository is. Redaction runs before the commit, so a secret that got through stays
+in git history after the file is fixed. `doctor` lists every transcript under `sessions/` that still holds a
+secret or an injection; clean the text, and rewrite history with `git filter-repo` if the brain was pushed.
+
 ## Token cost profile
 
 | Operation | LLM calls | Notes |
