@@ -98,4 +98,35 @@ impl From<schema::SchemaError> for Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod error_tests {
+    use super::Error;
+
+    /// The messages a user sees did not change when the variants gained types, and the cause is reachable.
+    #[test]
+    fn a_typed_error_keeps_its_old_message_and_exposes_its_cause() {
+        let io = Error::from(std::io::Error::new(std::io::ErrorKind::NotFound, "no such brain"));
+        assert_eq!(io.to_string(), "no such brain");
+        assert!(std::error::Error::source(&io).is_some());
+
+        let db = Error::from(rusqlite::Error::QueryReturnedNoRows);
+        assert_eq!(db.to_string(), "index: Query returned no rows");
+        assert!(std::error::Error::source(&db).is_some());
+
+        let bad = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let expected = format!("json: {bad}");
+        let json = Error::from(bad);
+        assert_eq!(json.to_string(), expected);
+        assert!(std::error::Error::source(&json).is_some());
+    }
+
+    /// A message-only error has no cause to show, so callers must not print an empty chain.
+    #[test]
+    fn a_message_error_has_no_cause() {
+        let op = Error::Op("give inbox ids, or `all`".into());
+        assert_eq!(op.to_string(), "give inbox ids, or `all`");
+        assert!(std::error::Error::source(&op).is_none());
+    }
+}
