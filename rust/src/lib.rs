@@ -43,7 +43,6 @@ pub enum Error {
     Schema(String),
     Llm(String),
     Sync(String),
-    Other(String),
     /// A filesystem or network failure, kept typed so a caller can tell it from a bad argument.
     Io(std::io::Error),
     /// The SQLite index failed.
@@ -55,7 +54,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Locked(m) | Error::Op(m) | Error::Schema(m) | Error::Llm(m) | Error::Sync(m) | Error::Other(m) => f.write_str(m),
+            Error::Locked(m) | Error::Op(m) | Error::Schema(m) | Error::Llm(m) | Error::Sync(m) => f.write_str(m),
             Error::Io(e) => e.fmt(f),
             Error::Db(e) => write!(f, "index: {e}"),
             Error::Json(e) => write!(f, "json: {e}"),

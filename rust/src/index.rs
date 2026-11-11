@@ -9,7 +9,7 @@ use crate::activation::{self, FLOOR, MIN_AGE_H};
 use crate::brain::Brain;
 use crate::excerpt::{self, Chunk};
 use crate::util::{now_ts, parse_iso, relpath, round_to, short_of, slugify};
-use crate::{nodefmt, semantic, text, Error, Meta, Result};
+use crate::{nodefmt, semantic, text, Meta, Result};
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
@@ -398,14 +398,14 @@ impl Index {
         if self.db.is_none() {
             self.refresh()?;
         }
-        Ok(self.db.as_ref().unwrap())
+        Ok(self.db.as_ref().expect("db() runs refresh() before lending the connection"))
     }
 
     pub fn rebuild(&mut self) -> Result<i64> {
         if self.db.is_none() {
             self.db = Some(self.connect()?);
         }
-        Self::reset(self.db.as_ref().unwrap())?;
+        Self::reset(self.db.as_ref().expect("rebuild() opens the index before resetting it"))?;
         self.mat = None;
         self.epmat = None;
         self.refresh()?;
@@ -421,7 +421,7 @@ impl Index {
             self.db = Some(self.connect()?);
         }
         let outcome = {
-            let db = self.db.as_ref().unwrap();
+            let db = self.db.as_ref().expect("refresh_max_age opens the index before syncing");
             db.execute_batch("BEGIN IMMEDIATE")?;
             match self.sync_all(db, max_age) {
                 Ok(Ok(changed)) => {
@@ -566,7 +566,7 @@ impl Index {
             self.mat = Some(loaded);
         }
         let Some(qv) = semantic::embed(&[query.to_string()]).and_then(|mut v| v.pop()) else { return Ok(Vec::new()) };
-        let (ids, node_scopes, vs) = self.mat.as_ref().unwrap();
+        let (ids, node_scopes, vs) = self.mat.as_ref().expect("refresh() loads the node matrix before search reads it");
         let sims: Vec<f32> = vs.iter().map(|v| semantic::dot(v, &qv)).collect();
         Ok(by_similarity(&sims)
             .into_iter()
@@ -600,7 +600,7 @@ impl Index {
             self.epmat = Some(loaded);
         }
         let Some(qv) = semantic::embed(&[query.to_string()]).and_then(|mut v| v.pop()) else { return Ok(Vec::new()) };
-        let (ids, scs, vs) = self.epmat.as_ref().unwrap();
+        let (ids, scs, vs) = self.epmat.as_ref().expect("refresh() loads the episode matrix before search reads it");
         let sims: Vec<f32> = vs.iter().map(|v| semantic::dot(v, &qv)).collect();
         Ok(by_similarity(&sims).into_iter().filter(|&i| scopes.is_none_or(|s| s.contains(&scs[i]))).take(limit).map(|i| ids[i]).collect())
     }
@@ -1396,11 +1396,5 @@ impl Index {
 
     pub fn count_nodes(&mut self) -> Result<i64> {
         Ok(self.db()?.query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))?)
-    }
-}
-
-impl From<Stale> for Error {
-    fn from(_: Stale) -> Self {
-        Error::Other("stale index".into())
     }
 }
