@@ -327,16 +327,19 @@ fn blobs(brain: &Brain, rev: &str, paths: &[String]) -> Result<Vec<Option<String
     Ok(texts)
 }
 
-/// What a version of a note is, read with the same parser the index uses: (is a rule or preference, is active,
-/// title). A file that does not parse counts as an active rule (fail closed).
+/// What a version of a note is, read with the same parser the index uses: (waits for review, is active, title). A
+/// rule or preference waits, and so does a note of any other type whose body reads like an instruction, since that is
+/// the shape a remote must not put into an agent's context unreviewed. A file that does not parse counts as an active
+/// rule (fail closed).
 fn rule_status(text: &str) -> (bool, bool, String) {
     match nodefmt::parse(text) {
         Err(_) => (true, true, String::new()),
-        Ok((meta, _)) => {
+        Ok((meta, body)) => {
             let type_ = meta.get("type").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
             let active = !crate::brain::is_set(meta.get("retracted_at")) && !crate::brain::is_set(meta.get("valid_to"));
             let title = meta.get("title").and_then(Value::as_str).unwrap_or("").to_string();
-            (type_ == "constraint" || type_ == "preference", active, title)
+            let rule = type_ == "constraint" || type_ == "preference" || crate::security::scan(&body).iter().any(|why| why == "injection");
+            (rule, active, title)
         }
     }
 }

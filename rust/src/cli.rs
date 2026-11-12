@@ -1,13 +1,13 @@
 //! rewire command line.
 
-use crate::brain::{default_path, Brain};
+use crate::brain::Brain;
 use crate::consolidate::Consolidator;
 use crate::index::Index;
 use crate::{integrations, ops, pyjson, snapshot, sync, Error, Meta, Result, VERSION};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Python `str(value)` for JSON values (strings unquoted, null -> None).
@@ -63,7 +63,7 @@ pub enum Cmd {
         #[arg(short = 'k', default_value_t = 8)]
         k: usize,
         /// raw transcript excerpts to include (0 = none)
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 20)]
         episodes: usize,
         /// global | project:<slug> | all
         #[arg(long)]
@@ -422,674 +422,810 @@ fn print_items(items: &[Value]) {
 pub fn run(cli: Cli) -> Result<()> {
     let bp = &cli.brain;
     match cli.cmd {
-        Cmd::Init { from_url, device } => {
-            if let Some(url) = from_url {
-                let brain = Brain::clone_from(&url, bp.as_deref(), device.as_deref())?;
-                println!("brain cloned from {url} to {} (device: {})", brain.root.display(), brain.device());
-                if !brain.config.sync_auto {
-                    println!("auto sync is off; enable with `rewire remote set <url>`");
-                }
-            } else {
-                let brain = Brain::init(bp.as_deref(), device.as_deref())?;
-                println!("brain created at {} (device: {})", brain.root.display(), brain.device());
-            }
-            println!("next: `rewire install claude-code` and/or `rewire install codex`");
-        }
-        Cmd::Prime { project, cwd: dir, json: as_json } => {
-            let brain = open_brain(bp);
-            let mut index = Index::new(&brain);
-            index.refresh()?;
-            let dir = dir.unwrap_or_else(cwd);
-            let snap = snapshot::build(&brain, &mut index, Some(&dir), project.as_deref())?;
-            if as_json {
-                print_json(&json!({"project": snap.project, "text": snap.text, "ids": snap.ids, "empty": snap.empty}));
-            } else {
-                println!("{}", snap.text);
-            }
-        }
+        Cmd::Init { from_url, device } => cmd_init(bp, from_url, device),
+        Cmd::Prime { project, cwd: dir, json: as_json } => cmd_prime(bp, project, dir, as_json),
         Cmd::Recall { query, k, episodes, scope, since, until, also, json: as_json, full } => {
-            let brain = open_brain(bp);
-            let mut index = Index::new(&brain);
-            index.refresh()?;
-            let here = cwd();
-            let refers_to = (since.is_some() || until.is_some()).then(|| json!({"from": since, "to": until}));
-            let hits = match ops::recall(
-                &brain,
-                &mut index,
-                &query.join(" "),
-                k,
-                Some(&here),
-                scope.as_deref(),
-                None,
-                episodes,
-                refers_to.as_ref(),
-                &also,
-            ) {
-                Err(Error::Op(e)) => fail(&e),
-                other => other?,
-            };
-            let mut items: Vec<Value> = hits.iter().map(|h| h.to_json()).collect();
-            if full {
-                for item in items.iter_mut().filter(|i| i["type"] != "episode") {
-                    let Some(node) = item["id"].as_str().and_then(|id| ops::resolve_id(&brain, id)) else { continue };
-                    let blocked = !crate::security::blocked(&format!("{} {}", node.title(), node.body)).is_empty();
-                    item["body"] = json!(if blocked { String::new() } else { node.body.clone() });
-                    for key in ["valid_from", "recorded_at", "source"] {
-                        item[key] = node.meta.get(key).cloned().unwrap_or(Value::Null);
-                    }
-                }
-            }
-            if as_json {
-                print_json(&Value::Array(items))
-            } else {
-                print_items(&items)
-            }
+            cmd_recall(bp, query, k, episodes, scope, since, until, also, as_json, full)
         }
-        Cmd::Import { file, llm: use_llm } => {
-            let brain = open_brain(bp);
-            let text = if file.as_os_str() == "-" {
-                let mut t = String::new();
-                std::io::stdin().read_to_string(&mut t)?;
-                t
-            } else {
-                std::fs::read_to_string(&file)?
-            };
-            // every line is checked before anything is written: a bad line never leaves half an import behind
-            let mut sessions = Vec::new();
-            let mut problems = Vec::new();
-            for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-                let at = format!("{}: line {}", file.display(), i + 1);
-                match serde_json::from_str::<Value>(line) {
-                    Err(e) => problems.push(format!("{at}: not JSON: {e}")),
-                    Ok(s) => match import_problem(&s) {
-                        Some(p) => problems.push(format!("{at}: {p}")),
-                        None => sessions.push(s),
-                    },
-                }
-            }
-            if !problems.is_empty() {
-                fail(format!("nothing imported; fix these records first:\n  {}", problems.join("\n  ")));
-            }
-            let usage = crate::llm::Usage::default();
-            let provider: Box<dyn crate::llm::Provider> =
-                if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
-            let mut con =
-                Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
-            con.review_all = true; // an import file says who spoke: what it claims the user said is reviewed
-            let _g = writing(&brain);
-            let mut written = 0;
-            for s in sessions {
-                let harness_slug = crate::util::slugify(s.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
-                let session_id = s.get("session").and_then(Value::as_str).unwrap_or("");
-                // a transcript-only record (the LLM step failed before) is consolidated again, not skipped
-                let done = ops::session_consolidated(&brain, &harness_slug, session_id);
-                if done == Some(true) || (!use_llm && done.is_some()) {
-                    println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
-                    continue;
-                }
-                let field = |k: &str| s.get(k).and_then(|v| v.as_str()).map(String::from);
-                let harness = field("harness").unwrap_or_else(|| "import".into());
-                let session = field("session").unwrap_or_else(|| "unknown".into());
-                let turns: Vec<crate::transcripts::Turn> = s["turns"]
-                    .as_array()
-                    .map(|a| a.as_slice())
-                    .unwrap_or_default()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| crate::transcripts::Turn {
-                        n: t["n"].as_u64().map(|n| n as usize).unwrap_or(i + 1),
-                        role: t["role"].as_str().unwrap_or("user").into(),
-                        text: t["text"].as_str().unwrap_or("").into(),
-                        ts: t["ts"].as_str().unwrap_or("").into(),
-                    })
-                    .collect();
-                let meta = crate::transcripts::SessionMeta {
-                    session: Some(session.clone()),
-                    cwd: field("cwd"),
-                    date: field("date"),
-                    ..Default::default()
-                };
-                let before = (usage.calls.get(), usage.prompt_chars.get(), usage.completion_chars.get(), usage.seconds.get());
-                let start = std::time::Instant::now();
-                let mut rec = json!({"session": session, "turns": turns.len()});
-                let outcome = if use_llm {
-                    let r = con.consolidate(&harness, &meta, &turns).map(|r| {
-                        for key in ["applied", "queued", "rejected"] {
-                            rec[key] = json!(r.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()));
-                        }
-                    });
-                    if r.is_err() {
-                        // the transcript is kept and searchable even when the LLM part failed (rerun the import to retry)
-                        let date = meta.date.clone().unwrap_or_default();
-                        let transcript = con.transcript(&turns);
-                        let fallback = [crate::consolidate::FALLBACK_SUMMARY.to_string()];
-                        let project = con.project_of(meta.cwd.as_deref());
-                        con.write_session(
-                            &harness,
-                            &session,
-                            project.as_deref(),
-                            &fallback,
-                            &meta.outputs,
-                            &[],
-                            &[],
-                            &[],
-                            0,
-                            &Default::default(),
-                            &date,
-                            &transcript,
-                            &[],
-                        )?;
-                    }
-                    r
-                } else {
-                    let date = meta.date.clone().unwrap_or_default();
-                    let project = con.project_of(meta.cwd.as_deref());
-                    con.write_session(
-                        &harness,
-                        &session,
-                        project.as_deref(),
-                        &[],
-                        &meta.outputs,
-                        &[],
-                        &[],
-                        &[],
-                        0,
-                        &Default::default(),
-                        &date,
-                        &con.transcript(&turns),
-                        &[],
-                    )
-                };
-                rec["ok"] = json!(outcome.is_ok());
-                rec["seconds"] = json!(crate::util::round_to(start.elapsed().as_secs_f64(), 2));
-                rec["llm_calls"] = json!(usage.calls.get() - before.0);
-                rec["prompt_chars"] = json!(usage.prompt_chars.get() - before.1);
-                rec["completion_chars"] = json!(usage.completion_chars.get() - before.2);
-                rec["llm_seconds"] = json!(crate::util::round_to(usage.seconds.get() - before.3, 2));
-                if let Err(e) = &outcome {
-                    rec["error"] = json!(e.to_string().chars().take(300).collect::<String>());
-                }
-                println!("{}", pyjson::dumps_utf8(&rec));
-                if outcome.is_err() {
-                    if !use_llm && written > 0 {
-                        brain.commit(&format!("import {written} session(s)"));
-                    }
-                    std::process::exit(1); // sessions build on each other: stop at the first failure, a rerun resumes
-                }
-                written += 1;
-            }
-            if !use_llm && written > 0 {
-                brain.commit(&format!("import {written} session(s)"));
-            }
+        Cmd::Import { file, llm: use_llm } => cmd_import(bp, file, use_llm),
+        Cmd::Get { ids, session, json: as_json } => cmd_get(bp, ids, session, as_json),
+        Cmd::Remember { text, type_, scope, importance, apply } => cmd_remember(bp, text, type_, scope, importance, apply),
+        Cmd::Consolidate { files, pending, retry, watch, harness, quiet, json: as_json } => {
+            cmd_consolidate(bp, files, pending, retry, watch, harness, quiet, as_json)
         }
-        Cmd::Get { ids, session, json: as_json } => {
-            let brain = open_brain(bp);
-            let session = session.unwrap_or_else(|| format!("cli-{}", shell_id()));
-            let items = ops::get(&brain, &ids, &session, "cli")?;
-            let missing = items.iter().any(|i| i.get("error").is_some());
-            if as_json {
-                print_json(&Value::Array(items))
-            } else {
-                print_items(&items)
-            }
-            if missing {
-                std::process::exit(1);
-            }
-        }
-        Cmd::Remember { text, type_, scope, importance, apply } => {
-            let brain = open_brain(bp);
-            let scope = scope.unwrap_or_else(|| ops::default_scope(&brain, Some(&cwd())));
-            let text = text.join(" ");
-            // typed by a person at their own terminal (not an agent's shell): the user's words, still reviewed
-            let provenance = if apply || (std::io::stdin().is_terminal() && agent_shell().is_none()) { "user" } else { "assistant" };
-            let result = (|| -> Result<()> {
-                if apply {
-                    // --apply writes an explicit user memory with no review: only a person at a terminal may do it.
-                    // An agent's shell (even one inside a pseudo-terminal) is refused, and the person confirms on
-                    // the terminal itself.
-                    if let Some(marker) = agent_shell() {
-                        fail(format!("--apply is refused inside an agent session ({marker}): agents propose with `rewire remember`, the user approves with `rewire review`"));
-                    }
-                    if !std::io::stdin().is_terminal()
-                        || !confirm_on_tty(&format!("Save as your own explicit {type_}, with no review?\n  {text}\n[y/N] "))
-                    {
-                        fail("--apply needs a person at the terminal to confirm (agents use the review queue)");
-                    }
-                    let why = crate::security::scan(&text);
-                    if !why.is_empty() {
-                        fail(format!("refused: text looks like it contains {}", why.join(" and ")));
-                    }
-                    let mut change = Meta::new();
-                    for (k, v) in [
-                        ("action", json!("NEW")),
-                        ("type", json!(type_)),
-                        ("text", json!(text)),
-                        ("scope", json!(scope)),
-                        ("importance", json!(importance)),
-                        ("confidence", json!("explicit")),
-                        ("provenance", json!(provenance)),
-                    ] {
-                        change.insert(k.into(), v);
-                    }
-                    let _g = writing(&brain);
-                    let node = ops::apply_change(&brain, &change, None)?;
-                    ops::write_home(&brain, &mut Index::new(&brain))?;
-                    brain.commit(&format!("remember {}", node.id()));
-                    println!("saved [{}] {}", crate::util::short_of(node.id()), node.title());
-                } else {
-                    let id = ops::remember(&brain, &text, &type_, &scope, provenance, Some(json!({"harness": "cli"})))?;
-                    println!(
-                        "queued for review as {scope}: {id} (approve with `rewire review approve {id}`; --scope global for every project)"
-                    );
-                }
-                Ok(())
-            })();
-            if let Err(Error::Op(e)) | Err(Error::Schema(e)) = &result {
-                fail(e);
-            }
-            result?;
-        }
-        Cmd::Consolidate { mut files, pending, retry, watch, harness, quiet, json: as_json } => {
-            let brain = open_brain(bp);
-            if watch {
-                return integrations::watch(&brain, || {
-                    let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
-                    Consolidator::new(&brain, None, log)?.run_pending(&[])?;
-                    push_after_consolidation(&brain, quiet);
-                    Ok(())
-                });
-            }
-            let mut failures = 0;
-            if retry {
-                // transcripts that are gone cannot be retried: forget their failures
-                for gone in brain.read_state("failed").keys().filter(|p| !std::path::Path::new(p.as_str()).is_file()) {
-                    eprintln!("skipped {gone}: the transcript file is gone (what was kept of it stays searchable)");
-                }
-                brain.update_state("failed", |f| f.retain(|p, _| std::path::Path::new(p).is_file()))?;
-                files.extend(brain.read_state("failed").keys().map(PathBuf::from));
-                if files.is_empty() {
-                    println!("no failed consolidations");
-                    return Ok(());
-                }
-            }
-            let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
-            let results = (|| -> Result<Vec<Meta>> {
-                let mut con = Consolidator::new(&brain, None, log)?;
-                let r = if pending || files.is_empty() {
-                    con.run_pending(&files)
-                } else {
-                    // every file is tried; failures are counted and reported, not a reason to stop
-                    let mut done = Vec::new();
-                    for f in &files {
-                        match con.run_file(&crate::brain::absolute(f), harness.as_deref()) {
-                            Ok(r) => done.push(r),
-                            Err(e @ Error::Locked(_)) => return Err(e),
-                            Err(e) => {
-                                eprintln!("{}: {e}", f.display());
-                                con.failures += 1;
-                            }
-                        }
-                    }
-                    Ok(done)
-                };
-                failures = con.failures;
-                r
-            })();
-            let results = match results {
-                Err(Error::Locked(e)) => {
-                    eprintln!("skipped: {e}");
-                    return Ok(());
-                }
-                other => other?,
-            };
-            if pending || retry {
-                push_after_consolidation(&brain, quiet);
-            }
-            if as_json {
-                print_json(&Value::Array(results.into_iter().map(Value::Object).collect()));
-                if failures > 0 {
-                    std::process::exit(1);
-                }
-                return Ok(());
-            }
-            for r in &results {
-                if r.get("status").and_then(Value::as_str) != Some("consolidated") {
-                    continue;
-                }
-                let s = |k: &str| r.get(k).map(py_str).unwrap_or_default();
-                let project = r.get("project").and_then(Value::as_str).unwrap_or("-");
-                println!("{} {} → project {project}", s("harness"), s("session"));
-                for a in r.get("applied").and_then(Value::as_array).cloned().unwrap_or_default() {
-                    println!("  + {:<10} {}", py_str(&a["action"]), py_str(&a["title"]));
-                }
-                for q in r.get("queued").and_then(Value::as_array).cloned().unwrap_or_default() {
-                    println!("  ? {:<10} {}  (inbox {})", py_str(&q["action"]), py_str(&q["title"]), py_str(&q["inbox_id"]));
-                }
-                for x in r.get("rejected").and_then(Value::as_array).cloned().unwrap_or_default() {
-                    println!("  ✗ {} ({})", py_str(&x["title"]), py_str(&x["why"]));
-                }
-            }
-            if failures > 0 {
-                eprintln!("{failures} transcript(s) could not be consolidated (retry with `rewire consolidate --retry`)");
-                std::process::exit(1);
-            }
-        }
-        Cmd::Review { action, force, ids } => {
-            let brain = open_brain(bp);
-            if action == "list" {
-                let items = brain.iter_inbox();
-                if items.is_empty() {
-                    println!("inbox empty");
-                }
-                for item in items {
-                    let m = &item.meta;
-                    let g = |k: &str| crate::snapshot::printable(&m.get(k).map(py_str).unwrap_or_default());
-                    let target = m
-                        .get("target")
-                        .filter(|t| crate::brain::is_set(Some(t)))
-                        .map(|t| format!(" → {}", crate::snapshot::printable(&py_str(t))))
-                        .unwrap_or_default();
-                    let action = crate::snapshot::printable(&m.get("action").map(py_str).unwrap_or_else(|| "NEW".into()));
-                    let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
-                    let remote =
-                        if brain.is_untrusted(&item.path) { "  FROM ANOTHER DEVICE (its reason and labels are its own)" } else { "" };
-                    println!(
-                        "{}  {action}{target}  [{} · {} · {}/{}]{remote}\n    {}\n    reason: {}{}",
-                        g("inbox_id"),
-                        g("type"),
-                        g("scope"),
-                        g("confidence"),
-                        g("provenance"),
-                        crate::snapshot::printable(item.body.trim()).replace('\n', "\n    "),
-                        g("reason"),
-                        flags.map(|f| format!("  flags: {}", crate::snapshot::printable(&python_list(f)))).unwrap_or_default()
-                    );
-                }
-                let waiting = ops::unreviewed(&brain);
-                if !waiting.is_empty() {
-                    println!("\nFrom other devices (shown to agents on this device once you approve them):");
-                    for (key, text, why) in waiting {
-                        let flag = if why.is_empty() { String::new() } else { format!("  flags: ['{why}']") };
-                        // the id to approve or reject it by: a note's short id, a skill's name
-                        let id = key
-                            .strip_prefix("skills/")
-                            .map(|n| format!("skill:{}", n.trim_end_matches('/')))
-                            .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
-                            .unwrap_or_else(|| key.clone());
-                        // remote text: no terminal escape codes that could hide part of it
-                        // in full: what is approved is exactly what was shown
-                        let shown = crate::snapshot::printable(&text).replace('\n', "\n    ");
-                        println!("{}  ({}){flag}\n    {shown}", crate::snapshot::printable(&id), crate::snapshot::printable(&key));
-                    }
-                    println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
-                }
-                return Ok(());
-            }
-            if ids.is_empty() {
-                fail("give inbox ids, or `all`");
-            }
-            // approving makes a proposal part of every future session, rejecting drops the user's own proposals:
-            // the user's call, not the agent's
-            {
-                // refused outright: a prompt on the terminal an agent shares with the user could take a keystroke
-                // meant for something else
-                if let Some(marker) = agent_shell() {
-                    fail(format!(
-                        "review {action} is refused inside an agent session ({marker}): run `rewire review` in your own terminal"
-                    ));
-                }
-            }
-            let _g = writing(&brain);
-            let mut errors = 0;
-            // rules, preferences and skills from other devices: approving shows them here, rejecting is not offered
-            // (it would delete them on every device; edit or delete the file instead)
-            let all = ids == ["all"];
-            let mut inbox_ids = Vec::new();
-            for id in &ids {
-                if let Some(key) = (!all).then(|| ops::unreviewed_key(&brain, id)).flatten() {
-                    if action == "approve" {
-                        ops::trust(&brain, &key)?;
-                        println!("approved {key} (from another device)");
-                    } else if key.starts_with("nodes/") {
-                        // rejecting a rule that came from another device forgets it, on every device once synced
-                        match ops::forget_unreviewed(&brain, &key, "rejected on review") {
-                            Ok(msg) => println!("rejected {key}: {msg}"),
-                            Err(e) => {
-                                eprintln!("! {key}: {e}");
-                                errors += 1;
-                            }
-                        }
-                    } else {
-                        eprintln!("! {key} is a skill from another device: delete its folder to reject it everywhere");
-                        errors += 1;
-                    }
-                } else {
-                    inbox_ids.push(id.clone());
-                }
-            }
-            if all && action == "approve" {
-                for (key, _, why) in ops::unreviewed(&brain) {
-                    if why.is_empty() || force {
-                        ops::trust(&brain, &key)?;
-                        println!("approved {key} (from another device)");
-                    } else {
-                        eprintln!("skipped flagged item {key} (['{why}']): check it, then approve it by name");
-                    }
-                }
-            }
-            let ids = inbox_ids;
-            let ids: Vec<String> = if all {
-                // "all" never approves items the scan flagged (injection, secret): those need a look and their id
-                // nor proposals that arrived from another device: what they say about themselves is not checked
-                let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
-                    action == "approve"
-                        && !force
-                        && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
-                            || !crate::security::scan(&i.body).is_empty()
-                            || brain.is_untrusted(&i.path))
-                });
-                for item in &flagged {
-                    eprintln!(
-                        "skipped {} ({}): check it, then approve it by id",
-                        item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
-                        if brain.is_untrusted(&item.path) {
-                            "from another device".to_string()
-                        } else {
-                            format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
-                        }
-                    );
-                }
-                clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
-            } else {
-                ids
-            };
-            for id in &ids {
-                let r = if action == "approve" {
-                    ops::approve(&brain, id, force).map(|what| println!("approved {id} → {what}"))
-                } else {
-                    ops::reject(&brain, id).map(|_| println!("rejected {id}"))
-                };
-                match r {
-                    Err(Error::Op(e)) | Err(Error::Schema(e)) => {
-                        eprintln!("! {e}");
-                        errors += 1;
-                    }
-                    other => other?,
-                }
-            }
-            ops::write_home(&brain, &mut Index::new(&brain))?;
-            brain.commit(&format!("review {action} {} item(s)", ids.len()));
-            if errors > 0 {
-                std::process::exit(1);
-            }
-        }
-        Cmd::Rebuild => {
-            let brain = open_brain(bp);
-            println!("indexed {} nodes", Index::new(&brain).rebuild()?);
-        }
-        Cmd::Doctor => {
-            let report = ops::doctor(&open_brain(bp));
-            println!("{}", crate::snapshot::printable(&report.join("\n")));
-            if report.iter().any(|l| ops::is_problem(l)) {
-                std::process::exit(1);
-            }
-        }
-        Cmd::Semantic { action, from } => {
-            if action == "install" {
-                match crate::semantic::install(from.as_deref()) {
-                    Err(Error::Op(e)) => fail(&e),
-                    other => println!("{}", other?),
-                }
-            } else if crate::semantic::available() {
-                println!("semantic search: on ({})", crate::semantic::model_dir().display());
-            } else if cfg!(feature = "semantic") {
-                println!("semantic search: off (no model in {}; run `rewire semantic install`)", crate::semantic::model_dir().display());
-            } else {
-                println!("semantic search: not built in (build with the `semantic` feature)");
-            }
-        }
-        Cmd::Upgrade => {
-            let brain = open_brain(bp);
-            let mut count = 0;
-            let _g = writing(&brain);
-            for node in brain.iter_nodes() {
-                brain.write_node(&node.meta, &node.body, Some(&node.path))?;
-                count += 1;
-            }
-            let mut index = Index::new(&brain);
-            index.refresh()?;
-            ops::write_home(&brain, &mut index)?;
-            brain.commit("upgrade node format");
-            println!("rewrote {count} nodes in the current format");
-        }
-        Cmd::Sessions { limit } => {
-            let brain = open_brain(bp);
-            let list = ops::sessions(&brain);
-            if list.is_empty() {
-                println!("no sessions yet");
-            }
-            for (date, harness, session, state) in list.iter().take(limit) {
-                println!("{date}  {harness:<12} {session}{}", if state.is_empty() { String::new() } else { format!("  ({state})") });
-            }
-            if list.len() > limit {
-                println!("… {} more (-n {})", list.len() - limit, list.len());
-            }
-        }
-        Cmd::Forget { id, reason } => {
-            let brain = open_brain(bp);
-            // forgetting a rule changes every future session as much as adding one: the user's call
-            if let Some(marker) = agent_shell() {
-                fail(format!("forget is refused inside an agent session ({marker}): run it in your own terminal"));
-            }
-            let _g = writing(&brain);
-            match ops::forget(&brain, &id, &reason) {
-                Ok(msg) => println!("{msg}"),
-                Err(Error::Op(e)) => fail(e),
-                Err(e) => return Err(e),
-            }
-        }
-        Cmd::Undo { session } => {
-            let brain = open_brain(bp);
-            // undo removes notes, approved ones too: the user's call, like forget
-            if let Some(marker) = agent_shell() {
-                fail(format!("undo is refused inside an agent session ({marker}): run it in your own terminal"));
-            }
-            let undone = {
-                let _g = writing(&brain);
-                ops::undo(&brain, &session)
-            };
-            match undone {
-                Ok(summary) => println!("{summary}"),
-                Err(e) => fail(e),
-            }
-        }
-        Cmd::Remote { action, url } => {
-            let mut brain = open_brain(bp);
-            if action == "set" {
-                // where the whole brain is pushed to: the user's call
-                if let Some(marker) = agent_shell() {
-                    fail(format!("remote set is refused inside an agent session ({marker}): run it in your own terminal"));
-                }
-                let Some(url) = url else { fail("usage: rewire remote set <git-url>") };
-                let notes = {
-                    let _g = writing(&brain);
-                    sync::set_remote(&mut brain, &url)?
-                };
-                println!("{}", notes.join("\n"));
-            } else {
-                let url = sync::remote_url(&brain);
-                println!(
-                    "origin: {}; auto sync: {}; device: {}",
-                    if url.is_empty() { "(none)".to_string() } else { ops::redact_url(&url) },
-                    if brain.config.sync_auto { "on" } else { "off" },
-                    brain.device()
-                );
-            }
-        }
-        Cmd::Sync { only } => {
-            let brain = open_brain(bp);
-            let res = (|| -> Result<()> {
-                let _g = brain.lock(Duration::from_secs(120))?;
-                if only.as_deref() != Some("push") {
-                    for n in sync::pull(&brain, sync::GIT_TIMEOUT)? {
-                        println!("{n}");
-                    }
-                }
-                if only.as_deref() != Some("pull") {
-                    for n in sync::push(&brain, sync::GIT_TIMEOUT)? {
-                        println!("{n}");
-                    }
-                }
-                Ok(())
-            })();
-            if let Err(e) = res {
-                fail(format!("sync failed: {e}"));
-            }
-        }
-        Cmd::Mcp => {
-            let brain = Brain::open(bp.as_deref());
-            let url = sync::env_remote();
-            if !brain.exists() && !url.is_empty() {
-                // a cloud session starts the MCP server and the session-start hook together: answer the client at
-                // once and fetch in the background
-                crate::mcp::serve_fetching(brain.root.clone(), url)?
-            } else {
-                crate::mcp::serve(&open_brain(bp))?
-            }
-        }
-        Cmd::Hook { event, harness } => {
-            let brain = Brain::open(bp.as_deref());
-            let mut raw = String::new();
-            let payload: Value = if std::io::stdin().is_terminal() {
-                json!({})
-            } else {
-                let _ = std::io::stdin().read_to_string(&mut raw);
-                serde_json::from_str(if raw.trim().is_empty() { "{}" } else { &raw }).unwrap_or_else(|_| json!({}))
-            };
-            // a memory hook must never break the host session
-            match integrations::hook(brain, &event, &payload, &harness) {
-                Ok(out) if !out.is_empty() => println!("{out}"),
-                Ok(_) => {}
-                Err(e) => eprintln!("rewire hook error: {e}"),
-            }
-        }
+        Cmd::Review { action, force, ids } => cmd_review(bp, action, force, ids),
+        Cmd::Rebuild => cmd_rebuild(bp),
+        Cmd::Doctor => cmd_doctor(bp),
+        Cmd::Semantic { action, from } => cmd_semantic(action, from),
+        Cmd::Upgrade => cmd_upgrade(bp),
+        Cmd::Sessions { limit } => cmd_sessions(bp, limit),
+        Cmd::Forget { id, reason } => cmd_forget(bp, id, reason),
+        Cmd::Undo { session } => cmd_undo(bp, session),
+        Cmd::Remote { action, url } => cmd_remote(bp, action, url),
+        Cmd::Sync { only } => cmd_sync(bp, only),
+        Cmd::Mcp => cmd_mcp(bp),
+        Cmd::Hook { event, harness } => cmd_hook(bp, event, harness),
         Cmd::Install { harness, write, skills_dir, remote, review, author } => {
-            if harness == "cloud" {
-                // which repository the whole brain syncs with: the user's call, as with `remote set`
-                if let Some(marker) = agent_shell() {
-                    fail(format!("install cloud is refused inside an agent session ({marker}): run it in the environment's setup script"));
-                }
-                let Some(url) = remote.filter(|u| !u.trim().is_empty()) else { fail("usage: rewire install cloud --remote <git-url>") };
-                if author.as_deref().is_some_and(|a| crate::brain::parse_identity(a).is_none()) {
-                    fail("--author takes \"Name <email>\", e.g. \"Ana <123+ana@users.noreply.github.com>\"");
-                }
-                println!("{}", integrations::install_cloud(url.trim(), !review, author.as_deref(), &Brain::open(bp.as_deref()).root)?);
-            } else if harness == "claude-code" {
-                println!("{}", integrations::install_claude_code(write, None, Some(&Brain::open(bp.as_deref()).root))?);
-            } else {
-                println!("{}", integrations::install_codex(skills_dir.as_deref())?);
+            cmd_install(bp, harness, write, skills_dir, remote, review, author)
+        }
+    }
+}
+
+fn cmd_init(bp: &Option<PathBuf>, from_url: Option<String>, device: Option<String>) -> Result<()> {
+    if let Some(url) = from_url {
+        let brain = Brain::clone_from(&url, bp.as_deref(), device.as_deref())?;
+        println!("brain cloned from {url} to {} (device: {})", brain.root.display(), brain.device());
+        if !brain.config.sync_auto {
+            println!("auto sync is off; enable with `rewire remote set <url>`");
+        }
+    } else {
+        let brain = Brain::init(bp.as_deref(), device.as_deref())?;
+        println!("brain created at {} (device: {})", brain.root.display(), brain.device());
+    }
+    println!("next: `rewire install claude-code` and/or `rewire install codex`");
+    Ok(())
+}
+
+fn cmd_prime(bp: &Option<PathBuf>, project: Option<String>, dir: Option<String>, as_json: bool) -> Result<()> {
+    let brain = open_brain(bp);
+    let mut index = Index::new(&brain);
+    index.refresh()?;
+    let dir = dir.unwrap_or_else(cwd);
+    let snap = snapshot::build(&brain, &mut index, Some(&dir), project.as_deref())?;
+    if as_json {
+        print_json(&json!({"project": snap.project, "text": snap.text, "ids": snap.ids, "empty": snap.empty}));
+    } else {
+        println!("{}", snap.text);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_recall(
+    bp: &Option<PathBuf>,
+    query: Vec<String>,
+    k: usize,
+    episodes: usize,
+    scope: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    also: Vec<String>,
+    as_json: bool,
+    full: bool,
+) -> Result<()> {
+    let brain = open_brain(bp);
+    let mut index = Index::new(&brain);
+    index.refresh()?;
+    let here = cwd();
+    let refers_to = (since.is_some() || until.is_some()).then(|| json!({"from": since, "to": until}));
+    let hits = match ops::recall(
+        &brain,
+        &mut index,
+        &query.join(" "),
+        k,
+        Some(&here),
+        scope.as_deref(),
+        None,
+        episodes,
+        refers_to.as_ref(),
+        &also,
+    ) {
+        Err(Error::Op(e)) => fail(&e),
+        other => other?,
+    };
+    let mut items: Vec<Value> = hits.iter().map(|h| h.to_json()).collect();
+    if full {
+        for item in items.iter_mut().filter(|i| i["type"] != "episode") {
+            let Some(node) = item["id"].as_str().and_then(|id| ops::resolve_id(&brain, id)) else { continue };
+            let blocked = !crate::security::blocked(&format!("{} {}", node.title(), node.body)).is_empty();
+            item["body"] = json!(if blocked { String::new() } else { node.body.clone() });
+            for key in ["valid_from", "recorded_at", "source"] {
+                item[key] = node.meta.get(key).cloned().unwrap_or(Value::Null);
             }
         }
+    }
+    if as_json {
+        print_json(&Value::Array(items))
+    } else {
+        print_items(&items)
+    }
+    Ok(())
+}
+
+fn cmd_import(bp: &Option<PathBuf>, file: PathBuf, use_llm: bool) -> Result<()> {
+    let brain = open_brain(bp);
+    let sessions = read_import_records(&file)?;
+    let usage = crate::llm::Usage::default();
+    let provider: Box<dyn crate::llm::Provider> =
+        if use_llm { crate::llm::make(&brain.config, &brain.root)? } else { Box::new(crate::llm::NoProvider) };
+    let mut con = Consolidator::new(&brain, Some(Box::new(crate::llm::Counting { inner: provider, usage: &usage })), Box::new(|_| {}))?;
+    con.review_all = true; // an import file says who spoke: what it claims the user said is reviewed
+    let _g = writing(&brain);
+    let mut written = 0;
+    for s in &sessions {
+        if import_record(&brain, &mut con, use_llm, &usage, s, written)? {
+            written += 1;
+        }
+    }
+    if !use_llm && written > 0 {
+        brain.commit(&format!("import {written} session(s)"));
+    }
+    Ok(())
+}
+
+/// The records of an import file, every line checked before anything is written: a bad line never
+/// leaves half an import behind.
+fn read_import_records(file: &Path) -> Result<Vec<Value>> {
+    let text = if file.as_os_str() == "-" {
+        let mut t = String::new();
+        std::io::stdin().read_to_string(&mut t)?;
+        t
+    } else {
+        std::fs::read_to_string(file)?
+    };
+    let mut sessions = Vec::new();
+    let mut problems = Vec::new();
+    for (i, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let at = format!("{}: line {}", file.display(), i + 1);
+        match serde_json::from_str::<Value>(line) {
+            Err(e) => problems.push(format!("{at}: not JSON: {e}")),
+            Ok(s) => match import_problem(&s) {
+                Some(p) => problems.push(format!("{at}: {p}")),
+                None => sessions.push(s),
+            },
+        }
+    }
+    if !problems.is_empty() {
+        fail(format!("nothing imported; fix these records first:\n  {}", problems.join("\n  ")));
+    }
+    Ok(sessions)
+}
+
+/// One record, printed as its JSON line. Returns whether it wrote a session: a skipped record does not
+/// count. A failing record commits the sessions before it and stops the run, so the caller passes its
+/// count so far.
+fn import_record(
+    brain: &Brain,
+    con: &mut Consolidator<'_>,
+    use_llm: bool,
+    usage: &crate::llm::Usage,
+    record: &Value,
+    written: usize,
+) -> Result<bool> {
+    let harness_slug = crate::util::slugify(record.get("harness").and_then(Value::as_str).unwrap_or("import"), 40);
+    let session_id = record.get("session").and_then(Value::as_str).unwrap_or("");
+    // a transcript-only record (the LLM step failed before) is consolidated again, not skipped
+    let done = ops::session_consolidated(brain, &harness_slug, session_id);
+    if done == Some(true) || (!use_llm && done.is_some()) {
+        println!("{}", pyjson::dumps_utf8(&json!({"session": session_id, "ok": true, "skipped": "already imported"})));
+        return Ok(false);
+    }
+    let field = |k: &str| record.get(k).and_then(|v| v.as_str()).map(String::from);
+    let harness = field("harness").unwrap_or_else(|| "import".into());
+    let session = field("session").unwrap_or_else(|| "unknown".into());
+    let turns: Vec<crate::transcripts::Turn> = record["turns"]
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(i, t)| crate::transcripts::Turn {
+            n: t["n"].as_u64().map(|n| n as usize).unwrap_or(i + 1),
+            role: t["role"].as_str().unwrap_or("user").into(),
+            text: t["text"].as_str().unwrap_or("").into(),
+            ts: t["ts"].as_str().unwrap_or("").into(),
+        })
+        .collect();
+    let meta =
+        crate::transcripts::SessionMeta { session: Some(session.clone()), cwd: field("cwd"), date: field("date"), ..Default::default() };
+    let before = (usage.calls.get(), usage.prompt_chars.get(), usage.completion_chars.get(), usage.seconds.get());
+    let start = std::time::Instant::now();
+    let mut rec = json!({"session": session, "turns": turns.len()});
+    let outcome = if use_llm {
+        let r = con.consolidate(&harness, &meta, &turns).map(|r| {
+            for key in ["applied", "queued", "rejected"] {
+                rec[key] = json!(r.get(key).and_then(|v| v.as_array()).map_or(0, |a| a.len()));
+            }
+        });
+        if r.is_err() {
+            // the transcript is kept and searchable even when the LLM part failed (rerun the import to retry)
+            let fallback = [crate::consolidate::FALLBACK_SUMMARY.to_string()];
+            write_import_session(con, &harness, &session, &meta, &turns, &fallback)?;
+        }
+        r
+    } else {
+        write_import_session(con, &harness, &session, &meta, &turns, &[])
+    };
+    rec["ok"] = json!(outcome.is_ok());
+    rec["seconds"] = json!(crate::util::round_to(start.elapsed().as_secs_f64(), 2));
+    rec["llm_calls"] = json!(usage.calls.get() - before.0);
+    rec["prompt_chars"] = json!(usage.prompt_chars.get() - before.1);
+    rec["completion_chars"] = json!(usage.completion_chars.get() - before.2);
+    rec["llm_seconds"] = json!(crate::util::round_to(usage.seconds.get() - before.3, 2));
+    if let Err(e) = &outcome {
+        rec["error"] = json!(e.to_string().chars().take(300).collect::<String>());
+    }
+    println!("{}", pyjson::dumps_utf8(&rec));
+    if outcome.is_err() {
+        if !use_llm && written > 0 {
+            brain.commit(&format!("import {written} session(s)"));
+        }
+        std::process::exit(1); // sessions build on each other: stop at the first failure, a rerun resumes
+    }
+    Ok(true)
+}
+
+/// An imported session with no items of its own, just its summaries and its transcript: enough to keep a
+/// record searchable when its LLM step failed.
+fn write_import_session(
+    con: &mut Consolidator<'_>,
+    harness: &str,
+    session: &str,
+    meta: &crate::transcripts::SessionMeta,
+    turns: &[crate::transcripts::Turn],
+    summaries: &[String],
+) -> Result<()> {
+    let date = meta.date.clone().unwrap_or_default();
+    let project = con.project_of(meta.cwd.as_deref());
+    let transcript = con.transcript(turns);
+    con.write_session(
+        harness,
+        session,
+        project.as_deref(),
+        summaries,
+        &meta.outputs,
+        &[],
+        &[],
+        &[],
+        0,
+        &Default::default(),
+        &date,
+        &transcript,
+        &[],
+    )
+}
+
+fn cmd_get(bp: &Option<PathBuf>, ids: Vec<String>, session: Option<String>, as_json: bool) -> Result<()> {
+    let brain = open_brain(bp);
+    let session = session.unwrap_or_else(|| format!("cli-{}", shell_id()));
+    let items = ops::get(&brain, &ids, &session, "cli")?;
+    let missing = items.iter().any(|i| i.get("error").is_some());
+    if as_json {
+        print_json(&Value::Array(items))
+    } else {
+        print_items(&items)
+    }
+    if missing {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_remember(bp: &Option<PathBuf>, text: Vec<String>, type_: String, scope: Option<String>, importance: i64, apply: bool) -> Result<()> {
+    let brain = open_brain(bp);
+    let scope = scope.unwrap_or_else(|| ops::default_scope(&brain, Some(&cwd())));
+    let text = text.join(" ");
+    // typed by a person at their own terminal (not an agent's shell): the user's words, still reviewed
+    let provenance = if apply || (std::io::stdin().is_terminal() && agent_shell().is_none()) { "user" } else { "assistant" };
+    let result = (|| -> Result<()> {
+        if apply {
+            // --apply writes an explicit user memory with no review: only a person at a terminal may do it.
+            // An agent's shell (even one inside a pseudo-terminal) is refused, and the person confirms on
+            // the terminal itself.
+            if let Some(marker) = agent_shell() {
+                fail(format!("--apply is refused inside an agent session ({marker}): agents propose with `rewire remember`, the user approves with `rewire review`"));
+            }
+            if !std::io::stdin().is_terminal()
+                || !confirm_on_tty(&format!("Save as your own explicit {type_}, with no review?\n  {text}\n[y/N] "))
+            {
+                fail("--apply needs a person at the terminal to confirm (agents use the review queue)");
+            }
+            let why = crate::security::scan(&text);
+            if !why.is_empty() {
+                fail(format!("refused: text looks like it contains {}", why.join(" and ")));
+            }
+            let mut change = Meta::new();
+            for (k, v) in [
+                ("action", json!("NEW")),
+                ("type", json!(type_)),
+                ("text", json!(text)),
+                ("scope", json!(scope)),
+                ("importance", json!(importance)),
+                ("confidence", json!("explicit")),
+                ("provenance", json!(provenance)),
+            ] {
+                change.insert(k.into(), v);
+            }
+            let _g = writing(&brain);
+            let node = ops::apply_change(&brain, &change, None)?;
+            ops::write_home(&brain, &mut Index::new(&brain))?;
+            brain.commit(&format!("remember {}", node.id()));
+            println!("saved [{}] {}", crate::util::short_of(node.id()), node.title());
+        } else {
+            let id = ops::remember(&brain, &text, &type_, &scope, provenance, Some(json!({"harness": "cli"})))?;
+            println!("queued for review as {scope}: {id} (approve with `rewire review approve {id}`; --scope global for every project)");
+        }
+        Ok(())
+    })();
+    if let Err(Error::Op(e)) | Err(Error::Schema(e)) = &result {
+        fail(e);
+    }
+    result?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_consolidate(
+    bp: &Option<PathBuf>,
+    mut files: Vec<PathBuf>,
+    pending: bool,
+    retry: bool,
+    watch: bool,
+    harness: Option<String>,
+    quiet: bool,
+    as_json: bool,
+) -> Result<()> {
+    let brain = open_brain(bp);
+    // A transcript named on the command line is extracted and auto-applied with no review. A person may do
+    // that for a file they own, but an agent that writes a JSONL with user-role turns would install memory
+    // the user never said: its provenance comes from the turn, not from the file. The hooks consolidate the
+    // queue (--pending, --watch) and stay allowed.
+    if !files.is_empty() {
+        if let Some(marker) = agent_shell() {
+            fail(format!(
+                    "consolidate <file> is refused inside an agent session ({marker}): agents consolidate the queue with `rewire consolidate --pending`, the user runs a single file from their own terminal"
+                ));
+        }
+    }
+    if watch {
+        return integrations::watch(&brain, || {
+            let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
+            Consolidator::new(&brain, None, log)?.run_pending(&[])?;
+            push_after_consolidation(&brain, quiet);
+            Ok(())
+        });
+    }
+    let mut failures = 0;
+    if retry {
+        // transcripts that are gone cannot be retried: forget their failures
+        for gone in brain.read_state("failed").keys().filter(|p| !std::path::Path::new(p.as_str()).is_file()) {
+            eprintln!("skipped {gone}: the transcript file is gone (what was kept of it stays searchable)");
+        }
+        brain.update_state("failed", |f| f.retain(|p, _| std::path::Path::new(p).is_file()))?;
+        files.extend(brain.read_state("failed").keys().map(PathBuf::from));
+        if files.is_empty() {
+            println!("no failed consolidations");
+            return Ok(());
+        }
+    }
+    let log: Box<dyn Fn(&str)> = if quiet { Box::new(|_| {}) } else { Box::new(|m: &str| eprintln!("{m}")) };
+    let results = (|| -> Result<Vec<Meta>> {
+        let mut con = Consolidator::new(&brain, None, log)?;
+        let r = if pending || files.is_empty() {
+            con.run_pending(&files)
+        } else {
+            // every file is tried; failures are counted and reported, not a reason to stop
+            let mut done = Vec::new();
+            for f in &files {
+                match con.run_file(&crate::brain::absolute(f), harness.as_deref()) {
+                    Ok(r) => done.push(r),
+                    Err(e @ Error::Locked(_)) => return Err(e),
+                    Err(e) => {
+                        eprintln!("{}: {e}", f.display());
+                        con.failures += 1;
+                    }
+                }
+            }
+            Ok(done)
+        };
+        failures = con.failures;
+        r
+    })();
+    let results = match results {
+        Err(Error::Locked(e)) => {
+            eprintln!("skipped: {e}");
+            return Ok(());
+        }
+        other => other?,
+    };
+    if pending || retry {
+        push_after_consolidation(&brain, quiet);
+    }
+    if as_json {
+        print_json(&Value::Array(results.into_iter().map(Value::Object).collect()));
+        if failures > 0 {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    for r in &results {
+        if r.get("status").and_then(Value::as_str) != Some("consolidated") {
+            continue;
+        }
+        let s = |k: &str| r.get(k).map(py_str).unwrap_or_default();
+        let project = r.get("project").and_then(Value::as_str).unwrap_or("-");
+        println!("{} {} → project {project}", s("harness"), s("session"));
+        for a in r.get("applied").and_then(Value::as_array).cloned().unwrap_or_default() {
+            println!("  + {:<10} {}", py_str(&a["action"]), py_str(&a["title"]));
+        }
+        for q in r.get("queued").and_then(Value::as_array).cloned().unwrap_or_default() {
+            println!("  ? {:<10} {}  (inbox {})", py_str(&q["action"]), py_str(&q["title"]), py_str(&q["inbox_id"]));
+        }
+        for x in r.get("rejected").and_then(Value::as_array).cloned().unwrap_or_default() {
+            println!("  ✗ {} ({})", py_str(&x["title"]), py_str(&x["why"]));
+        }
+    }
+    if failures > 0 {
+        eprintln!("{failures} transcript(s) could not be consolidated (retry with `rewire consolidate --retry`)");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_review(bp: &Option<PathBuf>, action: String, force: bool, ids: Vec<String>) -> Result<()> {
+    let brain = open_brain(bp);
+    if action == "list" {
+        return review_list(&brain);
+    }
+    review_apply(&brain, &action, force, ids)
+}
+
+fn review_list(brain: &Brain) -> Result<()> {
+    let items = brain.iter_inbox();
+    if items.is_empty() {
+        println!("inbox empty");
+    }
+    for item in items {
+        let m = &item.meta;
+        let g = |k: &str| crate::snapshot::printable(&m.get(k).map(py_str).unwrap_or_default());
+        let target = m
+            .get("target")
+            .filter(|t| crate::brain::is_set(Some(t)))
+            .map(|t| format!(" → {}", crate::snapshot::printable(&py_str(t))))
+            .unwrap_or_default();
+        let action = crate::snapshot::printable(&m.get("action").map(py_str).unwrap_or_else(|| "NEW".into()));
+        let flags = m.get("flags").filter(|f| f.as_array().is_some_and(|a| !a.is_empty()));
+        let remote = if brain.is_untrusted(&item.path) { "  FROM ANOTHER DEVICE (its reason and labels are its own)" } else { "" };
+        println!(
+            "{}  {action}{target}  [{} · {} · {}/{}]{remote}\n    {}\n    reason: {}{}",
+            g("inbox_id"),
+            g("type"),
+            g("scope"),
+            g("confidence"),
+            g("provenance"),
+            crate::snapshot::printable(item.body.trim()).replace('\n', "\n    "),
+            g("reason"),
+            flags.map(|f| format!("  flags: {}", crate::snapshot::printable(&python_list(f)))).unwrap_or_default()
+        );
+    }
+    let waiting = ops::unreviewed(brain);
+    if !waiting.is_empty() {
+        println!("\nFrom other devices (shown to agents on this device once you approve them):");
+        for (key, text, why) in waiting {
+            let flag = if why.is_empty() { String::new() } else { format!("  flags: ['{why}']") };
+            // the id to approve or reject it by: a note's short id, a skill's name
+            let id = key
+                .strip_prefix("skills/")
+                .map(|n| format!("skill:{}", n.trim_end_matches('/')))
+                .or_else(|| key.rsplit_once('-').map(|(_, r)| r.trim_end_matches(".md").to_string()))
+                .unwrap_or_else(|| key.clone());
+            // remote text: no terminal escape codes that could hide part of it
+            // in full: what is approved is exactly what was shown
+            let shown = crate::snapshot::printable(&text).replace('\n', "\n    ");
+            println!("{}  ({}){flag}\n    {shown}", crate::snapshot::printable(&id), crate::snapshot::printable(&key));
+        }
+        println!("\napprove: `rewire review approve <id>` · reject (forget it on every device): `rewire review reject <id>`");
+    }
+    Ok(())
+}
+
+fn review_apply(brain: &Brain, action: &str, force: bool, ids: Vec<String>) -> Result<()> {
+    if ids.is_empty() {
+        fail("give inbox ids, or `all`");
+    }
+    // approving makes a proposal part of every future session, rejecting drops the user's own proposals:
+    // the user's call, not the agent's
+    {
+        // refused outright: a prompt on the terminal an agent shares with the user could take a keystroke
+        // meant for something else
+        if let Some(marker) = agent_shell() {
+            fail(format!("review {action} is refused inside an agent session ({marker}): run `rewire review` in your own terminal"));
+        }
+    }
+    let _g = writing(brain);
+    let all = ids == ["all"];
+    let (inbox_ids, mut errors) = review_remote_ids(brain, action, all, &ids)?;
+    if all && action == "approve" {
+        for (key, _, why) in ops::unreviewed(brain) {
+            if why.is_empty() || force {
+                ops::trust(brain, &key)?;
+                println!("approved {key} (from another device)");
+            } else {
+                eprintln!("skipped flagged item {key} (['{why}']): check it, then approve it by name");
+            }
+        }
+    }
+    let ids = if all { review_all_ids(brain, action, force) } else { inbox_ids };
+    for id in &ids {
+        let r = if action == "approve" {
+            ops::approve(brain, id, force).map(|what| println!("approved {id} → {what}"))
+        } else {
+            ops::reject(brain, id).map(|_| println!("rejected {id}"))
+        };
+        match r {
+            Err(Error::Op(e)) | Err(Error::Schema(e)) => {
+                eprintln!("! {e}");
+                errors += 1;
+            }
+            other => other?,
+        }
+    }
+    ops::write_home(brain, &mut Index::new(brain))?;
+    brain.commit(&format!("review {action} {} item(s)", ids.len()));
+    if errors > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Acts on the ids that name proposals from another device, returning the ids left for the inbox and
+/// the errors it reported. Rules, preferences and skills from other devices: approving shows them here,
+/// rejecting is not offered (it would delete them on every device; edit or delete the file instead).
+fn review_remote_ids(brain: &Brain, action: &str, all: bool, ids: &[String]) -> Result<(Vec<String>, usize)> {
+    let mut errors = 0;
+    let mut inbox_ids = Vec::new();
+    for id in ids {
+        match (!all).then(|| ops::unreviewed_key(brain, id)).flatten() {
+            Some(key) => errors += review_remote(brain, action, &key)?,
+            None => inbox_ids.push(id.clone()),
+        }
+    }
+    Ok((inbox_ids, errors))
+}
+
+/// Trusts or forgets one proposal from another device, returning the errors it reported.
+fn review_remote(brain: &Brain, action: &str, key: &str) -> Result<usize> {
+    if action == "approve" {
+        ops::trust(brain, key)?;
+        println!("approved {key} (from another device)");
+        return Ok(0);
+    }
+    if !key.starts_with("nodes/") {
+        eprintln!("! {key} is a skill from another device: delete its folder to reject it everywhere");
+        return Ok(1);
+    }
+    // rejecting a rule that came from another device forgets it, on every device once synced
+    match ops::forget_unreviewed(brain, key, "rejected on review") {
+        Ok(msg) => {
+            println!("rejected {key}: {msg}");
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!("! {key}: {e}");
+            Ok(1)
+        }
+    }
+}
+
+/// "all" never approves items the scan flagged (injection, secret): those need a look and their id, nor
+/// proposals that arrived from another device: what they say about themselves is not checked.
+fn review_all_ids(brain: &Brain, action: &str, force: bool) -> Vec<String> {
+    let (flagged, clean): (Vec<_>, Vec<_>) = brain.iter_inbox().into_iter().partition(|i| {
+        action == "approve"
+            && !force
+            && (i.meta.get("flags").and_then(Value::as_array).is_some_and(|f| !f.is_empty())
+                || !crate::security::scan(&i.body).is_empty()
+                || brain.is_untrusted(&i.path))
+    });
+    for item in &flagged {
+        eprintln!(
+            "skipped {} ({}): check it, then approve it by id",
+            item.meta.get("inbox_id").map(py_str).unwrap_or_default(),
+            if brain.is_untrusted(&item.path) {
+                "from another device".to_string()
+            } else {
+                format!("flagged {}", item.meta.get("flags").map(python_list).unwrap_or_else(|| "by a new scan".into()))
+            }
+        );
+    }
+    clean.iter().map(|i| i.meta.get("inbox_id").map(py_str).unwrap_or_default()).collect()
+}
+
+fn cmd_rebuild(bp: &Option<PathBuf>) -> Result<()> {
+    let brain = open_brain(bp);
+    println!("indexed {} nodes", Index::new(&brain).rebuild()?);
+    Ok(())
+}
+
+fn cmd_doctor(bp: &Option<PathBuf>) -> Result<()> {
+    let report = ops::doctor(&open_brain(bp));
+    println!("{}", crate::snapshot::printable(&report.join("\n")));
+    if report.iter().any(|l| ops::is_problem(l)) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_semantic(action: String, from: Option<String>) -> Result<()> {
+    if action == "install" {
+        match crate::semantic::install(from.as_deref()) {
+            Err(Error::Op(e)) => fail(&e),
+            other => println!("{}", other?),
+        }
+    } else if crate::semantic::available() {
+        println!("semantic search: on ({})", crate::semantic::model_dir().display());
+    } else if cfg!(feature = "semantic") {
+        println!("semantic search: off (no model in {}; run `rewire semantic install`)", crate::semantic::model_dir().display());
+    } else {
+        println!("semantic search: not built in (build with the `semantic` feature)");
+    }
+    Ok(())
+}
+
+fn cmd_upgrade(bp: &Option<PathBuf>) -> Result<()> {
+    let brain = open_brain(bp);
+    let mut count = 0;
+    let _g = writing(&brain);
+    for node in brain.iter_nodes() {
+        brain.write_node(&node.meta, &node.body, Some(&node.path))?;
+        count += 1;
+    }
+    let mut index = Index::new(&brain);
+    index.refresh()?;
+    ops::write_home(&brain, &mut index)?;
+    brain.commit("upgrade node format");
+    println!("rewrote {count} nodes in the current format");
+    Ok(())
+}
+
+fn cmd_sessions(bp: &Option<PathBuf>, limit: usize) -> Result<()> {
+    let brain = open_brain(bp);
+    let list = ops::sessions(&brain);
+    if list.is_empty() {
+        println!("no sessions yet");
+    }
+    for (date, harness, session, state) in list.iter().take(limit) {
+        println!("{date}  {harness:<12} {session}{}", if state.is_empty() { String::new() } else { format!("  ({state})") });
+    }
+    if list.len() > limit {
+        println!("… {} more (-n {})", list.len() - limit, list.len());
+    }
+    Ok(())
+}
+
+fn cmd_forget(bp: &Option<PathBuf>, id: String, reason: String) -> Result<()> {
+    let brain = open_brain(bp);
+    // forgetting a rule changes every future session as much as adding one: the user's call
+    if let Some(marker) = agent_shell() {
+        fail(format!("forget is refused inside an agent session ({marker}): run it in your own terminal"));
+    }
+    let _g = writing(&brain);
+    match ops::forget(&brain, &id, &reason) {
+        Ok(msg) => println!("{msg}"),
+        Err(Error::Op(e)) => fail(e),
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
+fn cmd_undo(bp: &Option<PathBuf>, session: String) -> Result<()> {
+    let brain = open_brain(bp);
+    // undo removes notes, approved ones too: the user's call, like forget
+    if let Some(marker) = agent_shell() {
+        fail(format!("undo is refused inside an agent session ({marker}): run it in your own terminal"));
+    }
+    let undone = {
+        let _g = writing(&brain);
+        ops::undo(&brain, &session)
+    };
+    match undone {
+        Ok(summary) => println!("{summary}"),
+        Err(e) => fail(e),
+    }
+    Ok(())
+}
+
+fn cmd_remote(bp: &Option<PathBuf>, action: String, url: Option<String>) -> Result<()> {
+    let mut brain = open_brain(bp);
+    if action == "set" {
+        // where the whole brain is pushed to: the user's call
+        if let Some(marker) = agent_shell() {
+            fail(format!("remote set is refused inside an agent session ({marker}): run it in your own terminal"));
+        }
+        let Some(url) = url else { fail("usage: rewire remote set <git-url>") };
+        let notes = {
+            let _g = writing(&brain);
+            sync::set_remote(&mut brain, &url)?
+        };
+        println!("{}", notes.join("\n"));
+    } else {
+        let url = sync::remote_url(&brain);
+        println!(
+            "origin: {}; auto sync: {}; device: {}",
+            if url.is_empty() { "(none)".to_string() } else { ops::redact_url(&url) },
+            if brain.config.sync_auto { "on" } else { "off" },
+            brain.device()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_sync(bp: &Option<PathBuf>, only: Option<String>) -> Result<()> {
+    let brain = open_brain(bp);
+    let res = (|| -> Result<()> {
+        let _g = brain.lock(Duration::from_secs(120))?;
+        if only.as_deref() != Some("push") {
+            for n in sync::pull(&brain, sync::GIT_TIMEOUT)? {
+                println!("{n}");
+            }
+        }
+        if only.as_deref() != Some("pull") {
+            for n in sync::push(&brain, sync::GIT_TIMEOUT)? {
+                println!("{n}");
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = res {
+        fail(format!("sync failed: {e}"));
+    }
+    Ok(())
+}
+
+fn cmd_mcp(bp: &Option<PathBuf>) -> Result<()> {
+    let brain = Brain::open(bp.as_deref());
+    let url = sync::env_remote();
+    if !brain.exists() && !url.is_empty() {
+        // a cloud session starts the MCP server and the session-start hook together: answer the client at
+        // once and fetch in the background
+        crate::mcp::serve_fetching(brain.root.clone(), url)?
+    } else {
+        crate::mcp::serve(&open_brain(bp))?
+    }
+    Ok(())
+}
+
+fn cmd_hook(bp: &Option<PathBuf>, event: String, harness: String) -> Result<()> {
+    let brain = Brain::open(bp.as_deref());
+    let mut raw = String::new();
+    let payload: Value = if std::io::stdin().is_terminal() {
+        json!({})
+    } else {
+        let _ = std::io::stdin().read_to_string(&mut raw);
+        serde_json::from_str(if raw.trim().is_empty() { "{}" } else { &raw }).unwrap_or_else(|_| json!({}))
+    };
+    // a memory hook must never break the host session
+    match integrations::hook(brain, &event, &payload, &harness) {
+        Ok(out) if !out.is_empty() => println!("{out}"),
+        Ok(_) => {}
+        Err(e) => eprintln!("rewire hook error: {e}"),
+    }
+    Ok(())
+}
+
+fn cmd_install(
+    bp: &Option<PathBuf>,
+    harness: String,
+    write: bool,
+    skills_dir: Option<String>,
+    remote: Option<String>,
+    review: bool,
+    author: Option<String>,
+) -> Result<()> {
+    if harness == "cloud" {
+        // which repository the whole brain syncs with: the user's call, as with `remote set`
+        if let Some(marker) = agent_shell() {
+            fail(format!("install cloud is refused inside an agent session ({marker}): run it in the environment's setup script"));
+        }
+        let Some(url) = remote.filter(|u| !u.trim().is_empty()) else { fail("usage: rewire install cloud --remote <git-url>") };
+        if author.as_deref().is_some_and(|a| crate::brain::parse_identity(a).is_none()) {
+            fail("--author takes \"Name <email>\", e.g. \"Ana <123+ana@users.noreply.github.com>\"");
+        }
+        println!("{}", integrations::install_cloud(url.trim(), !review, author.as_deref(), &Brain::open(bp.as_deref()).root)?);
+    } else if harness == "claude-code" {
+        println!("{}", integrations::install_claude_code(write, None, Some(&Brain::open(bp.as_deref()).root))?);
+    } else {
+        println!("{}", integrations::install_codex(skills_dir.as_deref())?);
     }
     Ok(())
 }
@@ -1098,8 +1234,4 @@ pub fn run(cli: Cli) -> Result<()> {
 fn python_list(v: &Value) -> String {
     let items: Vec<String> = v.as_array().map(|a| a.iter().map(|x| format!("'{}'", py_str(x))).collect()).unwrap_or_default();
     format!("[{}]", items.join(", "))
-}
-
-pub fn default_brain_path() -> PathBuf {
-    default_path()
 }

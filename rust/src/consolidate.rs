@@ -240,7 +240,7 @@ fn forged_turns() -> &'static regex::Regex {
 }
 
 /// `limit` condenses long assistant turns (the extraction prompt); the stored transcript keeps them whole and
-/// recall condenses them around the query instead (index::condense), so a detail late in a long reply survives.
+/// recall condenses them around the query instead (excerpt::condense), so a detail late in a long reply survives.
 pub fn format_turns(turns: &[Turn], limit: Option<usize>) -> Vec<String> {
     turns
         .iter()
@@ -912,7 +912,8 @@ impl<'a> Consolidator<'a> {
         let title_raw = c.get("title").map(crate::util::value_text).filter(|t| !t.is_empty()).unwrap_or_else(|| text.clone());
         let title = take(title_raw.trim(), 160);
         let keywords = normalize_keywords(c.get("keywords"));
-        let flags = security::scan(&format!("{text} {title}"));
+        // the keywords are written to the frontmatter and committed like the claim, so they are scanned with it
+        let flags = security::scan(&format!("{text} {title} {}", keywords.join(" ")));
         Some(obj(&[
             ("text", sv(&text)),
             ("title", sv(&title)),

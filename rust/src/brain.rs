@@ -45,6 +45,20 @@ pub fn unsafe_paths(brain: &Brain, rev: Option<&str>) -> Vec<String> {
     if ignore.lines().any(|l| l.trim().starts_with('!')) && unignores_local(&ignore) {
         found.push(".gitignore (it un-ignores device-local files)".into());
     }
+    // A .gitattributes from another device can hand notes to a merge driver, and git would then resolve those files
+    // itself: the "newest version wins, the other one goes to the inbox" rule in sync::resolve never runs and a note
+    // comes out of the merge with two frontmatters. Only events may carry merge= (the default file does).
+    let attrs = match rev {
+        Some(r) => out_str(&brain.git(&["show", &format!("{r}:.gitattributes")])),
+        None => fs::read_to_string(brain.path(&[".gitattributes"])).unwrap_or_default(),
+    };
+    for line in attrs.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let mut parts = line.split_whitespace();
+        let pattern = parts.next().unwrap_or("");
+        if parts.any(|a| a.starts_with("merge=")) && !pattern.starts_with("events/") {
+            found.push(format!(".gitattributes gives {pattern} a merge driver (notes would merge as text)"));
+        }
+    }
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for entry in String::from_utf8_lossy(&out.stdout).split('\0').filter(|e| !e.is_empty()) {
         let Some((info, path)) = entry.split_once('\t') else { continue };
@@ -291,8 +305,8 @@ impl Brain {
             .collect()
     }
 
-    /// Mark the rules, preferences and skills among `paths` (relative to the brain) as unreviewed on this device; how
-    /// many were marked.
+    /// Mark the rules, preferences, instruction-shaped notes and skills among `paths` (relative to the brain) as
+    /// unreviewed on this device; how many were marked.
     pub fn mark_untrusted(&self, paths: &[String]) -> Result<usize> {
         let keys: std::collections::BTreeSet<String> = paths
             .iter()
@@ -300,14 +314,17 @@ impl Brain {
                 if p.to_lowercase().starts_with("skills/") {
                     return true;
                 }
-                // the type the file declares, not its folder, and only what is still in force; a file that does not
-                // parse counts (fail closed)
+                // What decides is the content, not the folder or the declared type: a rule or preference, and a note of
+                // any type whose body reads like an instruction, which is the shape this gate exists for. Only what is
+                // still in force, and a file that does not parse counts (fail closed).
                 p.ends_with(".md")
                     && fs::read_to_string(self.root.join(p)).is_ok_and(|text| match nodefmt::parse(&text) {
                         Err(_) => true,
-                        Ok((meta, _)) => {
+                        Ok((meta, body)) => {
                             let t = meta.get("type").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
-                            (t == "constraint" || t == "preference") && !is_set(meta.get("retracted_at")) && !is_set(meta.get("valid_to"))
+                            let rule = t == "constraint" || t == "preference";
+                            let instruction = crate::security::scan(&body).iter().any(|why| why == "injection");
+                            (rule || instruction) && !is_set(meta.get("retracted_at")) && !is_set(meta.get("valid_to"))
                         }
                     })
             })

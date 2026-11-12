@@ -164,8 +164,10 @@ use smaller models.
 | Mem0 platform 2026, top-50 | 50 facts (≈1.7–2k tokens, estimated) | concise facts | 82.7% (GPT-5) | `memory-benchmarks/results/platform/locomo_top50_results.json` |
 | Mem0 platform 2026, top-200 | 200 facts, mean 6,956 tokens | concise facts | 91.6% (GPT-5) | `locomo_results.json` + Mem0 report |
 | Full-context | ≈26k tokens | the whole conversation | 72.9% (4o-mini) – 87.5% | Mem0 paper; Memori |
-| **rewire, 10 excerpts** | **≈2.2k tokens** (≈2.5k before merging) | 10 excerpts × 6 turns of raw transcript | all evidence 77.5% | §8 |
-| **rewire, 20 excerpts** | **≈4.2k tokens** (≈4.8k before merging) | 20 excerpts of raw transcript | all evidence 82.9% | §8 |
+| **rewire, 10 excerpts** (2026-10-14) | **≈2.2k tokens** (≈2.5k before merging) | 10 excerpts × 6 turns of raw transcript | all evidence 77.5% | §8 |
+| **rewire, 20 excerpts** (2026-10-14) | **≈4.2k tokens** (≈4.8k before merging) | 20 excerpts of raw transcript | all evidence 82.9% | §8 |
+| **rewire, 10 excerpts** (2026-11-10, `0f03ace`) | **2,359 tokens** | 10 merged excerpts | all evidence 78.0%, MRR 0.7615 | §8 |
+| **rewire, 20 excerpts** (2026-11-10, `0f03ace`; the default from 0.3.0) | **4,269 tokens** | 20 merged excerpts | all evidence 83.6% | §8 |
 
 Lesson: systems with small contexts (≈1.3–1.8k tokens) send **concise facts**, not raw transcripts;
 Mem0 2026's high score actually uses a large context (≈7k tokens, 200 facts). rewire in `episodes` mode sends
@@ -281,6 +283,11 @@ The upper bound for runs with an LLM: if the evidence is not in the context, the
 
 Retrieval p50 4 ms, p99 16 ms. Open-domain often needs general knowledge (not in the conversation); multi-hop
 is rewire's improvement target. Note: the 94% J score from iterations 6–7 used k=50.
+
+**Rerun, 2026-11-10 (`0f03ace`, the 1,540 questions above):** all evidence 78.0% at 10 excerpts (2,359 tokens,
+MRR 0.7615) and 83.6% at 20 (4,269 tokens). The old default of 3 excerpts gives 66.8%; 160 excerpts reach 93.8%
+at 18,695 tokens, about the size of the whole history. Return per token peaks at 20, which is why 0.3.0 defaults
+the CLI and MCP `recall` to 20 instead of 3.
 
 **LongMemEval_S after the 2026-10-16 recall changes:** all evidence 91.1% (98.3% with query expansion), evidence turns
 94.4% (98.1%), context ≈12.5k tokens (19.1k), retrieval p50 235 ms (1.1 s): condensing embeds sentences at recall

@@ -301,8 +301,14 @@ pub fn apply_change(brain: &Brain, change: &Meta, source: Option<&Value>) -> Res
     }
     let text = s("text").trim().to_string();
     let title = take(&if truthy(change.get("title")) { s("title") } else { text.clone() }, 160);
-    // every write path, reviewed or not: a secret never becomes a note
-    if security::scan(&format!("{title} {text}")).iter().any(|p| p == "secret") {
+    // every write path, reviewed or not: a secret never becomes a note, wherever in the change it sits. Keywords are
+    // copied into the frontmatter and committed, so a key hidden there would leak just as a key in the body would.
+    let kw_text = change
+        .get("keywords")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(crate::util::value_text).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    if security::scan(&format!("{title} {text} {kw_text}")).iter().any(|p| p == "secret") {
         return op("refused: text looks like it contains a secret");
     }
     let scope = if truthy(change.get("scope")) { s("scope") } else { "global".into() };
@@ -818,6 +824,26 @@ pub fn is_problem(line: &str) -> bool {
     .any(|p| line.starts_with(p))
 }
 
+/// Session transcripts under sessions/. `doctor` reads them to report a secret that arrived without passing
+/// ingest: a hand-written file, or one pulled from another device.
+fn session_paths(brain: &Brain) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![brain.path(&["sessions"])];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn doctor(brain: &Brain) -> Vec<String> {
     let mut report = Vec::new();
     let mut bad = 0;
@@ -839,6 +865,16 @@ pub fn doctor(brain: &Brain) -> Vec<String> {
     }
     for (name, days) in skills::stale(brain, None) {
         report.push(format!("STALE skill {name}: not used for {days} days (delete skills/{name}/ to retire it)"));
+    }
+    for path in session_paths(brain) {
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let why = security::blocked(&text);
+        if !why.is_empty() {
+            report.push(format!(
+                "BLOCKED ({why}) {}: recall hides this transcript until the text is edited out",
+                relpath(&path, &brain.root)
+            ));
+        }
     }
     report.push(format!("inbox: {} item(s) awaiting review", brain.iter_inbox().len()));
     let remotes = out_str(&brain.git(&["remote", "-v"]));
